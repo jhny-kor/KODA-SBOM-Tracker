@@ -154,10 +154,20 @@ async def sync_dependency_track(db: Session, run: SbomRun) -> None:
         latest_analysis = max(run.analyses, key=lambda item: item.sequence, default=None)
         if latest_analysis is not None:
             latest_analysis.policies = run.dtrack_policies
-        if run.analysis_state == JobState.COMPLETED:
-            await client.promote_latest(run.dtrack_project_uuid)
         run.dtrack_state = JobState.COMPLETED
         run.dtrack_error = None
+        _derive_state(run)
+        if run.state == ProcessingState.COMPLETED:
+            latest_round = db.scalar(
+                select(func.max(SbomRun.round_number)).where(
+                    SbomRun.release_id == run.release_id,
+                    SbomRun.analysis_state == JobState.COMPLETED,
+                    SbomRun.dtrack_state == JobState.COMPLETED,
+                    SbomRun.archived_at.is_(None),
+                )
+            )
+            if latest_round == run.round_number:
+                await client.promote_latest(run.dtrack_project_uuid)
     except Exception as exc:
         run.dtrack_state = JobState.FAILED
         run.dtrack_error = str(exc)[-2000:]

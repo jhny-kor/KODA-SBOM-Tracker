@@ -14,7 +14,7 @@ from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, 
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
-from sqlalchemy import func, inspect, select, text
+from sqlalchemy import func, inspect, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
@@ -45,6 +45,7 @@ from .security import (
     issue_session,
     require_csrf,
     require_roles,
+    require_user_roles,
     rotate_csrf,
     verify_password,
 )
@@ -74,9 +75,24 @@ class UserRequest(BaseModel):
     role: Role
 
 
+class UserPatch(BaseModel):
+    role: Role | None = None
+    active: bool | None = None
+
+
 class TokenRequest(BaseModel):
     name: str
-    serviceId: str | None = None
+    serviceId: str
+
+
+class ServicePatch(BaseModel):
+    name: str | None = None
+    active: bool | None = None
+
+
+class EnvironmentPatch(BaseModel):
+    name: str | None = None
+    sortOrder: int | None = None
 
 
 class ArchiveRequest(BaseModel):
@@ -257,6 +273,28 @@ def create_user(
     return {"id": user.id, "username": user.username, "role": user.role}
 
 
+@app.patch("/api/v1/users/{user_id}")
+def patch_user(
+    user_id: str,
+    body: UserPatch,
+    db: Session = Depends(get_db),
+    principal=Depends(require_roles(Role.ADMIN)),
+    _csrf=Depends(require_csrf),
+) -> dict:
+    user = db.get(User, user_id)
+    if not user:
+        raise HTTPException(404, "사용자를 찾을 수 없습니다")
+    if user.id == principal.id and body.active is False:
+        raise HTTPException(422, "현재 로그인한 관리자 계정은 비활성화할 수 없습니다")
+    if body.role is not None:
+        user.role = body.role
+    if body.active is not None:
+        user.active = body.active
+    audit(db, principal.username, "user.update", "user", user.id, {"role": user.role, "active": user.active})
+    db.commit()
+    return {"id": user.id, "username": user.username, "role": user.role, "active": user.active}
+
+
 @app.post("/api/v1/api-tokens", status_code=201)
 def create_api_token(
     body: TokenRequest,
@@ -264,7 +302,9 @@ def create_api_token(
     principal=Depends(require_roles(Role.ADMIN)),
     _csrf=Depends(require_csrf),
 ) -> dict:
-    if body.serviceId and not db.get(Service, body.serviceId):
+    if not body.serviceId:
+        raise HTTPException(422, "서비스 범위 토큰에는 serviceId가 필요합니다")
+    if not db.get(Service, body.serviceId):
         raise HTTPException(404, "서비스를 찾을 수 없습니다")
     raw = f"koda_{secrets.token_urlsafe(36)}"
     item = ApiToken(name=body.name, token_hash=digest(raw), service_id=body.serviceId)
@@ -309,7 +349,7 @@ def revoke_api_token(
 
 
 @app.get("/api/v1/services")
-def list_services(db: Session = Depends(get_db), _=Depends(current_principal)) -> list[dict]:
+def list_services(db: Session = Depends(get_db), _=Depends(require_user_roles(Role.ADMIN, Role.ANALYST, Role.UPLOADER, Role.VIEWER))) -> list[dict]:
     return [{"id": item.id, "slug": item.slug, "name": item.name, "active": item.active} for item in db.scalars(select(Service).order_by(Service.name))]
 
 
@@ -333,8 +373,28 @@ def create_service(
     return {"id": item.id, "slug": item.slug, "name": item.name}
 
 
+@app.patch("/api/v1/services/{service_id}")
+def patch_service(
+    service_id: str,
+    body: ServicePatch,
+    db: Session = Depends(get_db),
+    principal=Depends(require_roles(Role.ADMIN)),
+    _csrf=Depends(require_csrf),
+) -> dict:
+    item = db.get(Service, service_id)
+    if not item:
+        raise HTTPException(404, "서비스를 찾을 수 없습니다")
+    if body.name is not None:
+        item.name = body.name.strip()
+    if body.active is not None:
+        item.active = body.active
+    audit(db, principal.username, "service.update", "service", item.id, {"active": item.active})
+    db.commit()
+    return {"id": item.id, "slug": item.slug, "name": item.name, "active": item.active}
+
+
 @app.get("/api/v1/environments")
-def list_environments(db: Session = Depends(get_db), _=Depends(current_principal)) -> list[dict]:
+def list_environments(db: Session = Depends(get_db), _=Depends(require_user_roles(Role.ADMIN, Role.ANALYST, Role.UPLOADER, Role.VIEWER))) -> list[dict]:
     return [{"id": item.id, "slug": item.slug, "name": item.name, "sortOrder": item.sort_order} for item in db.scalars(select(Environment).order_by(Environment.sort_order))]
 
 
@@ -351,6 +411,26 @@ def create_environment(
     audit(db, principal.username, "environment.create", "environment", item.id)
     db.commit()
     return {"id": item.id, "slug": item.slug, "name": item.name}
+
+
+@app.patch("/api/v1/environments/{environment_id}")
+def patch_environment(
+    environment_id: str,
+    body: EnvironmentPatch,
+    db: Session = Depends(get_db),
+    principal=Depends(require_roles(Role.ADMIN)),
+    _csrf=Depends(require_csrf),
+) -> dict:
+    item = db.get(Environment, environment_id)
+    if not item:
+        raise HTTPException(404, "환경을 찾을 수 없습니다")
+    if body.name is not None:
+        item.name = body.name.strip()
+    if body.sortOrder is not None:
+        item.sort_order = body.sortOrder
+    audit(db, principal.username, "environment.update", "environment", item.id, {"sortOrder": item.sort_order})
+    db.commit()
+    return {"id": item.id, "slug": item.slug, "name": item.name, "sortOrder": item.sort_order}
 
 
 def _principal_actor(principal: User | ApiToken) -> str:
@@ -457,6 +537,8 @@ async def upload_sbom(
     environment = db.get(Environment, environment_id)
     if not service or not environment:
         raise HTTPException(404, "서비스 또는 환경을 찾을 수 없습니다")
+    if not service.active:
+        raise HTTPException(409, "비활성 서비스에는 SBOM을 업로드할 수 없습니다")
     lock_key = f"{service.id}:{environment.id}:{release_version}"
     async with _round_locks[lock_key]:
         return _persist_run(
@@ -513,6 +595,7 @@ def list_runs(
     service_id: str | None = None,
     environment_id: str | None = None,
     state: ProcessingState | None = None,
+    q: str | None = Query(default=None, min_length=1, max_length=200),
     page: int = 1,
     size: int = 20,
     db: Session = Depends(get_db),
@@ -530,6 +613,16 @@ def list_runs(
         query = query.join(Release).where(Release.environment_id == environment_id)
     if state:
         query = query.where(SbomRun.state == state)
+    if q:
+        pattern = f"%{q.strip()}%"
+        query = query.where(
+            or_(
+                SbomRun.id.ilike(pattern),
+                SbomRun.original_filename.ilike(pattern),
+                SbomRun.release.has(Release.version.ilike(pattern)),
+                SbomRun.release.has(Release.service.has(Service.name.ilike(pattern))),
+            )
+        )
     total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
     items = db.scalars(query.order_by(SbomRun.created_at.desc()).offset((page - 1) * size).limit(min(size, 100))).unique()
     return {"items": [_run_payload(item) for item in items], "page": page, "size": size, "total": total}
@@ -563,11 +656,15 @@ def get_run(
         {
             "identityKey": component.identity_key,
             "identityStatus": component.identity_status,
+            "componentType": component.component_type,
+            "group": component.group_name,
             "name": component.name,
             "version": component.version,
             "purl": component.purl,
+            "bomRef": component.bom_ref,
             "sha256": component.sha256,
             "licenses": component.licenses,
+            "properties": component.properties,
         }
         for component in item.components
     ]
@@ -606,8 +703,11 @@ def retry_dependency_track(
     _csrf=Depends(require_csrf),
 ) -> dict:
     run = _load_run(db, run_id)
+    if run.archived_at is not None or run.state == ProcessingState.ARCHIVED:
+        raise HTTPException(409, "보관된 회차는 다시 처리할 수 없습니다")
     run.dtrack_state = JobState.QUEUED
     run.dtrack_error = None
+    run.state = ProcessingState.PROCESSING
     job = enqueue(db, "sync_dependency_track", run.id)
     audit(db, _principal_actor(principal), "dtrack.retry", "sbom_run", run.id)
     db.commit()
@@ -622,7 +722,10 @@ def create_analysis(
     _csrf=Depends(require_csrf),
 ) -> dict:
     run = _load_run(db, run_id)
+    if run.archived_at is not None or run.state == ProcessingState.ARCHIVED:
+        raise HTTPException(409, "보관된 회차는 다시 분석할 수 없습니다")
     run.analysis_state = JobState.QUEUED
+    run.state = ProcessingState.PROCESSING
     job = enqueue(db, "analyze", run.id)
     audit(db, _principal_actor(principal), "analysis.create", "sbom_run", run.id)
     db.commit()
@@ -640,6 +743,8 @@ def archive_run(
     if not body.reason.strip():
         raise HTTPException(422, "보관 사유가 필요합니다")
     run = _load_run(db, run_id)
+    if run.archived_at is not None or run.state == ProcessingState.ARCHIVED:
+        raise HTTPException(409, "이미 보관된 회차입니다")
     run.archived_at = datetime.now(UTC)
     run.archive_reason = body.reason.strip()
     run.state = ProcessingState.ARCHIVED
@@ -690,8 +795,8 @@ def compare_runs(
         keys=("rule", "component"),
     )
     return {
-        "base": {"runId": base.id, "sha256": base.sha256, "dataAsOf": base_analysis.data_as_of if base_analysis else None},
-        "target": {"runId": target.id, "sha256": target.sha256, "dataAsOf": target_analysis.data_as_of if target_analysis else None},
+        "base": {"runId": base.id, "sha256": base.sha256, "dataAsOf": base_analysis.data_as_of if base_analysis else None, "artifactUrl": f"/api/v1/sbom-runs/{base.id}/artifact"},
+        "target": {"runId": target.id, "sha256": target.sha256, "dataAsOf": target_analysis.data_as_of if target_analysis else None, "artifactUrl": f"/api/v1/sbom-runs/{target.id}/artifact"},
         "summary": {
             "componentsAdded": sum(item["change"] == "added" for item in component_changes),
             "componentsRemoved": sum(item["change"] == "removed" for item in component_changes),

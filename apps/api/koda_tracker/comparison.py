@@ -34,8 +34,11 @@ def compare_components(base: Iterable[RunComponent], target: Iterable[RunCompone
                 "fields": fields if before and after else [],
                 "identityKey": key,
                 "identityStatus": current.identity_status,
+                "componentType": current.component_type,
+                "group": current.group_name,
                 "name": current.name,
                 "purl": current.purl,
+                "bomRef": current.bom_ref,
                 "baseVersion": before.version if before else None,
                 "targetVersion": after.version if after else None,
                 "baseSha256": before.sha256 if before else None,
@@ -62,4 +65,3 @@ def compare_records(base: list[dict], target: list[dict], *, keys: tuple[str, ..
         elif left[identity] != right[identity]:
             result.append({"change": "changed", "base": left[identity], "target": right[identity]})
     return result
-

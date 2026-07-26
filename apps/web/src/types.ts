@@ -32,10 +32,27 @@ export interface AnalysisRevisionSummary {
   toolVersion?: string | null;
   dataSources?: Record<string, unknown>;
   error?: string | null;
+  findings?: Record<string, unknown>[];
+  policies?: Record<string, unknown>[];
 }
 
 export interface SbomRunDetail extends SbomRun {
   analyses: AnalysisRevisionSummary[];
+  components: ComponentSnapshot[];
+}
+
+export interface ComponentSnapshot {
+  identityKey: string;
+  identityStatus?: string;
+  componentType?: string | null;
+  group?: string | null;
+  name: string;
+  version?: string | null;
+  purl?: string | null;
+  bomRef?: string | null;
+  sha256?: string | null;
+  licenses?: unknown[];
+  properties?: unknown[] | Record<string, unknown>;
 }
 
 export interface ComponentChange {
@@ -49,6 +66,11 @@ export interface ComponentChange {
   baseSha256?: string;
   targetSha256?: string;
   identityStatus?: string;
+  componentType?: string | null;
+  group?: string | null;
+  bomRef?: string | null;
+  baseLicenses?: unknown[];
+  targetLicenses?: unknown[];
 }
 
 export interface RecordChange {
@@ -59,8 +81,8 @@ export interface RecordChange {
 }
 
 export interface Comparison {
-  base: { runId: string; sha256: string; dataAsOf: string | null };
-  target: { runId: string; sha256: string; dataAsOf: string | null };
+  base: { runId: string; sha256: string; dataAsOf: string | null; artifactUrl?: string };
+  target: { runId: string; sha256: string; dataAsOf: string | null; artifactUrl?: string };
   summary: {
     componentsAdded: number;
     componentsRemoved: number;
@@ -78,6 +100,8 @@ export interface CatalogItem {
   id: string;
   name: string;
   slug: string;
+  active?: boolean;
+  sortOrder?: number;
 }
 
 export interface VulnerabilityBundle {

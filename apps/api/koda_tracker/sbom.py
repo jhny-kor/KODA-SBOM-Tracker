@@ -24,7 +24,9 @@ def parse_sbom(raw: bytes) -> tuple[dict, str]:
             raise SbomValidationError("유효한 JSON 문서가 아닙니다") from exc
         media = "application/vnd.cyclonedx+json"
     elif stripped.startswith(b"<"):
-        upper = raw[:4096].upper()
+        # Scan the complete bounded upload; a declaration after the XML prolog
+        # must not bypass XXE/DTD rejection by sitting beyond a short prefix.
+        upper = raw.upper()
         if b"<!DOCTYPE" in upper or b"<!ENTITY" in upper:
             raise SbomValidationError("DTD와 외부 엔티티는 허용되지 않습니다")
         try:

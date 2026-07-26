@@ -84,6 +84,16 @@ def require_roles(*roles: Role):
     return dependency
 
 
+def require_user_roles(*roles: Role):
+    """Require a browser session; service tokens are intentionally excluded."""
+    def dependency(principal: User | ApiToken = Depends(current_principal)):
+        if not isinstance(principal, User) or principal.role not in roles:
+            raise HTTPException(403, "권한이 없습니다")
+        return principal
+
+    return dependency
+
+
 def require_csrf(request: Request, csrf_token: str | None = Header(default=None, alias="X-CSRF-Token")) -> None:
     session = getattr(request.state, "session", None)
     if session is not None and (not csrf_token or digest(csrf_token) != session.csrf_hash):

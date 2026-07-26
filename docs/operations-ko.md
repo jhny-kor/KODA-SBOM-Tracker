@@ -46,6 +46,17 @@ Dependency-Track 초기 관리자 로그인 후 포털 전용 팀을 만들고 �
 ./scripts/verify-dtrack-connection.sh
 ```
 
+실제 BOM 업로드·이벤트 token 추적·프로젝트 metric/policy 조회까지 확인하려면
+승인된 테스트 환경에서 다음 선택적 live smoke test를 실행합니다. 테스트 프로젝트가
+Dependency-Track에 남으므로 운영 프로젝트가 아닌 별도 인스턴스/이름을 사용합니다.
+
+```bash
+KODA_DTRACK_LIVE=1 \
+KODA_DTRACK_LIVE_URL=http://127.0.0.1:8088/dependency-track \
+KODA_DTRACK_LIVE_API_KEY='전용 팀 키' \
+.venv/bin/pytest tests/integration/test_dtrack_live.py -q
+```
+
 관리자 API 키가 있는 초기 설치에서만 자동 팀/권한/키 발급 도구를 사용할 수
 있습니다. 관리자 키는 셸 환경변수로만 전달하고 `.env`에는 저장하지 않습니다.
 기존 키가 있는 팀은 자동 회전하지 않으므로 실수로 기존 연동을 끊지 않습니다.

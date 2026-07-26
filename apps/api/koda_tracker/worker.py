@@ -6,7 +6,7 @@ import time
 from sqlalchemy import select
 
 from .db import SessionLocal
-from .models import Job, JobState, SbomRun
+from .models import Job, JobState, ProcessingState, SbomRun
 from .services import analyze_offline, sync_dependency_track
 
 
@@ -22,6 +22,8 @@ async def process_one() -> bool:
         try:
             if not run:
                 raise RuntimeError("작업의 SBOM 회차가 존재하지 않습니다")
+            if run.archived_at is not None or run.state == ProcessingState.ARCHIVED:
+                raise RuntimeError("보관된 회차는 다시 처리할 수 없습니다")
             if job.kind in {"process_run", "analyze"}:
                 analyze_offline(db, run)
             if job.kind in {"process_run", "sync_dependency_track"}:
@@ -43,4 +45,3 @@ def run() -> None:
 
 if __name__ == "__main__":
     run()
-

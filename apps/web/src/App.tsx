@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
   demoMode,
   activateVulnerabilityBundle,
@@ -13,11 +13,15 @@ import {
   fetchCatalogs,
   fetchComparison,
   fetchDependencyTrackStatus,
+  fetchJob,
   fetchRun,
   fetchRuns,
   fetchUsers,
   fetchVulnerabilityBundles,
   login,
+  patchEnvironment,
+  patchService,
+  patchUser,
   logout,
   resumeSession,
   retryDependencyTrack,
@@ -27,7 +31,7 @@ import {
 } from "./api";
 import { demoChanges, demoRuns } from "./demo";
 import { Icon } from "./icons";
-import type { AnalysisRevisionSummary, AuditEvent, CatalogItem, Comparison, ComponentChange, DependencyTrackStatus, RecordChange, SbomRun, UserSummary, VulnerabilityBundle } from "./types";
+import type { AnalysisRevisionSummary, AuditEvent, CatalogItem, Comparison, ComponentChange, ComponentSnapshot, DependencyTrackStatus, RecordChange, SbomRun, SbomRunDetail, UserSummary, VulnerabilityBundle } from "./types";
 
 type Page = "dashboard" | "services" | "runs" | "compare" | "vuln" | "audit" | "settings";
 
@@ -45,7 +49,7 @@ function stateLabel(state: SbomRun["state"]) {
   return { completed: "완료", processing: "처리 중", partial: "일부 실패", failed: "실패", queued: "대기", archived: "보관" }[state];
 }
 
-function Header({ collapsed, onToggle, onLogout, dataAsOf }: { collapsed: boolean; onToggle: () => void; onLogout: () => void; dataAsOf: string }) {
+function Header({ collapsed, onToggle, onLogout, dataAsOf, search, onSearch }: { collapsed: boolean; onToggle: () => void; onLogout: () => void; dataAsOf: string; search: string; onSearch: (value: string) => void }) {
   return (
     <header className="topbar">
       <button className="icon-button menu-button" onClick={onToggle} aria-label={collapsed ? "사이드바 펼치기" : "사이드바 접기"}>
@@ -53,7 +57,7 @@ function Header({ collapsed, onToggle, onLogout, dataAsOf }: { collapsed: boolea
       </button>
       <label className="global-search">
         <Icon name="search" />
-        <input aria-label="전체 검색" placeholder="서비스, 릴리스, 구성요소 검색" />
+        <input aria-label="전체 검색" value={search} onChange={(event) => onSearch(event.target.value)} placeholder="서비스, 릴리스, 구성요소 검색" />
         <kbd>/</kbd>
       </label>
       <div className="topbar-spacer" />
@@ -92,15 +96,21 @@ function SelectFilter({ label, value, values, onChange }: { label: string; value
   );
 }
 
-function RunsPage({ runs, onUpload, onSelect }: { runs: SbomRun[]; onUpload: () => void; onSelect: (run: SbomRun) => void }) {
+function RunsPage({ runs, onUpload, onSelect, search }: { runs: SbomRun[]; onUpload: () => void; onSelect: (run: SbomRun) => void; search: string }) {
   const [service, setService] = useState("");
   const [environment, setEnvironment] = useState("");
   const [state, setState] = useState("");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
   const filtered = runs.filter((run) =>
     (!service || run.service.name === service) &&
     (!environment || run.environment.name === environment) &&
-    (!state || run.state === state)
+    (!state || run.state === state) &&
+    (!search.trim() || `${run.service.name} ${run.environment.name} ${run.releaseVersion} ${run.filename || ""} ${run.id}`.toLowerCase().includes(search.trim().toLowerCase()))
   );
+  const pageCount = Math.max(1, Math.ceil(filtered.length / pageSize));
+  const currentPage = Math.min(page, pageCount);
+  const visible = filtered.slice((currentPage - 1) * pageSize, currentPage * pageSize);
   const dataAsOf = runs.map((run) => run.dataAsOf).filter(Boolean).sort().at(-1) || "미반입";
   const queued = runs.filter((run) => run.state === "queued" || run.state === "processing").length;
   const failed = runs.filter((run) => run.state === "failed" || run.state === "partial").length;
@@ -119,15 +129,15 @@ function RunsPage({ runs, onUpload, onSelect }: { runs: SbomRun[]; onUpload: () 
       <div className="filters">
         <SelectFilter label="서비스" value={service} values={[...new Set(runs.map((run) => run.service.name))]} onChange={setService} />
         <SelectFilter label="환경" value={environment} values={[...new Set(runs.map((run) => run.environment.name))]} onChange={setEnvironment} />
-        <SelectFilter label="상태" value={state} values={["completed", "processing", "partial"]} onChange={setState} />
-        <button className="secondary reset" onClick={() => { setService(""); setEnvironment(""); setState(""); }}>초기화 <Icon name="reset" /></button>
+        <SelectFilter label="상태" value={state} values={["completed", "processing", "partial", "failed", "queued", "archived"]} onChange={setState} />
+        <button className="secondary reset" onClick={() => { setService(""); setEnvironment(""); setState(""); setPage(1); }}>초기화 <Icon name="reset" /></button>
       </div>
       <div className="table-frame">
         <div className="table-scroll">
           <table className="runs-table">
             <thead><tr><th>서비스</th><th>환경</th><th>릴리스</th><th>회차</th><th>분석 기준일</th><th>구성요소</th><th>취약점</th><th>정책 위반</th><th>처리 상태</th><th>업로드 시각</th></tr></thead>
             <tbody>
-              {filtered.map((run) => (
+              {visible.map((run) => (
                 <tr key={run.id} onClick={() => onSelect(run)} tabIndex={0}>
                   <td className="sticky-name">{run.service.name}</td><td>{run.environment.name}</td><td>{run.releaseVersion}</td>
                   <td>{run.roundNumber}차</td><td>{run.dataAsOf || "-"}</td><td>{run.componentCount.toLocaleString()}</td>
@@ -136,10 +146,11 @@ function RunsPage({ runs, onUpload, onSelect }: { runs: SbomRun[]; onUpload: () 
                   <td>{new Date(run.createdAt).toISOString().replace("T", " ").slice(0, 16)}</td>
                 </tr>
               ))}
+              {!visible.length && <tr><td colSpan={10}>조건에 맞는 회차가 없습니다.</td></tr>}
             </tbody>
           </table>
         </div>
-        <div className="table-footer"><span>전체 {filtered.length}건</span><div><select aria-label="페이지당 행 수"><option>20개씩 보기</option><option>50개씩 보기</option></select><button aria-label="첫 페이지">|‹</button><button aria-label="이전 페이지">‹</button><button className="current">1</button><button>2</button><button>3</button><button aria-label="다음 페이지">›</button><button aria-label="마지막 페이지">›|</button></div></div>
+        <div className="table-footer"><span>전체 {filtered.length}건 · {currentPage}/{pageCount}페이지</span><div><select aria-label="페이지당 행 수" value={pageSize} onChange={(event) => { setPageSize(Number(event.target.value)); setPage(1); }}><option value={20}>20개씩 보기</option><option value={50}>50개씩 보기</option><option value={100}>100개씩 보기</option></select><button aria-label="첫 페이지" disabled={currentPage === 1} onClick={() => setPage(1)}>|‹</button><button aria-label="이전 페이지" disabled={currentPage === 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>‹</button>{Array.from({ length: Math.min(pageCount, 5) }, (_, index) => { const first = Math.min(Math.max(1, currentPage - 2), Math.max(1, pageCount - 4)); const value = first + index; return <button key={value} className={currentPage === value ? "current" : ""} onClick={() => setPage(value)}>{value}</button>; })}<button aria-label="다음 페이지" disabled={currentPage === pageCount} onClick={() => setPage((value) => Math.min(pageCount, value + 1))}>›</button><button aria-label="마지막 페이지" disabled={currentPage === pageCount} onClick={() => setPage(pageCount)}>›|</button></div></div>
       </div>
     </section>
   );
@@ -264,13 +275,19 @@ function ComparePage({ runs }: { runs: SbomRun[] }) {
 }
 
 function ComponentInspector({ change, comparison }: { change: ComponentChange; comparison: Comparison | null }) {
+  const licenses = (change.targetLicenses || change.baseLicenses || []).map((license) => typeof license === "string" ? license : String((license as { license?: { id?: string; name?: string } }).license?.id || (license as { license?: { id?: string; name?: string } }).license?.name || "식별 불가"));
+  const related = (comparison?.vulnerabilities || []).filter((item) => {
+    const record = item.record || item.target || item.base || {};
+    return String(record.component || "").toLowerCase() === change.name.toLowerCase() || String(record.purl || "") === change.purl;
+  });
+  const propertyEntries = Object.entries(change.targetLicenses ? { 라이선스: licenses.join(", ") || "없음" } : {}).filter(([, value]) => value);
   return (
     <div className="inspector">
-      <div><h3>구성요소 상세</h3><dl><dt>구성요소</dt><dd>{change.name}</dd><dt>PURL</dt><dd className="mono wrap">{change.purl}</dd><dt>라이선스</dt><dd>Apache-2.0</dd><dt>타입</dt><dd>library</dd><dt>스코프</dt><dd>compile</dd><dt>최초 탐지</dt><dd>2025-05-02 10:21:34</dd><dt>최종 탐지</dt><dd>2025-05-12 14:28:11</dd></dl></div>
-      <div><h3>경로</h3><ul className="paths"><li>com.koda.payment:payment-api:1.4.2<ul><li>com.koda.payment:payment-core:1.4.2<ul><li>{change.name}:{change.baseVersion}</li></ul></li></ul></li><li>com.koda.payment:payment-admin:1.4.2</li></ul>
-        <h3>연관 취약점</h3><ul className="vulnerabilities"><li><b>신규</b> CVE-2024-30260 <em>HIGH</em></li><li><b>신규</b> CVE-2024-22243 <em>MEDIUM</em></li><li><span>해소</span> CVE-2020-13956</li></ul>
+      <div><h3>구성요소 상세</h3><dl><dt>구성요소</dt><dd>{change.name}</dd><dt>PURL</dt><dd className="mono wrap">{change.purl || "식별자 없음"}</dd><dt>그룹</dt><dd>{change.group || "-"}</dd><dt>타입</dt><dd>{change.componentType || "-"}</dd><dt>bom-ref</dt><dd className="mono wrap">{change.bomRef || "-"}</dd><dt>라이선스</dt><dd>{licenses.length ? licenses.join(", ") : "식별되지 않음"}</dd><dt>식별 상태</dt><dd>{change.identityStatus || "정상"}</dd></dl></div>
+      <div><h3>의존성 경로</h3><p className="muted">CycloneDX 원본에 별도 의존성 그래프가 기록되지 않은 경우 구성요소 자체 정보만 표시합니다.</p><ul className="paths"><li>{change.group ? `${change.group}:` : ""}{change.name}:{change.targetVersion || change.baseVersion || "버전 없음"}{change.bomRef ? ` · ${change.bomRef}` : ""}</li></ul>
+        <h3>연관 취약점</h3><ul className="vulnerabilities">{related.length ? related.map((item, index) => { const record = item.record || item.target || item.base || {}; return <li key={`${item.change}-${index}`}><b>{item.change === "added" ? "신규" : item.change === "removed" ? "해소" : "변경"}</b> {String(record.canonicalId || record.id || "식별자 없음")} <em>{String(record.severity || "UNKNOWN")}</em>{record.kev ? <span> · KEV</span> : null}</li>; }) : <li>이 비교에서 직접 연관된 취약점이 없습니다.</li>}</ul>
       </div>
-      <div><h3>해시 비교</h3><label>기준 회차<input readOnly value={change.baseSha256 || "-"} /></label><label>비교 회차<input readOnly value={change.targetSha256 || "-"} /></label><small>원본: {comparison?.base.sha256.slice(0, 12)}… → {comparison?.target.sha256.slice(0, 12)}…</small><h3>변경 내용</h3><p>{changeLabel(change)}으로 인한 바이너리 차이</p><div className="inspector-actions"><button className="secondary">원본 SBOM 보기</button><a className="primary" href="/dependency-track/" target="_blank" rel="noreferrer">Dependency-Track에서 열기 <Icon name="external" /></a></div></div>
+      <div><h3>해시 비교</h3><label>기준 회차<input readOnly value={change.baseSha256 || "-"} /></label><label>비교 회차<input readOnly value={change.targetSha256 || "-"} /></label><small>원본: {comparison?.base.sha256.slice(0, 12)}… → {comparison?.target.sha256.slice(0, 12)}…</small>{propertyEntries.map(([key, value]) => <p key={key} className="muted">{key}: {value}</p>)}<h3>변경 내용</h3><p>{change.fields.length ? change.fields.join(", ") : "변경 필드 없음"}</p><div className="inspector-actions">{comparison?.base.artifactUrl && <a className="secondary" href={comparison.base.artifactUrl}>기준 원본 보기</a>}{comparison?.target.artifactUrl && <a className="secondary" href={comparison.target.artifactUrl}>비교 원본 보기</a>}<a className="primary" href="/dependency-track/" target="_blank" rel="noreferrer">Dependency-Track에서 열기 <Icon name="external" /></a></div></div>
     </div>
   );
 }
@@ -295,16 +312,47 @@ function UploadModal({
 }) {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+  const [jobId, setJobId] = useState("");
+  const [jobState, setJobState] = useState<"queued" | "running" | "completed" | "failed" | "">("");
+  const notified = useRef(false);
+  useEffect(() => {
+    if (!jobId) return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const job = await fetchJob(jobId);
+        if (cancelled) return;
+        setJobState(job.state);
+        if (job.state === "completed" && !notified.current) {
+          notified.current = true;
+          setBusy(false);
+          setMessage("SBOM 분석이 완료되었습니다.");
+          setTimeout(() => { if (!cancelled) onUploaded(); }, 250);
+        } else if (job.state === "failed") {
+          setBusy(false);
+          setMessage(job.error || "SBOM 처리 작업이 실패했습니다.");
+        }
+      } catch (error) {
+        if (!cancelled) { setBusy(false); setMessage(error instanceof Error ? error.message : "작업 상태를 확인하지 못했습니다."); }
+      }
+    };
+    void poll();
+    const timer = window.setInterval(() => void poll(), 1200);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [jobId, onUploaded]);
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setBusy(true); setMessage("");
     try {
-      await uploadRun(new FormData(event.currentTarget));
-      setMessage("SBOM을 접수했습니다. 분석 작업이 시작됩니다.");
-      setTimeout(onUploaded, 700);
+      const result = await uploadRun(new FormData(event.currentTarget));
+      notified.current = false;
+      setJobId(result.jobId);
+      setJobState("queued");
+      setMessage("SBOM을 접수했습니다. 분석 작업 상태를 확인하고 있습니다…");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "업로드에 실패했습니다");
-    } finally { setBusy(false); }
+      setBusy(false);
+    }
   }
   return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><section className="modal" role="dialog" aria-modal="true" aria-labelledby="upload-title">
     <header><h2 id="upload-title">SBOM 업로드</h2><button className="icon-button" onClick={onClose}><Icon name="close" /></button></header>
@@ -313,7 +361,7 @@ function UploadModal({
       <div className="form-row"><label>환경<select name="environmentId" required>{environments.map((environment) => <option key={environment.id} value={environment.id}>{environment.name}</option>)}</select></label><label>릴리스<input name="releaseVersion" placeholder="예: 1.4.2" required /></label></div>
       <label>SBOM 파일<input name="sbom" type="file" accept=".json,.xml,application/json,application/xml" required /><small>CycloneDX JSON/XML, 최대 25 MiB</small></label>
       <label>메모<textarea name="note" rows={3} placeholder="변경 사유 또는 배포 식별자" /></label>
-      {message && <p className="form-message">{message}</p>}
+      {message && <p className="form-message" role="status">{message}{jobState && <small> · 작업 상태: {jobState}</small>}</p>}
       <footer><button type="button" className="secondary" onClick={onClose}>취소</button><button disabled={busy} className="primary">{busy ? "업로드 중…" : "업로드"}</button></footer>
     </form>
   </section></div>;
@@ -323,14 +371,26 @@ function RunDetail({ run, onClose, onChanged }: { run: SbomRun; onClose: () => v
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [archiveReason, setArchiveReason] = useState("");
+  const [detail, setDetail] = useState<SbomRunDetail | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void fetchRun(run.id).then((result) => { if (!cancelled) setDetail(result); }).catch((error) => { if (!cancelled) setMessage(error instanceof Error ? error.message : "회차 상세를 불러오지 못했습니다."); });
+    return () => { cancelled = true; };
+  }, [run.id]);
   async function runAction(action: () => Promise<unknown>, success: string) {
     setBusy(true); setMessage("");
-    try { await action(); setMessage(success); onChanged(); } catch (error) { setMessage(error instanceof Error ? error.message : "작업에 실패했습니다"); } finally { setBusy(false); }
+    try { await action(); const refreshed = await fetchRun(run.id); setDetail(refreshed); setMessage(success); onChanged(); } catch (error) { setMessage(error instanceof Error ? error.message : "작업에 실패했습니다"); } finally { setBusy(false); }
   }
-  return <div className="drawer-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><aside className="detail-drawer"><header><div><span>{run.service.name}</span><h2>{run.releaseVersion} · {run.roundNumber}차</h2></div><button className="icon-button" onClick={onClose}><Icon name="close" /></button></header>
-    <div className="detail-status"><span className={`state ${run.state}`}>{stateLabel(run.state)}</span><span>{run.environment.name}</span><span>CycloneDX {run.specVersion}</span></div>
-    <dl><dt>원본 파일</dt><dd>{run.filename}</dd><dt>SHA-256</dt><dd className="mono wrap">{run.sha256}</dd><dt>분석 기준일</dt><dd>{run.dataAsOf || "-"}</dd><dt>오프라인 분석</dt><dd>{run.analysisState || "-"}</dd><dt>Dependency-Track</dt><dd>{run.dependencyTrackState || "-"}</dd><dt>구성요소</dt><dd>{run.componentCount.toLocaleString()}개</dd><dt>취약점</dt><dd>{run.vulnerabilityCount}건</dd><dt>정책 위반</dt><dd>{run.policyViolationCount}건</dd></dl>
-    <div className="drawer-actions">{message && <p className="form-message" role="status">{message}</p>}{run.dependencyTrackError && <p className="drawer-error">{run.dependencyTrackError}</p>}<div className="drawer-action-row"><button className="secondary" disabled={busy} onClick={() => void runAction(() => retryDependencyTrack(run.id), "Dependency-Track 재시도를 접수했습니다.")}>DTrack 재시도</button><button className="secondary" disabled={busy} onClick={() => void runAction(() => createAnalysis(run.id), "새 분석 리비전을 접수했습니다.")}>새 분석 리비전</button></div><div className="drawer-action-row"><a className="secondary" href={`/api/v1/sbom-runs/${run.id}/artifact`}>원본 SBOM 내려받기</a><a className="primary" href="/dependency-track/" target="_blank" rel="noreferrer">Dependency-Track에서 열기 <Icon name="external" /></a></div><form className="archive-form" onSubmit={(event) => { event.preventDefault(); if (archiveReason.trim()) void runAction(() => archiveRun(run.id, archiveReason.trim()), "회차를 논리 보관했습니다."); }}><input aria-label="보관 사유" placeholder="보관 사유" value={archiveReason} onChange={(event) => setArchiveReason(event.target.value)} /><button className="secondary" disabled={busy || !archiveReason.trim()}>논리 보관</button></form></div>
+  const current = detail || run;
+  const components: ComponentSnapshot[] = detail?.components || [];
+  const findings = detail?.analyses?.[0]?.findings || [];
+  return <div className="drawer-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><aside className="detail-drawer"><header><div><span>{current.service.name}</span><h2>{current.releaseVersion} · {current.roundNumber}차</h2></div><button className="icon-button" onClick={onClose}><Icon name="close" /></button></header>
+    <div className="detail-status"><span className={`state ${current.state}`}>{stateLabel(current.state)}</span><span>{current.environment.name}</span><span>CycloneDX {current.specVersion}</span></div>
+    <dl><dt>원본 파일</dt><dd>{current.filename || "-"}</dd><dt>SHA-256</dt><dd className="mono wrap">{current.sha256}</dd><dt>분석 기준일</dt><dd>{current.dataAsOf || "-"}</dd><dt>오프라인 분석</dt><dd>{current.analysisState || "-"}</dd><dt>Dependency-Track</dt><dd>{current.dependencyTrackState || "-"}</dd><dt>구성요소</dt><dd>{current.componentCount.toLocaleString()}개</dd><dt>취약점</dt><dd>{current.vulnerabilityCount}건</dd><dt>정책 위반</dt><dd>{current.policyViolationCount}건</dd></dl>
+    <h3>분석 리비전</h3><ul className="paths">{detail?.analyses?.length ? detail.analyses.map((analysis) => <li key={analysis.id}>r{analysis.sequence} · {analysis.state} · {analysis.dataAsOf || "기준일 미상"}{analysis.error ? ` · ${analysis.error}` : ""}</li>) : <li>상세를 불러오는 중이거나 분석 리비전이 없습니다.</li>}</ul>
+    <h3>구성요소 검사기 ({components.length})</h3><div className="table-scroll"><table><thead><tr><th>이름</th><th>버전</th><th>PURL</th><th>라이선스</th></tr></thead><tbody>{components.slice(0, 100).map((component) => <tr key={component.identityKey}><td>{component.name}</td><td>{component.version || "-"}</td><td className="mono">{component.purl || component.bomRef || "-"}</td><td>{component.licenses?.length ? component.licenses.map((license) => typeof license === "string" ? license : String((license as { license?: { id?: string; name?: string } }).license?.id || (license as { license?: { id?: string; name?: string } }).license?.name || "식별 불가")).join(", ") : "-"}</td></tr>)}{!components.length && <tr><td colSpan={4}>구성요소 상세가 없습니다.</td></tr>}</tbody></table></div>
+    <h3>취약점 검사기 ({findings.length})</h3><div className="table-scroll"><table><thead><tr><th>식별자</th><th>심각도</th><th>구성요소</th><th>KEV</th></tr></thead><tbody>{findings.slice(0, 100).map((finding, index) => <tr key={`${String(finding.canonicalId || finding.id || "finding")}-${index}`}><td className="mono">{String(finding.canonicalId || finding.id || "식별자 없음")}</td><td>{String(finding.severity || "Unknown")}</td><td className="mono">{String(finding.component || "-")}</td><td>{finding.kev ? "KEV" : "-"}</td></tr>)}{!findings.length && <tr><td colSpan={4}>취약점 결과가 없습니다.</td></tr>}</tbody></table></div>
+    <div className="drawer-actions">{message && <p className="form-message" role="status">{message}</p>}{current.dependencyTrackError && <p className="drawer-error">{current.dependencyTrackError}</p>}<div className="drawer-action-row"><button className="secondary" disabled={busy || current.state === "archived"} onClick={() => void runAction(() => retryDependencyTrack(current.id), "Dependency-Track 재시도를 접수했습니다.")}>DTrack 재시도</button><button className="secondary" disabled={busy || current.state === "archived"} onClick={() => void runAction(() => createAnalysis(current.id), "새 분석 리비전을 접수했습니다.")}>새 분석 리비전</button></div><div className="drawer-action-row"><a className="secondary" href={`/api/v1/sbom-runs/${current.id}/artifact`}>원본 SBOM 내려받기</a><a className="primary" href="/dependency-track/" target="_blank" rel="noreferrer">Dependency-Track에서 열기 <Icon name="external" /></a></div>{current.state !== "archived" && <form className="archive-form" onSubmit={(event) => { event.preventDefault(); if (archiveReason.trim()) void runAction(() => archiveRun(current.id, archiveReason.trim()), "회차를 논리 보관했습니다."); }}><input aria-label="보관 사유" placeholder="보관 사유" value={archiveReason} onChange={(event) => setArchiveReason(event.target.value)} /><button className="secondary" disabled={busy || !archiveReason.trim()}>논리 보관</button></form>}</div>
   </aside></div>;
 }
 
@@ -361,10 +421,26 @@ function ServicesPage({
       setMessage(error instanceof Error ? error.message : "등록에 실패했습니다");
     } finally { setBusy(false); }
   }
+  async function editService(item: CatalogItem) {
+    const name = window.prompt("서비스 표시명", item.name);
+    if (name === null || !name.trim()) return;
+    setBusy(true); setMessage("");
+    try { await patchService(item.id, { name: name.trim() }); setMessage("서비스를 변경했습니다."); onChanged(); } catch (error) { setMessage(error instanceof Error ? error.message : "서비스 변경에 실패했습니다"); } finally { setBusy(false); }
+  }
+  async function toggleService(item: CatalogItem) {
+    setBusy(true); setMessage("");
+    try { await patchService(item.id, { active: item.active === false }); setMessage("서비스 상태를 변경했습니다."); onChanged(); } catch (error) { setMessage(error instanceof Error ? error.message : "서비스 상태 변경에 실패했습니다"); } finally { setBusy(false); }
+  }
+  async function editEnvironment(item: CatalogItem) {
+    const name = window.prompt("환경 표시명", item.name);
+    if (name === null || !name.trim()) return;
+    setBusy(true); setMessage("");
+    try { await patchEnvironment(item.id, { name: name.trim() }); setMessage("환경을 변경했습니다."); onChanged(); } catch (error) { setMessage(error instanceof Error ? error.message : "환경 변경에 실패했습니다"); } finally { setBusy(false); }
+  }
   return <section className="page generic-page">
     <div className="page-heading"><div><h1>서비스</h1><p>서비스·환경·릴리스 구조와 업로드 권한을 관리합니다.</p></div><div className="button-row"><button className="secondary" onClick={() => setMode("environment")}>환경 추가</button><button className="primary" onClick={() => setMode("service")}>서비스 추가</button></div></div>
     {message && <p className="form-message" role="status">{message}</p>}
-    <div className="settings-grid"><div className="table-frame"><h2 className="table-title">서비스 {services.length}개</h2><table><thead><tr><th>서비스</th><th>slug</th><th>상태</th></tr></thead><tbody>{services.length ? services.map((item) => <tr key={item.id}><td>{item.name}</td><td className="mono">{item.slug}</td><td>활성</td></tr>) : <tr><td colSpan={3}>등록된 서비스가 없습니다.</td></tr>}</tbody></table></div><div className="table-frame"><h2 className="table-title">환경 {environments.length}개</h2><table><thead><tr><th>환경</th><th>slug</th><th>상태</th></tr></thead><tbody>{environments.length ? environments.map((item) => <tr key={item.id}><td>{item.name}</td><td className="mono">{item.slug}</td><td>활성</td></tr>) : <tr><td colSpan={3}>등록된 환경이 없습니다.</td></tr>}</tbody></table></div></div>
+    <div className="settings-grid"><div className="table-frame"><h2 className="table-title">서비스 {services.length}개</h2><table><thead><tr><th>서비스</th><th>slug</th><th>상태</th><th>작업</th></tr></thead><tbody>{services.length ? services.map((item) => <tr key={item.id}><td>{item.name}</td><td className="mono">{item.slug}</td><td>{item.active === false ? "비활성" : "활성"}</td><td><button className="secondary compact" disabled={busy} onClick={() => void editService(item)}>이름 변경</button> <button className="secondary compact" disabled={busy} onClick={() => void toggleService(item)}>{item.active === false ? "활성화" : "비활성화"}</button></td></tr>) : <tr><td colSpan={4}>등록된 서비스가 없습니다.</td></tr>}</tbody></table></div><div className="table-frame"><h2 className="table-title">환경 {environments.length}개</h2><table><thead><tr><th>환경</th><th>slug</th><th>정렬</th><th>작업</th></tr></thead><tbody>{environments.length ? environments.map((item) => <tr key={item.id}><td>{item.name}</td><td className="mono">{item.slug}</td><td>{item.sortOrder ?? "-"}</td><td><button className="secondary compact" disabled={busy} onClick={() => void editEnvironment(item)}>이름 변경</button></td></tr>) : <tr><td colSpan={4}>등록된 환경이 없습니다.</td></tr>}</tbody></table></div></div>
     {mode && <div className="modal-backdrop" role="presentation"><section className="modal" role="dialog" aria-modal="true"><header><h2>{mode === "service" ? "서비스 추가" : "환경 추가"}</h2><button className="icon-button" onClick={() => setMode(null)}><Icon name="close" /></button></header><form onSubmit={submit}><label>이름<input name="name" required autoFocus /></label><label>slug<input name="slug" pattern="[a-z0-9][a-z0-9-]{1,126}[a-z0-9]" required /><small>영문 소문자, 숫자, 하이픈만 사용합니다.</small></label>{mode === "environment" && <label>정렬 순서<input name="sortOrder" type="number" defaultValue="50" /></label>} {message && <p className="form-message">{message}</p>}<footer><button type="button" className="secondary" onClick={() => setMode(null)}>취소</button><button className="primary" disabled={busy}>{busy ? "등록 중…" : "등록"}</button></footer></form></section></div>}
   </section>;
 }
@@ -402,7 +478,7 @@ function SettingsPage({ users, services, tokens, dtrackStatus, onChanged }: { us
     try {
       if (mode === "user") await createUser({ username: String(values.get("username")), password: String(values.get("password")), role: String(values.get("role")) });
       if (mode === "token") {
-        const result = await createApiToken({ name: String(values.get("name")), serviceId: String(values.get("serviceId") || "") || undefined });
+        const result = await createApiToken({ name: String(values.get("name")), serviceId: String(values.get("serviceId") || "") });
         setIssuedToken(result.token);
       } else { setMode(null); }
       setMessage(mode === "token" ? "토큰이 발급되었습니다. 지금 한 번만 복사하세요." : "사용자를 등록했습니다."); onChanged();
@@ -412,6 +488,11 @@ function SettingsPage({ users, services, tokens, dtrackStatus, onChanged }: { us
     setBusy(true); setMessage("");
     try { await revokeApiToken(id); setMessage("토큰을 폐기했습니다."); onChanged(); } catch (error) { setMessage(error instanceof Error ? error.message : "토큰 폐기에 실패했습니다"); } finally { setBusy(false); }
   }
+  async function updateUser(item: UserSummary, field: "role" | "active", value: string | boolean) {
+    if (!item.id) return;
+    setBusy(true); setMessage("");
+    try { await patchUser(item.id, field === "role" ? { role: String(value) } : { active: Boolean(value) }); setMessage("사용자 권한을 변경했습니다."); onChanged(); } catch (error) { setMessage(error instanceof Error ? error.message : "사용자 변경에 실패했습니다"); } finally { setBusy(false); }
+  }
   const dtrackLabel = !dtrackStatus
     ? "확인 중"
     : dtrackStatus.authenticated && dtrackStatus.missingPermissions.length === 0
@@ -419,7 +500,7 @@ function SettingsPage({ users, services, tokens, dtrackStatus, onChanged }: { us
       : dtrackStatus.configured
         ? "점검 필요"
         : "미설정";
-  return <section className="page generic-page"><div className="page-heading"><div><h1>설정</h1><p>사용자, 역할, 환경, API 토큰과 Dependency-Track 연결을 관리합니다.</p></div><div className="button-row"><button className="secondary" onClick={() => { setIssuedToken(""); setMode("token"); }}>API 토큰 발급</button><button className="primary" onClick={() => setMode("user")}>사용자 추가</button></div></div>{message && <p className="form-message" role="status">{message}</p>}{issuedToken && <div className="token-reveal"><strong>새 토큰</strong><code>{issuedToken}</code></div>}<div className="table-frame dtrack-status"><h2 className="table-title">Dependency-Track 연결</h2><div className="dtrack-status-body"><strong className={`state ${dtrackLabel === "정상" ? "completed" : "partial"}`}>{dtrackLabel}</strong><span>버전 {dtrackStatus?.version || "-"}</span><span>팀 {dtrackStatus?.team || "-"}</span>{!dtrackStatus?.configured && <p>API 키를 설정하면 실제 BOM 업로드가 활성화됩니다.</p>}{Boolean(dtrackStatus?.missingPermissions.length) && <p>누락 권한: {dtrackStatus?.missingPermissions.join(", ")}</p>}{dtrackStatus?.error && <p>{dtrackStatus.error}</p>}</div></div><div className="settings-grid"><div className="table-frame"><h2 className="table-title">사용자 {users.length}명</h2><table><thead><tr><th>사용자</th><th>역할</th><th>상태</th></tr></thead><tbody>{users.length ? users.map((item) => <tr key={item.id || item.username}><td>{item.username}</td><td>{item.role}</td><td>{item.active ? "활성" : "비활성"}</td></tr>) : <tr><td colSpan={3}>등록된 사용자가 없습니다.</td></tr>}</tbody></table></div><div className="table-frame"><h2 className="table-title">API 토큰 {tokens.length}개</h2><table><thead><tr><th>이름</th><th>생성 시각</th><th>상태</th><th /></tr></thead><tbody>{tokens.length ? tokens.map((item) => <tr key={item.id}><td>{item.name}</td><td>{new Date(item.createdAt).toLocaleString("ko-KR")}</td><td>{item.active ? "활성" : "폐기"}</td><td>{item.active && <button className="secondary compact" onClick={() => void revoke(item.id)} disabled={busy}>폐기</button>}</td></tr>) : <tr><td colSpan={4}>발급된 토큰이 없습니다.</td></tr>}</tbody></table></div></div>{mode && <div className="modal-backdrop" role="presentation"><section className="modal" role="dialog" aria-modal="true"><header><h2>{mode === "user" ? "사용자 추가" : "API 토큰 발급"}</h2><button className="icon-button" onClick={() => setMode(null)}><Icon name="close" /></button></header><form onSubmit={submit}>{mode === "user" ? <><label>사용자 이름<input name="username" required autoFocus /></label><label>임시 비밀번호<input name="password" type="password" minLength={12} required /><small>최소 12자</small></label><label>역할<select name="role" defaultValue="viewer"><option value="admin">관리자</option><option value="analyst">분석자</option><option value="uploader">업로더</option><option value="viewer">조회자</option></select></label></> : <><label>토큰 이름<input name="name" required autoFocus /></label><label>허용 서비스<select name="serviceId"><option value="">전체 서비스</option>{services.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><small>토큰 원문은 지금만 표시되며 서버에는 해시만 저장됩니다.</small></>}{message && <p className="form-message">{message}</p>}<footer><button type="button" className="secondary" onClick={() => setMode(null)}>닫기</button><button className="primary" disabled={busy}>{busy ? "처리 중…" : "확인"}</button></footer></form></section></div>}</section>;
+  return <section className="page generic-page"><div className="page-heading"><div><h1>설정</h1><p>사용자, 역할, 환경, API 토큰과 Dependency-Track 연결을 관리합니다.</p></div><div className="button-row"><button className="secondary" onClick={() => { setIssuedToken(""); setMode("token"); }}>API 토큰 발급</button><button className="primary" onClick={() => setMode("user")}>사용자 추가</button></div></div>{message && <p className="form-message" role="status">{message}</p>}{issuedToken && <div className="token-reveal"><strong>새 토큰</strong><code>{issuedToken}</code></div>}<div className="table-frame dtrack-status"><h2 className="table-title">Dependency-Track 연결</h2><div className="dtrack-status-body"><strong className={`state ${dtrackLabel === "정상" ? "completed" : "partial"}`}>{dtrackLabel}</strong><span>버전 {dtrackStatus?.version || "-"}</span><span>팀 {dtrackStatus?.team || "-"}</span>{!dtrackStatus?.configured && <p>API 키를 설정하면 실제 BOM 업로드가 활성화됩니다.</p>}{Boolean(dtrackStatus?.missingPermissions.length) && <p>누락 권한: {dtrackStatus?.missingPermissions.join(", ")}</p>}{dtrackStatus?.error && <p>{dtrackStatus.error}</p>}</div></div><div className="settings-grid"><div className="table-frame"><h2 className="table-title">사용자 {users.length}명</h2><table><thead><tr><th>사용자</th><th>역할</th><th>상태</th><th>작업</th></tr></thead><tbody>{users.length ? users.map((item) => <tr key={item.id || item.username}><td>{item.username}</td><td><select aria-label={`${item.username} 역할`} value={item.role} disabled={busy} onChange={(event) => void updateUser(item, "role", event.target.value)}><option value="admin">관리자</option><option value="analyst">분석자</option><option value="uploader">업로더</option><option value="viewer">조회자</option></select></td><td>{item.active ? "활성" : "비활성"}</td><td>{item.id && <button className="secondary compact" disabled={busy} onClick={() => void updateUser(item, "active", !item.active)}>{item.active ? "비활성화" : "활성화"}</button>}</td></tr>) : <tr><td colSpan={4}>등록된 사용자가 없습니다.</td></tr>}</tbody></table></div><div className="table-frame"><h2 className="table-title">API 토큰 {tokens.length}개</h2><table><thead><tr><th>이름</th><th>서비스</th><th>생성 시각</th><th>상태</th><th /></tr></thead><tbody>{tokens.length ? tokens.map((item) => <tr key={item.id}><td>{item.name}</td><td>{services.find((service) => service.id === item.serviceId)?.name || item.serviceId || "-"}</td><td>{new Date(item.createdAt).toLocaleString("ko-KR")}</td><td>{item.active ? "활성" : "폐기"}</td><td>{item.active && <button className="secondary compact" onClick={() => void revoke(item.id)} disabled={busy}>폐기</button>}</td></tr>) : <tr><td colSpan={5}>발급된 토큰이 없습니다.</td></tr>}</tbody></table></div></div>{mode && <div className="modal-backdrop" role="presentation"><section className="modal" role="dialog" aria-modal="true"><header><h2>{mode === "user" ? "사용자 추가" : "API 토큰 발급"}</h2><button className="icon-button" onClick={() => setMode(null)}><Icon name="close" /></button></header><form onSubmit={submit}>{mode === "user" ? <><label>사용자 이름<input name="username" required autoFocus /></label><label>임시 비밀번호<input name="password" type="password" minLength={12} required /><small>최소 12자</small></label><label>역할<select name="role" defaultValue="viewer"><option value="admin">관리자</option><option value="analyst">분석자</option><option value="uploader">업로더</option><option value="viewer">조회자</option></select></label></> : <><label>토큰 이름<input name="name" required autoFocus /></label><label>허용 서비스<select name="serviceId" required><option value="" disabled>서비스를 선택하세요</option>{services.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><small>서비스 범위 토큰입니다. 토큰 원문은 지금만 표시되며 서버에는 해시만 저장됩니다.</small></>}{message && <p className="form-message">{message}</p>}<footer><button type="button" className="secondary" onClick={() => setMode(null)}>닫기</button><button className="primary" disabled={busy}>{busy ? "처리 중…" : "확인"}</button></footer></form></section></div>}</section>;
 }
 
 function GenericPage({ rows }: { rows: string[][] }) {
@@ -461,6 +542,7 @@ export default function App() {
   const demoEnvironments = [...new Map(demoRuns.map((run) => [run.environment.id, run.environment])).values()];
   const [page, setPage] = useState<Page>("runs");
   const [collapsed, setCollapsed] = useState(false);
+  const [globalSearch, setGlobalSearch] = useState("");
   const [runs, setRuns] = useState<SbomRun[]>(demoMode ? demoRuns : []);
   const [services, setServices] = useState<CatalogItem[]>(demoMode ? demoServices : []);
   const [environments, setEnvironments] = useState<CatalogItem[]>(demoMode ? demoEnvironments : []);
@@ -515,19 +597,19 @@ export default function App() {
     listener(); window.addEventListener("resize", listener); return () => window.removeEventListener("resize", listener);
   }, []);
   const content = useMemo(() => {
-    if (page === "runs") return <RunsPage runs={runs} onUpload={() => setUploadOpen(true)} onSelect={setSelectedRun} />;
+    if (page === "runs") return <RunsPage runs={runs} search={globalSearch} onUpload={() => setUploadOpen(true)} onSelect={setSelectedRun} />;
     if (page === "compare") return <ComparePage runs={runs} />;
     if (page === "services") return <ServicesPage services={services} environments={environments} onChanged={() => void loadData()} />;
     if (page === "vuln") return <VulnerabilityPage bundles={bundles} onSync={async () => { const items = await syncVulnerabilityBundles(); setBundles(items); }} onActivate={async (version) => { await activateVulnerabilityBundle(version); const items = await fetchVulnerabilityBundles(); setBundles(items); }} />;
     if (page === "audit") return <AuditPage events={auditEvents} />;
     if (page === "settings") return <SettingsPage users={users} services={services} tokens={tokens} dtrackStatus={dtrackStatus} onChanged={() => void loadData()} />;
     return <GenericPage rows={genericRows.dashboard || []} />;
-  }, [auditEvents, bundles, dtrackStatus, environments, genericRows, loadData, page, runs, services, tokens, users]);
+  }, [auditEvents, bundles, dtrackStatus, environments, genericRows, globalSearch, loadData, page, runs, services, tokens, users]);
   if (authenticated === null) return <div className="auth-loading">세션을 확인하고 있습니다…</div>;
   if (!authenticated) return <LoginPage onAuthenticated={() => { setAuthenticated(true); void loadData(); }} />;
   return <div className={`app-shell ${collapsed ? "is-collapsed" : ""}`}>
     <Sidebar page={page} collapsed={collapsed} onNavigate={setPage} />
-    <Header collapsed={collapsed} dataAsOf={runs.map((run) => run.dataAsOf).filter(Boolean).sort().at(-1) || ""} onToggle={() => setCollapsed((value) => !value)} onLogout={() => { void logout().finally(() => setAuthenticated(false)); }} />
+    <Header collapsed={collapsed} search={globalSearch} onSearch={setGlobalSearch} dataAsOf={runs.map((run) => run.dataAsOf).filter(Boolean).sort().at(-1) || ""} onToggle={() => setCollapsed((value) => !value)} onLogout={() => { void logout().finally(() => setAuthenticated(false)); }} />
     <main>{content}</main>
     {uploadOpen && <UploadModal services={services} environments={environments} onClose={() => setUploadOpen(false)} onUploaded={() => { setUploadOpen(false); void loadData(); }} />}
     {selectedRun && <RunDetail run={selectedRun} onClose={() => setSelectedRun(null)} onChanged={() => void loadData()} />}

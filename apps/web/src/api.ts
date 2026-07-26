@@ -1,5 +1,5 @@
 import { demoChanges, demoRuns } from "./demo";
-import type { AuditEvent, CatalogItem, Comparison, DependencyTrackStatus, SbomRun, SbomRunDetail, UserSummary, VulnerabilityBundle } from "./types";
+import type { AuditEvent, CatalogItem, Comparison, DependencyTrackStatus, JobState, SbomRun, SbomRunDetail, UserSummary, VulnerabilityBundle } from "./types";
 
 export const demoMode = import.meta.env.VITE_DEMO_MODE !== "false";
 let csrfToken = "";
@@ -49,18 +49,43 @@ export async function logout() {
   csrfToken = "";
 }
 
-export async function fetchRuns(): Promise<SbomRun[]> {
+export async function fetchRuns(search = ""): Promise<SbomRun[]> {
   if (demoMode) return demoRuns;
-  const result = await request<{ items: SbomRun[] }>("/api/v1/sbom-runs?size=100");
-  return result.items;
+  const items: SbomRun[] = [];
+  let page = 1;
+  let total = 0;
+  do {
+    const params = new URLSearchParams({ page: String(page), size: "100" });
+    if (search.trim()) params.set("q", search.trim());
+    const result = await request<{ items: SbomRun[]; total: number }>(`/api/v1/sbom-runs?${params}`);
+    items.push(...result.items);
+    total = result.total;
+    page += 1;
+    if (!result.items.length) break;
+  } while (items.length < total);
+  return items;
 }
 
 export async function fetchRun(runId: string): Promise<SbomRunDetail> {
   if (demoMode) {
     const run = demoRuns.find((item) => item.id === runId) || demoRuns[0];
-    return { ...run, analyses: [{ id: `demo-analysis-${run.id}`, sequence: 1, state: "completed", dataAsOf: "2025-05-21", toolVersion: "grype-demo", dataSources: {} }] };
+    return { ...run, components: [{ identityKey: "pkg:maven/org.apache.httpcomponents/httpclient@4.5.13", identityStatus: "stable", componentType: "library", group: "org.apache.httpcomponents", name: "httpclient", version: "4.5.13", purl: "pkg:maven/org.apache.httpcomponents/httpclient@4.5.13", bomRef: "pkg:maven/org.apache.httpcomponents/httpclient@4.5.13", sha256: "demo-sha256", licenses: [{ license: { id: "Apache-2.0" } }], properties: {} }], analyses: [{ id: `demo-analysis-${run.id}`, sequence: 1, state: "completed", dataAsOf: "2025-05-21", toolVersion: "grype-demo", dataSources: {} }] };
   }
   return request<SbomRunDetail>(`/api/v1/sbom-runs/${encodeURIComponent(runId)}`);
+}
+
+export interface JobSummary {
+  id: string;
+  kind: string;
+  runId: string;
+  state: JobState;
+  attempts: number;
+  error?: string | null;
+}
+
+export async function fetchJob(jobId: string): Promise<JobSummary> {
+  if (demoMode) return { id: jobId, kind: "process_run", runId: "demo-new", state: "completed", attempts: 1 };
+  return request<JobSummary>(`/api/v1/jobs/${encodeURIComponent(jobId)}`);
 }
 
 export async function fetchCatalogs(): Promise<{ services: CatalogItem[]; environments: CatalogItem[] }> {
@@ -117,8 +142,8 @@ export async function createUser(body: { username: string; password: string; rol
   return request<UserSummary>("/api/v1/users", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 }
 
-export async function createApiToken(body: { name: string; serviceId?: string }) {
-  return request<{ id: string; name: string; token: string; serviceId?: string }>("/api/v1/api-tokens", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+export async function createApiToken(body: { name: string; serviceId: string }) {
+  return request<{ id: string; name: string; token: string; serviceId: string }>("/api/v1/api-tokens", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 }
 
 export async function fetchApiTokens() {
@@ -133,6 +158,18 @@ export async function fetchDependencyTrackStatus(): Promise<DependencyTrackStatu
 
 export async function revokeApiToken(id: string) {
   return request<{ id: string; active: boolean }>(`/api/v1/api-tokens/${encodeURIComponent(id)}/revoke`, { method: "POST" });
+}
+
+export async function patchUser(id: string, body: { role?: string; active?: boolean }) {
+  return request<UserSummary>(`/api/v1/users/${encodeURIComponent(id)}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+}
+
+export async function patchService(id: string, body: { name?: string; active?: boolean }) {
+  return request<CatalogItem>(`/api/v1/services/${encodeURIComponent(id)}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+}
+
+export async function patchEnvironment(id: string, body: { name?: string; sortOrder?: number }) {
+  return request<CatalogItem>(`/api/v1/environments/${encodeURIComponent(id)}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 }
 
 export async function uploadRun(form: FormData): Promise<{ runId: string; jobId: string }> {
@@ -162,8 +199,8 @@ export async function archiveRun(runId: string, reason: string) {
 export async function fetchComparison(baseRunId: string, targetRunId: string, baseAnalysisId?: string, targetAnalysisId?: string): Promise<Comparison> {
   if (demoMode) {
     return {
-      base: { runId: baseRunId, sha256: demoRuns.find((run) => run.id === baseRunId)?.sha256 || "", dataAsOf: "2025-05-21" },
-      target: { runId: targetRunId, sha256: demoRuns.find((run) => run.id === targetRunId)?.sha256 || "", dataAsOf: "2025-05-21" },
+      base: { runId: baseRunId, sha256: demoRuns.find((run) => run.id === baseRunId)?.sha256 || "", dataAsOf: "2025-05-21", artifactUrl: `/api/v1/sbom-runs/${baseRunId}/artifact` },
+      target: { runId: targetRunId, sha256: demoRuns.find((run) => run.id === targetRunId)?.sha256 || "", dataAsOf: "2025-05-21", artifactUrl: `/api/v1/sbom-runs/${targetRunId}/artifact` },
       summary: {
         componentsAdded: demoChanges.filter((item) => item.change === "added").length,
         componentsRemoved: demoChanges.filter((item) => item.change === "removed").length,

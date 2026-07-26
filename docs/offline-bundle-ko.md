@@ -55,8 +55,9 @@ bundle/
 - `NVD_INDEX`, `ALIAS_INDEX`, `KEV_CATALOG` (기본 파일명 대신 다른 경로를 사용할 때)
 
 인터넷 연결 빌드 PC에서 원본 feed를 먼저 검증한 뒤 bundle을 생성합니다. 이 명령은
-네트워크를 사용하지 않으며, NVD 2.0 JSON/JSON.GZ feed는 compact alias index로
-정규화합니다.
+네트워크를 사용하지 않으며, NVD 2.0 JSON/JSON.GZ feed는 alias와 설명·CVSS·CPE·참조
+URL을 포함한 compact offline index로 정규화합니다. 원본 feed 전체를 폐쇄망에 복사하지
+않아도 오프라인 분석 결과에서 NVD 근거를 확인할 수 있습니다.
 
 ```bash
 ./scripts/build-vuln-bundle.sh ./dist/vuln-bundle/<version> \
@@ -71,8 +72,9 @@ bundle/
 
 전체 NVD 범위를 반입할 때는 필요한 연도 feed와 `modified` feed를 모두 지정해야
 합니다. 일부 연도만 지정한 bundle은 NVD 기준일을 전체 NVD 최신값으로 표시하지
-않습니다. `nvd-alias-index.py`는 CVE와 NVD reference URL에 포함된 GHSA/CVE alias만
-보존하고, 원본 feed는 빌드 PC에서 별도 보관합니다.
+않습니다. `nvd-alias-index.py`는 CVE와 NVD reference URL에 포함된 GHSA/CVE alias와
+영문 설명, CVSS metric, CPE criteria, 참조 URL을 보존하고, 원본 feed는 빌드 PC에서
+별도 보관합니다.
 
 검증된 번들은 `vuln-data` Docker 볼륨의 `releases/`에 staging 후 이동되며,
 `current` 심볼릭 링크만 원자적으로 전환됩니다. worker는

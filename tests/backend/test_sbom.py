@@ -34,6 +34,11 @@ def test_rejects_xml_doctype() -> None:
         parse_sbom(b'<!DOCTYPE bom [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><bom>&xxe;</bom>')
 
 
+def test_rejects_xml_doctype_after_long_prolog() -> None:
+    with pytest.raises(SbomValidationError, match="DTD"):
+        parse_sbom(b"<bom>" + (b" " * 5000) + b"<!DOCTYPE bom><components/></bom>")
+
+
 def test_parses_cyclonedx_xml() -> None:
     raw = b"""<?xml version="1.0"?>
     <bom xmlns="http://cyclonedx.org/schema/bom/1.5" serialNumber="urn:uuid:test">
