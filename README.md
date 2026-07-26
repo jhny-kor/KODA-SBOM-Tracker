@@ -10,6 +10,12 @@ docker compose build portal-web portal-api portal-worker
 docker compose up -d
 ```
 
+폐쇄망 Linux `x86_64` 서버에 반입할 때는 인터넷 연결 `linux/amd64` 빌드 PC에서
+`./scripts/build-airgap-release.sh ./dist/koda-sbom-airgap.tar.gz`를 실행합니다.
+이 단일 압축파일에는 현재 포털 소스, compose/deploy/운영 스크립트, 고정 이미지 tar와
+SHA-256 manifest가 들어가며 실제 `.env`는 포함되지 않습니다. 상세 설치·기동은
+[오프라인 번들 가이드](docs/offline-bundle-ko.md)를 따릅니다.
+
 처음 기동하기 전에 `.env`의 모든 `change-me-*` 값과 공개 URL을 교체합니다.
 Dependency-Track에서 전용 팀/API 키를 만든 뒤 BOM 업로드·프로젝트 생성·조회
 권한만 부여하여 `TRACKER_DEPENDENCY_TRACK_API_KEY`에 넣습니다. 키는 브라우저로
@@ -31,6 +37,12 @@ API 명세는 외부 gateway에 공개하지 않으며 `portal-api` 내부의 `/
 확인할 수 있습니다. 원본 SBOM은 SHA-256 콘텐츠 주소 저장소에 보존됩니다.
 포털은 `/`, 공식 Dependency-Track UI는
 `/dependency-track/`입니다.
+
+KODA Linux 대시보드에서 결과 화면에 포털 링크를 넣을 때는
+`KODA_SSBOM_TRACKER_URL=http://<tracker-host>:8088/?page=runs`를 사용합니다.
+포털 회차 ID를 알고 있으면 `?page=runs&runId=<uuid>`를 붙여 해당 회차 상세가
+자동으로 열립니다. 이 링크는 브라우저 세션을 우회하지 않으며, 로그인 후에만
+회차가 조회됩니다.
 
 취약점 데이터 bundle을 호스트에서 반입·롤백한 뒤 포털의 `취약점 데이터` 화면에서
 `반입 상태 동기화`를 실행해야 DB 감사 이력과 활성 기준일이 갱신됩니다. 설정 화면에서는

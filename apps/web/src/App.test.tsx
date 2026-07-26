@@ -3,7 +3,10 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import App from "./App";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  window.history.replaceState(null, "", "/");
+});
 
 describe("KODA SBOM Tracker", () => {
   it("renders dense run history and opens comparison", () => {
@@ -19,5 +22,12 @@ describe("KODA SBOM Tracker", () => {
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: /SBOM 업로드/ }));
     expect(screen.getByRole("dialog", { name: "SBOM 업로드" })).toBeInTheDocument();
+  });
+
+  it("opens a run from a KODA deep link", () => {
+    window.history.replaceState(null, "", "/?runId=run-1");
+    render(<App />);
+    expect(screen.getByRole("heading", { name: "1.4.2 · 3차" })).toBeInTheDocument();
+    expect(screen.getAllByText("결제 API").length).toBeGreaterThan(0);
   });
 });

@@ -45,6 +45,25 @@ const nav: { id: Page; label: string; icon: string }[] = [
   { id: "settings", label: "설정", icon: "settings" },
 ];
 
+const pageIds = new Set<Page>(nav.map((item) => item.id));
+
+function readPortalLink() {
+  const params = new URLSearchParams(window.location.search);
+  const requestedPage = params.get("page");
+  return {
+    page: requestedPage && pageIds.has(requestedPage as Page) ? requestedPage as Page : "runs" as Page,
+    runId: params.get("runId") || "",
+  };
+}
+
+function replacePortalLink(updates: { page?: Page; runId?: string | null }) {
+  const url = new URL(window.location.href);
+  if (updates.page) url.searchParams.set("page", updates.page);
+  if (updates.runId === null) url.searchParams.delete("runId");
+  if (updates.runId) url.searchParams.set("runId", updates.runId);
+  window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+}
+
 function stateLabel(state: SbomRun["state"]) {
   return { completed: "완료", processing: "처리 중", partial: "일부 실패", failed: "실패", queued: "대기", archived: "보관" }[state];
 }
@@ -540,7 +559,8 @@ function LoginPage({ onAuthenticated }: { onAuthenticated: () => void }) {
 export default function App() {
   const demoServices = [...new Map(demoRuns.map((run) => [run.service.id, run.service])).values()];
   const demoEnvironments = [...new Map(demoRuns.map((run) => [run.environment.id, run.environment])).values()];
-  const [page, setPage] = useState<Page>("runs");
+  const [initialLink] = useState(readPortalLink);
+  const [page, setPage] = useState<Page>(initialLink.page);
   const [collapsed, setCollapsed] = useState(false);
   const [globalSearch, setGlobalSearch] = useState("");
   const [runs, setRuns] = useState<SbomRun[]>(demoMode ? demoRuns : []);
@@ -554,12 +574,35 @@ export default function App() {
   const [tokens, setTokens] = useState<ApiTokenSummary[]>([]);
   const [dtrackStatus, setDtrackStatus] = useState<DependencyTrackStatus | null>(null);
   const [uploadOpen, setUploadOpen] = useState(false);
-  const [selectedRun, setSelectedRun] = useState<SbomRun | null>(null);
+  const [selectedRun, setSelectedRun] = useState<SbomRun | null>(() =>
+    initialLink.runId ? demoRuns.find((run) => run.id === initialLink.runId) || null : null,
+  );
+  const openRun = useCallback((run: SbomRun) => {
+    setPage("runs");
+    setSelectedRun(run);
+    replacePortalLink({ page: "runs", runId: run.id });
+  }, []);
+  const closeRun = useCallback(() => {
+    setSelectedRun(null);
+    replacePortalLink({ runId: null });
+  }, []);
+  const navigate = useCallback((nextPage: Page) => {
+    setPage(nextPage);
+    if (nextPage !== "runs") setSelectedRun(null);
+    replacePortalLink(nextPage === "runs" ? { page: nextPage } : { page: nextPage, runId: null });
+  }, []);
   const loadData = useCallback(async () => {
     const [nextRuns, catalogs] = await Promise.all([fetchRuns(), fetchCatalogs()]);
     setRuns(nextRuns);
     setServices(catalogs.services);
     setEnvironments(catalogs.environments);
+    if (initialLink.runId) {
+      const linkedRun = nextRuns.find((run) => run.id === initialLink.runId);
+      if (linkedRun) {
+        setPage("runs");
+        setSelectedRun(linkedRun);
+      }
+    }
     if (!demoMode) {
       const [auditResult, usersResult, bundlesResult, tokensResult, dtrackResult] = await Promise.allSettled([
         fetchAuditEvents(),
@@ -585,7 +628,7 @@ export default function App() {
         vuln: bundlesResult.status === "fulfilled" ? bundlesResult.value.map((item) => [item.version, `Grype schema ${item.grypeDbSchema}`, item.manifestSha256.slice(0, 16), `${item.active ? "활성" : "보관"} · ${item.dataAsOf}`]) : [],
       });
     }
-  }, []);
+  }, [initialLink.runId]);
   useEffect(() => {
     if (demoMode) return;
     resumeSession()
@@ -597,21 +640,21 @@ export default function App() {
     listener(); window.addEventListener("resize", listener); return () => window.removeEventListener("resize", listener);
   }, []);
   const content = useMemo(() => {
-    if (page === "runs") return <RunsPage runs={runs} search={globalSearch} onUpload={() => setUploadOpen(true)} onSelect={setSelectedRun} />;
+    if (page === "runs") return <RunsPage runs={runs} search={globalSearch} onUpload={() => setUploadOpen(true)} onSelect={openRun} />;
     if (page === "compare") return <ComparePage runs={runs} />;
     if (page === "services") return <ServicesPage services={services} environments={environments} onChanged={() => void loadData()} />;
     if (page === "vuln") return <VulnerabilityPage bundles={bundles} onSync={async () => { const items = await syncVulnerabilityBundles(); setBundles(items); }} onActivate={async (version) => { await activateVulnerabilityBundle(version); const items = await fetchVulnerabilityBundles(); setBundles(items); }} />;
     if (page === "audit") return <AuditPage events={auditEvents} />;
     if (page === "settings") return <SettingsPage users={users} services={services} tokens={tokens} dtrackStatus={dtrackStatus} onChanged={() => void loadData()} />;
     return <GenericPage rows={genericRows.dashboard || []} />;
-  }, [auditEvents, bundles, dtrackStatus, environments, genericRows, globalSearch, loadData, page, runs, services, tokens, users]);
+  }, [auditEvents, bundles, dtrackStatus, environments, genericRows, globalSearch, loadData, openRun, page, runs, services, tokens, users]);
   if (authenticated === null) return <div className="auth-loading">세션을 확인하고 있습니다…</div>;
   if (!authenticated) return <LoginPage onAuthenticated={() => { setAuthenticated(true); void loadData(); }} />;
   return <div className={`app-shell ${collapsed ? "is-collapsed" : ""}`}>
-    <Sidebar page={page} collapsed={collapsed} onNavigate={setPage} />
+    <Sidebar page={page} collapsed={collapsed} onNavigate={navigate} />
     <Header collapsed={collapsed} search={globalSearch} onSearch={setGlobalSearch} dataAsOf={runs.map((run) => run.dataAsOf).filter(Boolean).sort().at(-1) || ""} onToggle={() => setCollapsed((value) => !value)} onLogout={() => { void logout().finally(() => setAuthenticated(false)); }} />
     <main>{content}</main>
     {uploadOpen && <UploadModal services={services} environments={environments} onClose={() => setUploadOpen(false)} onUploaded={() => { setUploadOpen(false); void loadData(); }} />}
-    {selectedRun && <RunDetail run={selectedRun} onClose={() => setSelectedRun(null)} onChanged={() => void loadData()} />}
+    {selectedRun && <RunDetail run={selectedRun} onClose={closeRun} onChanged={() => void loadData()} />}
   </div>;
 }

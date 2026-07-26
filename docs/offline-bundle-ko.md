@@ -13,6 +13,48 @@
 
 ## 2. 생성
 
+### 단일 폐쇄망 릴리스 압축파일(권장)
+
+Docker Engine과 인터넷이 연결된 `linux/amd64` 빌드 PC에서 실행합니다. 포털 소스,
+compose, 운영 스크립트, 10개 이상의 이미지 tar, manifest를 하나의 `tar.gz`로 묶습니다.
+취약점 데이터 bundle은 선택적으로 함께 포함할 수 있습니다.
+
+```bash
+./scripts/build-airgap-release.sh ./dist/koda-sbom-airgap.tar.gz
+# 선택: --vuln-bundle ./dist/vuln-bundle/<version>
+```
+
+폐쇄망 서버에서는 압축파일과 별도 운영 `.env`를 반입한 뒤 설치합니다. `.env`는
+압축파일에 포함되지 않으며 `change-me-*` 값을 사용할 수 없습니다.
+
+```bash
+mkdir -p /tmp/koda-sbom-release
+tar -xzf ./koda-sbom-airgap.tar.gz -C /tmp/koda-sbom-release
+sudo /tmp/koda-sbom-release/scripts/install-airgap.sh ./koda-sbom-airgap.tar.gz /opt/koda-sbom \
+  --env-file /tmp/koda-sbom.env
+```
+
+`/tmp/koda-sbom.env`는 반입 전에 `.env.example`을 복사해 실제 비밀번호·키·서버 주소로
+수정한 파일입니다. 설치 스크립트가 이를 `/opt/koda-sbom/.env`로 복사합니다.
+
+설치 후 재기동은 다음과 같습니다.
+
+```bash
+sudo /opt/koda-sbom/scripts/start-airgap.sh /opt/koda-sbom/.env
+```
+
+기본 웹 주소는 `http://<폐쇄망 서버>:8088/`이며, KODA 화면의 SBOM Tracker 버튼은
+이 주소의 `/?page=runs`로 연결하면 로그인 후 회차 목록을 바로 엽니다.
+
+압축파일의 해시와 manifest는 설치 전에 확인합니다.
+
+```bash
+sha256sum -c koda-sbom-airgap.tar.gz.sha256
+./scripts/verify-airgap-release.sh ./koda-sbom-airgap.tar.gz
+```
+
+### 기존 디렉터리 번들
+
 ```bash
 ./scripts/build-offline-bundle.sh
 ```
@@ -30,6 +72,20 @@
 ./scripts/verify-offline-bundle.sh ./dist/offline-bundle/<timestamp>
 ./scripts/import-offline-bundle.sh ./dist/offline-bundle/<timestamp>
 ```
+
+반입 후 `config/`를 운영 디렉터리로 복사하고 실제 비밀값을 넣은 `.env`를 준비합니다.
+placeholder와 DB URL 불일치를 차단한 뒤, 빌드·pull 없는 모드로 기동합니다.
+
+```bash
+./scripts/preflight-airgap.sh /path/to/.env
+docker compose --env-file /path/to/.env \
+  -f compose.yaml -f compose.airgap.yaml \
+  up -d --no-build --pull never
+```
+
+`DTRACK_API_BASE_URL`은 폐쇄망 서버에서 접근 가능한 gateway URL의 `/api` 주소여야
+합니다(예: `http://sbom-server:8088/dependency-track/api`). `dtrack-apiserver`,
+`localhost`, `127.0.0.1` 주소는 preflight에서 거부됩니다.
 
 ## 4. 취약점 데이터 반입 규칙
 
