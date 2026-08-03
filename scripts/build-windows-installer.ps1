@@ -19,6 +19,7 @@ $envExample = Join-Path $RootDir ".env.example"
 $composeFile = Join-Path $RootDir "compose.yaml"
 $airgapComposeFile = Join-Path $RootDir "compose.airgap.yaml"
 $issFile = Join-Path $RootDir "installer\koda-sbom-tracker.iss"
+. (Join-Path $PSScriptRoot "resolve-docker-cli.ps1")
 
 function Invoke-Checked {
     param(
@@ -81,9 +82,7 @@ function Resolve-InnoSetup {
     throw "Inno Setup 6의 ISCC.exe를 찾을 수 없습니다. 설치 후 -InnoSetupPath 또는 ISCC 환경변수를 지정하세요."
 }
 
-if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
-    throw "Docker CLI를 찾을 수 없습니다. Docker Desktop을 설치하세요."
-}
+Initialize-KodaDockerCliPath
 if (-not (Test-Path -LiteralPath $envExample)) { throw "파일이 없습니다: $envExample" }
 if (-not (Test-Path -LiteralPath $composeFile)) { throw "파일이 없습니다: $composeFile" }
 if (-not (Test-Path -LiteralPath $airgapComposeFile)) { throw "파일이 없습니다: $airgapComposeFile" }

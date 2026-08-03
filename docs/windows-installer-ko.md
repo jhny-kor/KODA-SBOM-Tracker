@@ -22,8 +22,15 @@ Windows x64 빌드 PC에 다음을 설치합니다.
 2. Inno Setup 6을 설치합니다.
 3. 저장소를 clone합니다.
 
-Docker Desktop이 실행 중이고 `docker info`가 성공해야 합니다. Inno Setup이 기본 경로가 아닌
-곳에 있으면 `ISCC.exe` 경로를 직접 지정합니다.
+Docker Desktop이 실행 중이고 `docker info`가 성공해야 합니다. 설치 직후 기존 PowerShell 창을
+재사용하지 말고 새 창을 열어 다음을 먼저 확인합니다.
+
+```powershell
+docker --version
+docker info
+```
+
+Inno Setup이 기본 경로가 아닌 곳에 있으면 `ISCC.exe` 경로를 직접 지정합니다.
 
 ## 설치파일 빌드
 
@@ -118,6 +125,9 @@ named volume 데이터는 삭제하지 않습니다. 볼륨을 삭제하는 명�
 
 ## 문제 해결
 
+- `Docker CLI를 찾을 수 없습니다`: Docker Desktop을 설치·실행한 뒤 PowerShell을 새로 열고
+  `docker --version`을 확인합니다. 스크립트는 Docker Desktop의 표준 설치 경로도 자동으로
+  확인합니다.
 - `Docker Desktop이 실행 중이 아닙니다`: Docker Desktop을 시작하고 다시 실행합니다.
 - `예시 값입니다`: 설치 디렉터리 `.env`의 `change-me-*`와 API 키를 수정합니다.
 - 포트 충돌: `.env`의 `PUBLIC_HTTP_PORT`를 사용하지 않는 포트로 바꾸고 다시 시작합니다.

@@ -16,6 +16,7 @@ $ComposeFiles = @(
     "-f", (Join-Path $RootDir "compose.yaml"),
     "-f", (Join-Path $RootDir "compose.airgap.yaml")
 )
+. (Join-Path $PSScriptRoot "resolve-docker-cli.ps1")
 
 function Invoke-Checked {
     param(
@@ -49,9 +50,7 @@ function Get-DotEnvValue {
 }
 
 function Assert-DockerReady {
-    if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
-        throw "Docker CLI를 찾을 수 없습니다. Docker Desktop을 설치한 뒤 다시 실행하세요."
-    }
+    Initialize-KodaDockerCliPath
     & docker info *> $null
     if ($LASTEXITCODE -ne 0) {
         throw "Docker Desktop이 실행 중이 아닙니다. Docker Desktop을 시작한 뒤 다시 실행하세요."
