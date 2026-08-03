@@ -10,6 +10,12 @@ docker compose build portal-web portal-api portal-worker
 docker compose up -d
 ```
 
+Windows x64에서 설치파일로 실행하려면 Docker Desktop(Linux containers)과 Inno Setup 6을
+준비한 뒤 `.\scripts\build-windows-installer.ps1`를 실행합니다. 생성된
+`dist\windows\KODA-SBOM-Tracker-Setup.exe`는 전체 Compose 스택을 설치하고 시작 메뉴에서
+대시보드를 열 수 있게 합니다. 상세 절차는 [Windows 설치파일 가이드](docs/windows-installer-ko.md)를
+참고합니다.
+
 폐쇄망 Linux `x86_64` 서버에 반입할 때는 인터넷 연결 `linux/amd64` 빌드 PC에서
 `./scripts/build-airgap-release.sh ./dist/koda-sbom-airgap.tar.gz`를 실행합니다.
 이 단일 압축파일에는 현재 포털 소스, compose/deploy/운영 스크립트, 고정 이미지 tar와
@@ -53,6 +59,7 @@ KODA Linux 대시보드에서 결과 화면에 포털 링크를 넣을 때는
 
 - [운영 가이드](docs/operations-ko.md)
 - [오프라인 번들 가이드](docs/offline-bundle-ko.md)
+- [Windows 설치파일 가이드](docs/windows-installer-ko.md)
 
 주의:
 
