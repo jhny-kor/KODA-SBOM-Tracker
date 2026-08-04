@@ -72,11 +72,64 @@ dist\windows\KODA-SBOM-Tracker-Setup.exe
 검증은 PowerShell 문법·파일 구성 확인까지이며, 최종 설치·기동 smoke test는 Windows에서
 수행해야 합니다.
 
-## Docker 없는 UI 미리보기
+## Docker 없는 Windows 설치파일
 
-로그인 없이 SBOM 업로드 화면과 분석 결과 디자인만 확인할 때는 전체 설치파일 대신 웹 앱의
-standalone 미리보기를 사용합니다. 이 경로에는 Docker Desktop과 Inno Setup이 필요하지 않지만,
-Windows에 Node.js LTS가 필요합니다.
+로그인 없이 SBOM 업로드와 웹 대시보드 화면만 확인하는 별도 설치파일입니다. 이 설치파일은
+전체 Compose 스택과 다른 제품으로, 빌드 PC에서만 Node.js LTS와 Inno Setup 6이 필요하고
+설치 대상 Windows PC에는 Docker Desktop·Node.js가 필요하지 않습니다.
+
+### 빌드 PC 준비 및 빌드
+
+Windows x64 빌드 PC에 다음을 설치합니다.
+
+1. Node.js LTS를 설치합니다.
+2. Inno Setup 6을 설치합니다.
+3. 저장소를 clone합니다.
+
+Docker Desktop은 설치하거나 실행할 필요가 없습니다. 저장소 루트에서 다음을 실행합니다.
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+.\scripts\build-windows-preview-installer.ps1
+```
+
+출력 파일:
+
+```text
+dist\windows\KODA-SBOM-Tracker-Preview-Setup.exe
+```
+
+`node_modules`가 이미 준비된 반복 빌드는 npm 설치를 건너뛸 수 있습니다.
+
+```powershell
+.\scripts\build-windows-preview-installer.ps1 -SkipNpmInstall
+```
+
+### 대상 PC 설치 및 사용
+
+1. `KODA-SBOM-Tracker-Preview-Setup.exe`를 실행합니다. 기본 설치는 현재 사용자 영역에
+   이루어지므로 관리자 권한이 필요하지 않습니다.
+2. 설치가 끝나면 시작 메뉴의 `KODA SBOM Tracker Preview`를 실행합니다.
+3. 브라우저에서 `http://127.0.0.1:5173/?page=dashboard`가 열리면 `SBOM 업로드`를
+   선택합니다.
+4. CycloneDX JSON 또는 XML 파일을 올리고 생성된 `로컬 미리보기` 회차의 상세 화면에서
+   구성요소·취약점·KEV 표시를 확인합니다.
+
+설치파일은 빌드된 정적 웹 파일과 Windows 10/11에 기본 포함된 Windows PowerShell 정적 서버만 포함합니다. 서버는
+`127.0.0.1`에서만 동작하며 업로드된 SBOM과 결과는 브라우저 메모리에만 저장됩니다.
+새로고침하면 회차가 사라지고, 설치 제거 시 로컬 서버도 중지됩니다. 파일 크기는 25 MiB
+이하입니다.
+
+이 경로는 화면·업로드·SBOM에 이미 포함된 취약점 표시를 확인하는 Preview입니다. Grype DB
+조회, 실제 취약점 재분석, Dependency-Track 연동, 로그인, PostgreSQL, 정책 판정, 영구 저장은
+수행하지 않습니다. 전체 분석 운영이 필요하면 위의 Docker 설치파일 또는 Linux 서버를
+사용해야 합니다.
+
+## Docker 없는 개발용 UI 미리보기
+
+설치파일을 만들지 않고 소스에서 바로 화면을 확인할 때 사용하는 개발 실행 방식입니다.
+이 경로에는 Docker Desktop과 Inno Setup이 필요하지 않지만, 실행하는 Windows에 Node.js LTS가
+필요합니다.
 
 PowerShell에서 저장소 루트로 이동해 실행합니다.
 
@@ -109,9 +162,9 @@ npm run build
 npm run preview -- --host 127.0.0.1 --port 4173
 ```
 
-이 경로는 현재 `KODA-SBOM-Tracker-Setup.exe`에 포함된 Docker Compose 설치파일과 별개인
-UI 검증용 실행 방식입니다. Docker 없는 실제 취약점 분석 서버나 완전한 네이티브 EXE가
-필요해지는 시점에는 Grype 실행 파일·DB·로컬 저장소를 포함한 별도 런타임을 추가해야 합니다.
+이 경로와 Preview 설치파일은 현재 `KODA-SBOM-Tracker-Setup.exe`에 포함된 Docker Compose
+설치파일과 별개입니다. Docker 없는 실제 취약점 분석 서버나 완전한 네이티브 EXE가 필요해지는
+시점에는 Grype 실행 파일·DB·로컬 저장소를 포함한 별도 런타임을 추가해야 합니다.
 
 ## 설치 및 최초 설정
 
