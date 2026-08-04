@@ -16,6 +16,12 @@ Windows x64에서 설치파일로 실행하려면 Docker Desktop(Linux container
 대시보드를 열 수 있게 합니다. 상세 절차는 [Windows 설치파일 가이드](docs/windows-installer-ko.md)를
 참고합니다.
 
+로그인·Docker 없이 Windows에서 SBOM 업로드와 화면만 확인하려면 Node.js LTS를 설치한 뒤
+`.\scripts\start-windows-preview.ps1 -OpenBrowser`를 실행합니다. 이 미리보기는 CycloneDX
+JSON/XML의 구성요소와 파일에 내장된 취약점 레코드만 브라우저 메모리에서 표시하며, Grype·Dependency-Track
+분석과 영구 저장은 수행하지 않습니다. 상세 절차는 [Windows 설치파일 가이드](docs/windows-installer-ko.md)의
+Docker 없는 UI 미리보기 절을 참고합니다.
+
 폐쇄망 Linux `x86_64` 서버에 반입할 때는 인터넷 연결 `linux/amd64` 빌드 PC에서
 `./scripts/build-airgap-release.sh ./dist/koda-sbom-airgap.tar.gz`를 실행합니다.
 이 단일 압축파일에는 현재 포털 소스, compose/deploy/운영 스크립트, 고정 이미지 tar와

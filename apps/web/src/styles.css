@@ -185,6 +185,7 @@ tbody tr:hover { background: #f4fbfb; }
 .modal form small { color: var(--muted); font-weight: 400; }
 .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 .form-message { color: var(--teal-dark); margin: 0; font-size: 13px; }
+.preview-note { margin: 0; padding: 11px 12px; border: 1px solid #9ed7d9; background: #effafa; color: #23666b; font-size: 12px; line-height: 1.55; }
 .modal footer { display: flex; justify-content: flex-end; gap: 10px; margin-top: 5px; }
 .drawer-backdrop { place-items: stretch end; }
 .detail-drawer { width: min(520px, 100vw); height: 100vh; background: white; box-shadow: -12px 0 42px rgba(0,0,0,.17); padding-bottom: 220px; position: relative; overflow-y: auto; }
@@ -201,6 +202,8 @@ tbody tr:hover { background: #f4fbfb; }
 .archive-form input { min-width: 0; height: 36px; border: 1px solid var(--border-dark); border-radius: 4px; padding: 0 10px; }
 
 .auth-loading, .login-page { min-height: 100vh; display: grid; place-items: center; background: #eef3f5; }
+.standalone-banner { display: flex; gap: 10px; align-items: baseline; padding: 9px 20px; border-bottom: 1px solid #9ed7d9; background: #effafa; color: #23666b; font-size: 12px; }
+.standalone-banner strong { font-size: 13px; }
 .auth-loading { color: var(--muted); }
 .login-card { width: min(420px, calc(100vw - 30px)); background: #fff; border: 1px solid var(--border); border-radius: 8px; padding: 36px; box-shadow: 0 18px 48px rgba(6, 36, 56, .12); }
 .login-mark { display: grid; place-items: center; width: 42px; height: 42px; background: var(--navy); color: white; font-size: 22px; font-weight: 750; margin-bottom: 18px; }

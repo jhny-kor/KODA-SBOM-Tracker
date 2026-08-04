@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
   demoMode,
+  previewMode,
+  standaloneMode,
   activateVulnerabilityBundle,
   archiveRun,
   createApiToken,
@@ -68,7 +70,7 @@ function stateLabel(state: SbomRun["state"]) {
   return { completed: "완료", processing: "처리 중", partial: "일부 실패", failed: "실패", queued: "대기", archived: "보관" }[state];
 }
 
-function Header({ collapsed, onToggle, onLogout, dataAsOf, search, onSearch }: { collapsed: boolean; onToggle: () => void; onLogout: () => void; dataAsOf: string; search: string; onSearch: (value: string) => void }) {
+function Header({ collapsed, onToggle, onLogout, dataAsOf, search, onSearch, preview }: { collapsed: boolean; onToggle: () => void; onLogout: () => void; dataAsOf: string; search: string; onSearch: (value: string) => void; preview: boolean }) {
   return (
     <header className="topbar">
       <button className="icon-button menu-button" onClick={onToggle} aria-label={collapsed ? "사이드바 펼치기" : "사이드바 접기"}>
@@ -83,7 +85,7 @@ function Header({ collapsed, onToggle, onLogout, dataAsOf, search, onSearch }: {
       <div className="freshness"><span className="online-dot" />오프라인 데이터 기준일: {dataAsOf || "미반입"} <span className="info">i</span></div>
       <span className="divider" />
       <button className="icon-button" aria-label="알림"><Icon name="bell" /></button>
-      <button className="user-menu" onClick={onLogout} title="로그아웃"><Icon name="user" /><span>보안운영팀</span><Icon name="chevron" /></button>
+      <button className="user-menu" onClick={preview ? undefined : onLogout} title={preview ? "로컬 미리보기 모드" : "로그아웃"}><Icon name="user" /><span>{preview ? "미리보기" : "보안운영팀"}</span><Icon name="chevron" /></button>
     </header>
   );
 }
@@ -327,11 +329,12 @@ function UploadModal({
   services: CatalogItem[];
   environments: CatalogItem[];
   onClose: () => void;
-  onUploaded: () => void;
+  onUploaded: (runId: string) => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [jobId, setJobId] = useState("");
+  const [runId, setRunId] = useState("");
   const [jobState, setJobState] = useState<"queued" | "running" | "completed" | "failed" | "">("");
   const notified = useRef(false);
   useEffect(() => {
@@ -346,7 +349,7 @@ function UploadModal({
           notified.current = true;
           setBusy(false);
           setMessage("SBOM 분석이 완료되었습니다.");
-          setTimeout(() => { if (!cancelled) onUploaded(); }, 250);
+          setTimeout(() => { if (!cancelled) onUploaded(runId); }, 250);
         } else if (job.state === "failed") {
           setBusy(false);
           setMessage(job.error || "SBOM 처리 작업이 실패했습니다.");
@@ -358,13 +361,14 @@ function UploadModal({
     void poll();
     const timer = window.setInterval(() => void poll(), 1200);
     return () => { cancelled = true; window.clearInterval(timer); };
-  }, [jobId, onUploaded]);
+  }, [jobId, onUploaded, runId]);
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setBusy(true); setMessage("");
     try {
       const result = await uploadRun(new FormData(event.currentTarget));
       notified.current = false;
+      setRunId(result.runId);
       setJobId(result.jobId);
       setJobState("queued");
       setMessage("SBOM을 접수했습니다. 분석 작업 상태를 확인하고 있습니다…");
@@ -376,8 +380,8 @@ function UploadModal({
   return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><section className="modal" role="dialog" aria-modal="true" aria-labelledby="upload-title">
     <header><h2 id="upload-title">SBOM 업로드</h2><button className="icon-button" onClick={onClose}><Icon name="close" /></button></header>
     <form onSubmit={submit}>
-      <label>서비스<select name="serviceId" required>{services.map((service) => <option key={service.id} value={service.id}>{service.name}</option>)}</select></label>
-      <div className="form-row"><label>환경<select name="environmentId" required>{environments.map((environment) => <option key={environment.id} value={environment.id}>{environment.name}</option>)}</select></label><label>릴리스<input name="releaseVersion" placeholder="예: 1.4.2" required /></label></div>
+      {standaloneMode ? <p className="preview-note">로그인·서버 없이 브라우저에서 CycloneDX 구조와 파일에 포함된 취약점 레코드만 분석합니다.</p> : <label>서비스<select name="serviceId" required>{services.map((service) => <option key={service.id} value={service.id}>{service.name}</option>)}</select></label>}
+      <div className="form-row">{!standaloneMode && <label>환경<select name="environmentId" required>{environments.map((environment) => <option key={environment.id} value={environment.id}>{environment.name}</option>)}</select></label>}<label>{standaloneMode ? "릴리스 (선택)" : "릴리스"}<input name="releaseVersion" placeholder="예: 1.4.2" defaultValue={standaloneMode ? "preview" : undefined} required={!standaloneMode} /></label></div>
       <label>SBOM 파일<input name="sbom" type="file" accept=".json,.xml,application/json,application/xml" required /><small>CycloneDX JSON/XML, 최대 25 MiB</small></label>
       <label>메모<textarea name="note" rows={3} placeholder="변경 사유 또는 배포 식별자" /></label>
       {message && <p className="form-message" role="status">{message}{jobState && <small> · 작업 상태: {jobState}</small>}</p>}
@@ -409,7 +413,7 @@ function RunDetail({ run, onClose, onChanged }: { run: SbomRun; onClose: () => v
     <h3>분석 리비전</h3><ul className="paths">{detail?.analyses?.length ? detail.analyses.map((analysis) => <li key={analysis.id}>r{analysis.sequence} · {analysis.state} · {analysis.dataAsOf || "기준일 미상"}{analysis.error ? ` · ${analysis.error}` : ""}</li>) : <li>상세를 불러오는 중이거나 분석 리비전이 없습니다.</li>}</ul>
     <h3>구성요소 검사기 ({components.length})</h3><div className="table-scroll"><table><thead><tr><th>이름</th><th>버전</th><th>PURL</th><th>라이선스</th></tr></thead><tbody>{components.slice(0, 100).map((component) => <tr key={component.identityKey}><td>{component.name}</td><td>{component.version || "-"}</td><td className="mono">{component.purl || component.bomRef || "-"}</td><td>{component.licenses?.length ? component.licenses.map((license) => typeof license === "string" ? license : String((license as { license?: { id?: string; name?: string } }).license?.id || (license as { license?: { id?: string; name?: string } }).license?.name || "식별 불가")).join(", ") : "-"}</td></tr>)}{!components.length && <tr><td colSpan={4}>구성요소 상세가 없습니다.</td></tr>}</tbody></table></div>
     <h3>취약점 검사기 ({findings.length})</h3><div className="table-scroll"><table><thead><tr><th>식별자</th><th>심각도</th><th>구성요소</th><th>KEV</th></tr></thead><tbody>{findings.slice(0, 100).map((finding, index) => <tr key={`${String(finding.canonicalId || finding.id || "finding")}-${index}`}><td className="mono">{String(finding.canonicalId || finding.id || "식별자 없음")}</td><td>{String(finding.severity || "Unknown")}</td><td className="mono">{String(finding.component || "-")}</td><td>{finding.kev ? "KEV" : "-"}</td></tr>)}{!findings.length && <tr><td colSpan={4}>취약점 결과가 없습니다.</td></tr>}</tbody></table></div>
-    <div className="drawer-actions">{message && <p className="form-message" role="status">{message}</p>}{current.dependencyTrackError && <p className="drawer-error">{current.dependencyTrackError}</p>}<div className="drawer-action-row"><button className="secondary" disabled={busy || current.state === "archived"} onClick={() => void runAction(() => retryDependencyTrack(current.id), "Dependency-Track 재시도를 접수했습니다.")}>DTrack 재시도</button><button className="secondary" disabled={busy || current.state === "archived"} onClick={() => void runAction(() => createAnalysis(current.id), "새 분석 리비전을 접수했습니다.")}>새 분석 리비전</button></div><div className="drawer-action-row"><a className="secondary" href={`/api/v1/sbom-runs/${current.id}/artifact`}>원본 SBOM 내려받기</a><a className="primary" href="/dependency-track/" target="_blank" rel="noreferrer">Dependency-Track에서 열기 <Icon name="external" /></a></div>{current.state !== "archived" && <form className="archive-form" onSubmit={(event) => { event.preventDefault(); if (archiveReason.trim()) void runAction(() => archiveRun(current.id, archiveReason.trim()), "회차를 논리 보관했습니다."); }}><input aria-label="보관 사유" placeholder="보관 사유" value={archiveReason} onChange={(event) => setArchiveReason(event.target.value)} /><button className="secondary" disabled={busy || !archiveReason.trim()}>논리 보관</button></form>}</div>
+    <div className="drawer-actions">{message && <p className="form-message" role="status">{message}</p>}{standaloneMode ? <p className="preview-note">미리보기 모드에서는 원본 파일을 저장하거나 Grype·Dependency-Track을 실행하지 않습니다.</p> : <>{current.dependencyTrackError && <p className="drawer-error">{current.dependencyTrackError}</p>}<div className="drawer-action-row"><button className="secondary" disabled={busy || current.state === "archived"} onClick={() => void runAction(() => retryDependencyTrack(current.id), "Dependency-Track 재시도를 접수했습니다.")}>DTrack 재시도</button><button className="secondary" disabled={busy || current.state === "archived"} onClick={() => void runAction(() => createAnalysis(current.id), "새 분석 리비전을 접수했습니다.")}>새 분석 리비전</button></div><div className="drawer-action-row"><a className="secondary" href={`/api/v1/sbom-runs/${current.id}/artifact`}>원본 SBOM 내려받기</a><a className="primary" href="/dependency-track/" target="_blank" rel="noreferrer">Dependency-Track에서 열기 <Icon name="external" /></a></div>{current.state !== "archived" && <form className="archive-form" onSubmit={(event) => { event.preventDefault(); if (archiveReason.trim()) void runAction(() => archiveRun(current.id, archiveReason.trim()), "회차를 논리 보관했습니다."); }}><input aria-label="보관 사유" placeholder="보관 사유" value={archiveReason} onChange={(event) => setArchiveReason(event.target.value)} /><button className="secondary" disabled={busy || !archiveReason.trim()}>논리 보관</button></form>}</>}</div>
   </aside></div>;
 }
 
@@ -563,10 +567,10 @@ export default function App() {
   const [page, setPage] = useState<Page>(initialLink.page);
   const [collapsed, setCollapsed] = useState(false);
   const [globalSearch, setGlobalSearch] = useState("");
-  const [runs, setRuns] = useState<SbomRun[]>(demoMode ? demoRuns : []);
-  const [services, setServices] = useState<CatalogItem[]>(demoMode ? demoServices : []);
-  const [environments, setEnvironments] = useState<CatalogItem[]>(demoMode ? demoEnvironments : []);
-  const [authenticated, setAuthenticated] = useState<boolean | null>(demoMode ? true : null);
+  const [runs, setRuns] = useState<SbomRun[]>(previewMode ? demoRuns : []);
+  const [services, setServices] = useState<CatalogItem[]>(previewMode ? demoServices : []);
+  const [environments, setEnvironments] = useState<CatalogItem[]>(previewMode ? demoEnvironments : []);
+  const [authenticated, setAuthenticated] = useState<boolean | null>(previewMode ? true : null);
   const [genericRows, setGenericRows] = useState<Record<string, string[][]>>({});
   const [bundles, setBundles] = useState<VulnerabilityBundle[]>([]);
   const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
@@ -603,7 +607,7 @@ export default function App() {
         setSelectedRun(linkedRun);
       }
     }
-    if (!demoMode) {
+    if (!demoMode && !standaloneMode) {
       const [auditResult, usersResult, bundlesResult, tokensResult, dtrackResult] = await Promise.allSettled([
         fetchAuditEvents(),
         fetchUsers(),
@@ -626,11 +630,25 @@ export default function App() {
         audit: auditResult.status === "fulfilled" ? auditResult.value.map((item) => [item.actor, item.action, `${item.targetType}:${item.targetId}`, item.createdAt]) : [],
         settings: usersResult.status === "fulfilled" ? usersResult.value.map((item) => [item.username, item.role, item.active ? "활성" : "비활성", "-"]) : [],
         vuln: bundlesResult.status === "fulfilled" ? bundlesResult.value.map((item) => [item.version, `Grype schema ${item.grypeDbSchema}`, item.manifestSha256.slice(0, 16), `${item.active ? "활성" : "보관"} · ${item.dataAsOf}`]) : [],
+        });
+    }
+    if (standaloneMode) {
+      setGenericRows({
+        dashboard: [
+          ["로컬 미리보기", "실행 모드", "standalone", "브라우저 분석"],
+          ["업로드 회차", "SBOM", String(nextRuns.filter((run) => run.id.startsWith("standalone-")).length), "확인 가능"],
+          ["서버 연동", "Docker·로그인·Dependency-Track", "사용 안 함", "미리보기"],
+        ],
       });
     }
+    return nextRuns;
   }, [initialLink.runId]);
   useEffect(() => {
     if (demoMode) return;
+    if (standaloneMode) {
+      void Promise.resolve().then(() => loadData());
+      return;
+    }
     resumeSession()
       .then(() => { setAuthenticated(true); return loadData(); })
       .catch(() => setAuthenticated(false));
@@ -652,9 +670,9 @@ export default function App() {
   if (!authenticated) return <LoginPage onAuthenticated={() => { setAuthenticated(true); void loadData(); }} />;
   return <div className={`app-shell ${collapsed ? "is-collapsed" : ""}`}>
     <Sidebar page={page} collapsed={collapsed} onNavigate={navigate} />
-    <Header collapsed={collapsed} search={globalSearch} onSearch={setGlobalSearch} dataAsOf={runs.map((run) => run.dataAsOf).filter(Boolean).sort().at(-1) || ""} onToggle={() => setCollapsed((value) => !value)} onLogout={() => { void logout().finally(() => setAuthenticated(false)); }} />
-    <main>{content}</main>
-    {uploadOpen && <UploadModal services={services} environments={environments} onClose={() => setUploadOpen(false)} onUploaded={() => { setUploadOpen(false); void loadData(); }} />}
+    <Header collapsed={collapsed} search={globalSearch} onSearch={setGlobalSearch} dataAsOf={runs.map((run) => run.dataAsOf).filter(Boolean).sort().at(-1) || ""} onToggle={() => setCollapsed((value) => !value)} onLogout={() => { void logout().finally(() => setAuthenticated(false)); }} preview={previewMode} />
+    <main>{standaloneMode && <div className="standalone-banner" role="status"><strong>로컬 미리보기 모드</strong><span>로그인·Docker 없이 CycloneDX 구조와 파일 내장 취약점 레코드만 표시합니다.</span></div>}{content}</main>
+    {uploadOpen && <UploadModal services={services} environments={environments} onClose={() => setUploadOpen(false)} onUploaded={(runId) => { setUploadOpen(false); void loadData().then((nextRuns) => { const uploaded = nextRuns.find((run) => run.id === runId); if (uploaded) openRun(uploaded); }); }} />}
     {selectedRun && <RunDetail run={selectedRun} onClose={closeRun} onChanged={() => void loadData()} />}
   </div>;
 }

@@ -72,6 +72,47 @@ dist\windows\KODA-SBOM-Tracker-Setup.exe
 검증은 PowerShell 문법·파일 구성 확인까지이며, 최종 설치·기동 smoke test는 Windows에서
 수행해야 합니다.
 
+## Docker 없는 UI 미리보기
+
+로그인 없이 SBOM 업로드 화면과 분석 결과 디자인만 확인할 때는 전체 설치파일 대신 웹 앱의
+standalone 미리보기를 사용합니다. 이 경로에는 Docker Desktop과 Inno Setup이 필요하지 않지만,
+Windows에 Node.js LTS가 필요합니다.
+
+PowerShell에서 저장소 루트로 이동해 실행합니다.
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+Set-Location .\apps\web
+npm ci
+Set-Location ..\..
+.\scripts\start-windows-preview.ps1 -OpenBrowser
+```
+
+브라우저를 직접 열 때는 `http://127.0.0.1:5173/?page=dashboard`로 접속합니다. 업로드 후
+`SBOM 회차`에서 생성된 `로컬 미리보기` 회차를 열면 구성요소·분석 리비전·내장 취약점 레코드를
+확인할 수 있습니다. XML/JSON 모두 CycloneDX 형식만 지원하며 파일 크기는 25 MiB 이하입니다.
+
+이 미리보기의 범위는 다음과 같습니다.
+
+- 로그인, API 서버, Docker, PostgreSQL, Grype, Dependency-Track 없이 브라우저에서 동작합니다.
+- CycloneDX의 구성요소와 SBOM 안에 이미 들어 있는 `vulnerabilities` 레코드를 표시합니다.
+- 새로고침하면 업로드한 회차가 사라집니다. 로컬 브라우저 메모리에만 저장합니다.
+- Grype DB 조회·실제 취약점 재분석·정책 판정·원본 파일 내려받기는 수행하지 않습니다.
+
+standalone 정적 빌드가 필요한 경우에는 다음처럼 빌드한 뒤 `npm run preview`로 확인합니다.
+
+```powershell
+Set-Location .\apps\web
+$env:VITE_STANDALONE_MODE = "true"
+$env:VITE_DEMO_MODE = "false"
+npm run build
+npm run preview -- --host 127.0.0.1 --port 4173
+```
+
+이 경로는 현재 `KODA-SBOM-Tracker-Setup.exe`에 포함된 Docker Compose 설치파일과 별개인
+UI 검증용 실행 방식입니다. Docker 없는 실제 취약점 분석 서버나 완전한 네이티브 EXE가
+필요해지는 시점에는 Grype 실행 파일·DB·로컬 저장소를 포함한 별도 런타임을 추가해야 합니다.
+
 ## 설치 및 최초 설정
 
 1. 대상 Windows x64 PC에 Docker Desktop을 설치하고 실행합니다.
