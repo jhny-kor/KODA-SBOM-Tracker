@@ -105,6 +105,18 @@ dist\windows\KODA-SBOM-Tracker-Preview-Setup.exe
 .\scripts\build-windows-preview-installer.ps1 -SkipNpmInstall
 ```
 
+Inno Setup을 기본 경로가 아닌 곳에 설치했거나 `ISCC.exe`를 찾지 못한다는 오류가 나오면
+실제 파일 경로를 지정합니다. 64비트 Windows의 기본 경로는 보통 다음과 같습니다.
+
+```powershell
+Test-Path "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+.\scripts\build-windows-preview-installer.ps1 `
+  -InnoSetupPath "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+```
+
+첫 번째 명령이 `False`이면 Inno Setup 6을 다시 설치하거나 설치 폴더의 실제
+`ISCC.exe` 경로를 `-InnoSetupPath`에 넣습니다.
+
 ### 대상 PC 설치 및 사용
 
 1. `KODA-SBOM-Tracker-Preview-Setup.exe`를 실행합니다. 기본 설치는 현재 사용자 영역에

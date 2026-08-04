@@ -27,6 +27,9 @@ function Invoke-Checked {
         [Parameter(Mandatory = $true)][string[]]$Arguments
     )
 
+    if ([System.IO.Path]::IsPathRooted($Command) -and -not (Test-Path -LiteralPath $Command -PathType Leaf)) {
+        throw "실행 파일을 찾을 수 없습니다: $Command"
+    }
     Write-Host (">> " + $Command + " " + ($Arguments -join " "))
     & $Command @Arguments
     $exitCode = $LASTEXITCODE
@@ -53,33 +56,58 @@ function Get-DotEnvValue {
     return $null
 }
 
+function Resolve-ExecutablePath {
+    param([string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return $null
+    }
+    $candidate = $Path.Trim().Trim('"')
+    if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+        return (Resolve-Path -LiteralPath $candidate).Path
+    }
+    return $null
+}
+
 function Resolve-InnoSetup {
     param([string]$RequestedPath)
 
     if (-not [string]::IsNullOrWhiteSpace($RequestedPath)) {
-        if (Test-Path -LiteralPath $RequestedPath) {
-            return (Resolve-Path -LiteralPath $RequestedPath).Path
+        $resolved = Resolve-ExecutablePath -Path $RequestedPath
+        if ($null -ne $resolved) {
+            return $resolved
         }
-        throw "Inno Setup ISCC.exe를 찾을 수 없습니다: $RequestedPath"
+        throw "지정한 Inno Setup ISCC.exe를 찾을 수 없습니다: $RequestedPath"
     }
 
-    if (-not [string]::IsNullOrWhiteSpace($env:ISCC) -and (Test-Path -LiteralPath $env:ISCC)) {
-        return (Resolve-Path -LiteralPath $env:ISCC).Path
+    $resolved = Resolve-ExecutablePath -Path $env:ISCC
+    if ($null -ne $resolved) {
+        return $resolved
     }
 
-    $command = Get-Command iscc.exe -ErrorAction SilentlyContinue
+    $command = Get-Command iscc.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($null -ne $command) {
-        return $command.Source
+        $commandPath = $command.Source
+        if ($command.PSObject.Properties.Name -contains "Path") {
+            $commandPath = $command.Path
+        }
+        $resolved = Resolve-ExecutablePath -Path $commandPath
+        if ($null -ne $resolved) {
+            return $resolved
+        }
     }
 
     $candidates = @(
         (Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe"),
         (Join-Path $env:ProgramFiles "Inno Setup 6\ISCC.exe")
-    ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) -and (Test-Path -LiteralPath $_) }
-    if ($candidates.Count -gt 0) {
-        return $candidates[0]
+    )
+    foreach ($candidate in $candidates) {
+        $resolved = Resolve-ExecutablePath -Path $candidate
+        if ($null -ne $resolved) {
+            return $resolved
+        }
     }
-    throw "Inno Setup 6의 ISCC.exe를 찾을 수 없습니다. 설치 후 -InnoSetupPath 또는 ISCC 환경변수를 지정하세요."
+    throw "Inno Setup 6의 ISCC.exe를 찾을 수 없습니다. Inno Setup 6을 설치하거나 -InnoSetupPath `"C:\Program Files (x86)\Inno Setup 6\ISCC.exe`"를 지정하세요."
 }
 
 Initialize-KodaDockerCliPath
