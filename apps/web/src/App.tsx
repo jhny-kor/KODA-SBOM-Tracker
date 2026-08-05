@@ -117,6 +117,120 @@ function SelectFilter({ label, value, values, onChange }: { label: string; value
   );
 }
 
+function chartPoints(values: number[], width: number, height: number, padding = 4) {
+  const maximum = Math.max(1, ...values);
+  const plotWidth = width - padding * 2;
+  const plotHeight = height - padding * 2;
+  return values.map((value, index) => ({
+    x: values.length === 1 ? width / 2 : padding + (index / (values.length - 1)) * plotWidth,
+    y: padding + (1 - value / maximum) * plotHeight,
+  }));
+}
+
+function pathFor(values: number[], width: number, height: number) {
+  return chartPoints(values, width, height).map((point, index) => `${index ? "L" : "M"}${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" ");
+}
+
+function Sparkline({ values, color, label }: { values: number[]; color: string; label: string }) {
+  const points = chartPoints(values, 100, 28, 3);
+  return <svg className="preview-sparkline" viewBox="0 0 100 28" role="img" aria-label={`${label} 추이`}>
+    <path d={pathFor(values, 100, 28)} fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+    {points.slice(-1).map((point) => <circle key={`${point.x}-${point.y}`} cx={point.x} cy={point.y} r="2.5" fill={color} />)}
+  </svg>;
+}
+
+function PreviewMetric({ label, value, description, values, color }: { label: string; value: string; description: string; values: number[]; color: string }) {
+  return <article className="preview-metric-card">
+    <div><span className="preview-metric-label">{label}</span><strong>{value}</strong><small>{description}</small></div>
+    <Sparkline values={values} color={color} label={label} />
+  </article>;
+}
+
+function PreviewBars({ items, emptyLabel }: { items: { label: string; value: number; tone?: string }[]; emptyLabel: string }) {
+  const maximum = Math.max(1, ...items.map((item) => item.value));
+  if (!items.some((item) => item.value)) return <p className="preview-chart-empty">{emptyLabel}</p>;
+  return <div className="preview-bars">{items.map((item) => <div className="preview-bar-row" key={item.label}>
+    <span>{item.label}</span><div className="preview-bar-track"><i className={item.tone || ""} style={{ width: `${(item.value / maximum) * 100}%` }} /></div><strong>{item.value}</strong>
+  </div>)}</div>;
+}
+
+function PreviewDashboard({ runs, onUpload }: { runs: SbomRun[]; onUpload: () => void }) {
+  const uploadedRuns = useMemo(() => runs
+    .filter((run) => run.service.id === "standalone-service" || run.id.startsWith("standalone-"))
+    .sort((left, right) => left.createdAt.localeCompare(right.createdAt)), [runs]);
+  // ponytail: chart the latest 12 uploads to keep the local preview readable; add pagination when history needs to scale.
+  const chartRuns = useMemo(() => uploadedRuns.slice(-12), [uploadedRuns]);
+  const [details, setDetails] = useState<Record<string, SbomRunDetail>>({});
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!chartRuns.length) {
+      return () => { cancelled = true; };
+    }
+    void Promise.all(chartRuns.map(async (run) => [run.id, await fetchRun(run.id)] as const))
+      .then((items) => {
+        if (!cancelled) setDetails(Object.fromEntries(items));
+      })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [chartRuns]);
+
+  const latest = uploadedRuns.at(-1);
+  const latestDetail = latest ? details[latest.id] : undefined;
+  const findings = latestDetail?.analyses?.[0]?.findings || [];
+  const kevCount = findings.filter((finding) => finding.kev === true).length;
+  const severityItems = [
+    { label: "Critical", value: findings.filter((finding) => String(finding.severity || "").toLowerCase() === "critical").length, tone: "critical" },
+    { label: "High", value: findings.filter((finding) => String(finding.severity || "").toLowerCase() === "high").length, tone: "high" },
+    { label: "Medium", value: findings.filter((finding) => String(finding.severity || "").toLowerCase() === "medium").length, tone: "medium" },
+    { label: "Low", value: findings.filter((finding) => String(finding.severity || "").toLowerCase() === "low").length, tone: "low" },
+    { label: "Unknown", value: findings.filter((finding) => !["critical", "high", "medium", "low"].includes(String(finding.severity || "").toLowerCase())).length, tone: "unknown" },
+  ];
+  const componentTypes = [...(latestDetail?.components || []).reduce((counts, component) => {
+    const label = component.componentType || "library";
+    counts.set(label, (counts.get(label) || 0) + 1);
+    return counts;
+  }, new Map<string, number>())].map(([label, value]) => ({ label, value }));
+
+  if (!uploadedRuns.length) return <section className="page preview-dashboard-page">
+    <div className="page-heading"><div><p className="preview-eyebrow">LOCAL SBOM PORTFOLIO</p><h1>대시보드</h1><p className="preview-dashboard-subtitle">업로드한 SBOM만으로 구성요소와 취약점 흐름을 확인합니다.</p></div><button className="primary" onClick={onUpload}><Icon name="upload" />SBOM 업로드</button></div>
+    <div className="preview-empty"><Icon name="upload" /><h2>아직 업로드한 SBOM이 없습니다.</h2><p>SBOM 회차에서 CycloneDX JSON/XML을 업로드하면 이 화면에 분석 그래프가 표시됩니다.</p><button className="primary" onClick={onUpload}>첫 SBOM 업로드</button></div>
+  </section>;
+
+  const series = [
+    { label: "구성요소", color: "#32c6d1", values: chartRuns.map((run) => run.componentCount) },
+    { label: "취약점", color: "#a970ff", values: chartRuns.map((run) => run.vulnerabilityCount) },
+  ];
+  return <section className="page preview-dashboard-page">
+    <div className="page-heading"><div><p className="preview-eyebrow">LOCAL SBOM PORTFOLIO</p><h1>대시보드</h1><p className="preview-dashboard-subtitle">업로드한 SBOM {uploadedRuns.length}건의 분석 결과입니다. 서버·Docker·로그인 없이 브라우저에서만 집계합니다.</p></div><button className="primary" onClick={onUpload}><Icon name="upload" />SBOM 업로드</button></div>
+    <div className="preview-metrics">
+      <PreviewMetric label="업로드 회차" value={uploadedRuns.length.toLocaleString()} description="브라우저에 보관된 SBOM" values={uploadedRuns.map((_, index) => index + 1)} color="#32c6d1" />
+      <PreviewMetric label="구성요소" value={(latest?.componentCount || 0).toLocaleString()} description={`최신 · ${latest?.filename || "SBOM"}`} values={chartRuns.map((run) => run.componentCount)} color="#32c6d1" />
+      <PreviewMetric label="취약점" value={(latest?.vulnerabilityCount || 0).toLocaleString()} description="CycloneDX 내장 레코드" values={chartRuns.map((run) => run.vulnerabilityCount)} color="#a970ff" />
+      <PreviewMetric label="KEV" value={kevCount.toLocaleString()} description="내장 KEV 플래그" values={chartRuns.map((run) => details[run.id]?.analyses?.[0]?.findings?.filter((finding) => finding.kev === true).length || 0)} color="#ff8b8b" />
+    </div>
+    <div className="preview-chart-grid">
+      <article className="preview-chart-card preview-trend-card"><header><div><h2>업로드별 분석 추이</h2><p>최근 SBOM 회차의 구성요소·취약점 변화</p></div><span className="preview-chart-meta">{latest?.dataAsOf || "기준일 미상"}</span></header>
+        <div className="preview-legend">{series.map((item) => <span key={item.label}><i style={{ background: item.color }} />{item.label}</span>)}</div>
+        <div className="preview-chart-scroll"><svg className="preview-chart" viewBox="0 0 760 250" role="img" aria-label="업로드별 구성요소와 취약점 추이">
+          <title>업로드별 구성요소와 취약점 추이</title>
+          {[50, 105, 160, 215].map((y) => <line key={y} x1="36" x2="744" y1={y} y2={y} className="preview-grid-line" />)}
+          {series.map((item) => <g key={item.label}><path d={pathFor(item.values, 708, 165)} transform="translate(36 45)" fill="none" stroke={item.color} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />{chartPoints(item.values, 708, 165).map((point, index) => <circle key={`${item.label}-${index}`} cx={point.x + 36} cy={point.y + 45} r="4" fill={item.color} />)}</g>)}
+          {chartRuns.map((run, index) => <text key={run.id} x={chartRuns.length === 1 ? 390 : 36 + (index / (chartRuns.length - 1)) * 708} y="238" textAnchor="middle" className="preview-axis-label">#{uploadedRuns.length - chartRuns.length + index + 1}</text>)}
+        </svg></div>
+      </article>
+      <article className="preview-chart-card"><header><div><h2>최신 SBOM 심각도</h2><p>{latest?.filename || "업로드 파일"}</p></div><span className="preview-chart-total">{findings.length}건</span></header>
+        <PreviewBars items={severityItems} emptyLabel="내장 취약점 레코드가 없습니다." />
+        <div className="preview-chart-footnote">분석 기준일 {latest?.dataAsOf || "미상"} · KEV {kevCount}건</div>
+      </article>
+    </div>
+    <div className="preview-lower-grid">
+      <article className="preview-chart-card"><header><div><h2>구성요소 유형</h2><p>최신 업로드 기준</p></div><span className="preview-chart-total">{latest?.componentCount || 0}개</span></header><PreviewBars items={componentTypes} emptyLabel="구성요소 상세를 불러오는 중입니다." /></article>
+      <article className="preview-upload-summary"><span className="preview-eyebrow">LATEST UPLOAD</span><h2>{latest?.filename || "SBOM 파일"}</h2><dl><dt>릴리스</dt><dd>{latest?.releaseVersion}</dd><dt>업로드 시각</dt><dd>{latest ? new Date(latest.createdAt).toLocaleString("ko-KR") : "-"}</dd><dt>SHA-256</dt><dd className="mono">{latest?.sha256.slice(0, 18)}…</dd></dl></article>
+    </div>
+  </section>;
+}
+
 function RunsPage({ runs, onUpload, onSelect, search }: { runs: SbomRun[]; onUpload: () => void; onSelect: (run: SbomRun) => void; search: string }) {
   const [service, setService] = useState("");
   const [environment, setEnvironment] = useState("");
@@ -658,6 +772,7 @@ export default function App() {
     listener(); window.addEventListener("resize", listener); return () => window.removeEventListener("resize", listener);
   }, []);
   const content = useMemo(() => {
+    if (page === "dashboard" && standaloneMode) return <PreviewDashboard runs={runs} onUpload={() => setUploadOpen(true)} />;
     if (page === "runs") return <RunsPage runs={runs} search={globalSearch} onUpload={() => setUploadOpen(true)} onSelect={openRun} />;
     if (page === "compare") return <ComparePage runs={runs} />;
     if (page === "services") return <ServicesPage services={services} environments={environments} onChanged={() => void loadData()} />;
