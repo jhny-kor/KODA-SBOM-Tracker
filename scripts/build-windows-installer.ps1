@@ -4,6 +4,8 @@ param(
     [string]$InnoSetupPath = "",
     [ValidatePattern("^[0-9][0-9A-Za-z.-]*$")]
     [string]$Version = "0.1.0",
+    [ValidateSet("Internal", "External")]
+    [string]$DistributionScope = "Internal",
     [switch]$SkipDockerBuild
 )
 
@@ -20,6 +22,10 @@ $composeFile = Join-Path $RootDir "compose.yaml"
 $airgapComposeFile = Join-Path $RootDir "compose.airgap.yaml"
 $issFile = Join-Path $RootDir "installer\koda-sbom-tracker.iss"
 . (Join-Path $PSScriptRoot "resolve-docker-cli.ps1")
+
+if ($DistributionScope -eq "External") {
+    throw "외부 배포용 이미지 번들은 지원하지 않습니다. 대응 소스 제공 절차와 법무 검토가 승인된 뒤 별도 릴리스를 구성하세요."
+}
 
 function Invoke-Checked {
     param(
@@ -115,6 +121,9 @@ if (-not (Test-Path -LiteralPath $envExample)) { throw "파일이 없습니다: 
 if (-not (Test-Path -LiteralPath $composeFile)) { throw "파일이 없습니다: $composeFile" }
 if (-not (Test-Path -LiteralPath $airgapComposeFile)) { throw "파일이 없습니다: $airgapComposeFile" }
 if (-not (Test-Path -LiteralPath $issFile)) { throw "파일이 없습니다: $issFile" }
+foreach ($path in @("LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md")) {
+    if (-not (Test-Path -LiteralPath (Join-Path $RootDir $path) -PathType Leaf)) { throw "파일이 없습니다: $path" }
+}
 $iscc = Resolve-InnoSetup -RequestedPath $InnoSetupPath
 New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
 Invoke-Checked -Command "docker" -Arguments @("info")
@@ -170,7 +179,7 @@ try {
         Invoke-Checked -Command "docker" -Arguments @("save", "--platform", "linux/amd64", "--output", $archivePath, $image)
     }
 
-    foreach ($path in @("compose.yaml", "compose.airgap.yaml", ".env.example", "README.md")) {
+    foreach ($path in @("compose.yaml", "compose.airgap.yaml", ".env.example", "README.md", "LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md")) {
         Copy-Item -LiteralPath (Join-Path $RootDir $path) -Destination (Join-Path $stageDir $path) -Force
     }
     foreach ($directory in @("scripts", "docs", "deploy")) {
@@ -181,6 +190,7 @@ try {
     @(
         "RELEASE_CREATED_AT=$createdAt",
         "TARGET_PLATFORM=linux/amd64",
+        "DISTRIBUTION_SCOPE=internal-only",
         "INSTALLER=KODA-SBOM-Tracker-Setup.exe",
         "RUNTIME_SOURCE=.env.example only; production .env is supplied after installation"
     ) | Set-Content -LiteralPath (Join-Path $stageDir "metadata.env") -Encoding UTF8

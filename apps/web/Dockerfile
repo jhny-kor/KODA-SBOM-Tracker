@@ -2,15 +2,24 @@ ARG NODE_IMAGE=node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62d
 ARG NGINX_IMAGE=nginx:1.29-alpine@sha256:5616878291a2eed594aee8db4dade5878cf7edcb475e59193904b198d9b830de
 FROM ${NODE_IMAGE} AS build
 WORKDIR /app
-COPY package.json package-lock.json* ./
+COPY apps/web/package.json apps/web/package-lock.json* ./
 RUN npm ci --no-audit --no-fund
-COPY . .
+COPY apps/web/ ./
 ARG VITE_DEMO_MODE=false
 ENV VITE_DEMO_MODE=${VITE_DEMO_MODE}
-RUN npm run build
+RUN npm run build \
+    && mkdir -p dist/legal \
+    && cp node_modules/react/LICENSE dist/legal/React-MIT.txt \
+    && cp node_modules/react-dom/LICENSE dist/legal/ReactDOM-MIT.txt \
+    && cp node_modules/scheduler/LICENSE dist/legal/Scheduler-MIT.txt \
+    && cp node_modules/vite/LICENSE.md dist/legal/Vite-MIT-and-third-party.txt \
+    && cp node_modules/@vitejs/plugin-react/LICENSE dist/legal/Vite-React-Plugin-MIT.txt \
+    && cp node_modules/pretendard/dist/LICENSE.txt dist/legal/Pretendard-OFL-1.1.txt
+COPY LICENSE NOTICE THIRD_PARTY_NOTICES.md /app/dist/legal/
 
 FROM ${NGINX_IMAGE}
+LABEL org.opencontainers.image.licenses="Apache-2.0"
 COPY --from=build /app/dist /usr/share/nginx/html
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+COPY apps/web/nginx.conf /etc/nginx/conf.d/default.conf
 EXPOSE 8080
 HEALTHCHECK CMD wget -q -O /dev/null http://127.0.0.1:8080/ || exit 1

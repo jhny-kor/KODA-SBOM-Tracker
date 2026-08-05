@@ -7,6 +7,14 @@ source "$(cd "$(dirname "$0")" && pwd)/lib.sh"
 ENV_FILE="$EXAMPLE_ENV_FILE"
 load_env "$EXAMPLE_ENV_FILE"
 usage() { local rc="${1:-2}"; echo "usage: $0 [output.tar.gz] [--vuln-bundle DIR]" >&2; exit "$rc"; }
+distribution_scope="${KODA_DISTRIBUTION_SCOPE:-internal}"
+[[ "$distribution_scope" == internal ]] || {
+  echo "external image redistribution is unsupported until corresponding-source delivery and legal review are approved" >&2
+  exit 1
+}
+for legal_file in LICENSE NOTICE THIRD_PARTY_NOTICES.md; do
+  [[ -f "$ROOT_DIR/$legal_file" ]] || { echo "legal file missing: $legal_file" >&2; exit 1; }
+done
 output="${ROOT_DIR}/dist/airgap-release/$(date -u +%Y%m%dT%H%M%SZ).tar.gz"
 vuln_bundle=""
 while [[ $# -gt 0 ]]; do
@@ -39,6 +47,7 @@ for image in "${remote_images[@]}" "${local_images[@]}"; do
 done
 cp "$ROOT_DIR/compose.yaml" "$stage_dir/compose.yaml"
 cp "$ROOT_DIR/compose.airgap.yaml" "$stage_dir/compose.airgap.yaml"
+cp "$ROOT_DIR/LICENSE" "$ROOT_DIR/NOTICE" "$ROOT_DIR/THIRD_PARTY_NOTICES.md" "$stage_dir/"
 cp "$EXAMPLE_ENV_FILE" "$stage_dir/config/.env.example"
 cp "$ROOT_DIR/deploy/manifests/images.lock" "$stage_dir/config/images.lock"
 cp -a "$ROOT_DIR/deploy/." "$stage_dir/deploy/"
@@ -71,6 +80,7 @@ find "$stage_dir" -type f \( -name '*.pyc' -o -name '.DS_Store' \) -delete
 cat > "$stage_dir/metadata.env" <<EOF
 RELEASE_CREATED_AT=$(date -u +%Y%m%dT%H%M%SZ)
 TARGET_PLATFORM=linux/amd64
+DISTRIBUTION_SCOPE=internal-only
 COMPOSE_FILE=compose.yaml:compose.airgap.yaml
 VULNERABILITY_BUNDLE=$([[ -n "$vuln_bundle" ]] && echo included || echo absent)
 EOF

@@ -4,11 +4,16 @@
 
 인터넷 연결이 가능한 x86_64 빌드 PC에서 다음을 미리 묶어 폐쇄망 서버로 반입합니다.
 
+이 번들은 컨테이너 이미지 재배포를 포함하므로 **KODA 내부 폐쇄망 반입 전용**입니다.
+고객·협력사·계열사·공개 배포는 대응 소스 제공 절차와 법무 검토가 승인되기 전까지 금지합니다.
+`KODA_DISTRIBUTION_SCOPE=external`로 실행하면 생성 스크립트가 즉시 실패합니다.
+
 - Dependency-Track backend/frontend `5.0.3`
 - PostgreSQL, nginx, 운영 스크립트용 Alpine
 - 포털 web/API/worker 로컬 이미지
 - Grype, CycloneDX CLI
 - compose/deploy/scripts/docs 설정
+- `LICENSE`, `NOTICE`, `THIRD_PARTY_NOTICES.md`
 - SHA-256 manifest
 
 ## 2. 생성
@@ -153,3 +158,4 @@ URL을 포함한 compact offline index로 정규화합니다. 원본 feed 전체
 - manifest 검증 없이 `docker load` 나 취약점 데이터 교체를 진행하지 않습니다.
 - 실제 운영 시에는 빌드 PC와 폐쇄망 서버 모두에서 결과 artifact의 해시를 다시 확인합니다.
 - compose는 `linux/amd64` 기준으로 설계했습니다.
+- `DISTRIBUTION_SCOPE=internal-only` 표시와 법적 고지 파일이 없는 번들은 검증에서 거부합니다.

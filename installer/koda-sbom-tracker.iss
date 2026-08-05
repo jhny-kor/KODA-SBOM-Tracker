@@ -19,6 +19,7 @@ Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
 UninstallDisplayName=KODA SBOM Tracker
+LicenseFile={#StageDir}\LICENSE
 
 [Files]
 Source: "{#StageDir}\*"; DestDir: "{app}"; Excludes: ".env.example"; Flags: recursesubdirs createallsubdirs ignoreversion

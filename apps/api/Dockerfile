@@ -4,16 +4,18 @@ ARG CYCLONEDX_CLI_IMAGE=cyclonedx/cyclonedx-cli:0.30.0@sha256:8475ecf6c09d17dbb3
 FROM ${GRYPE_IMAGE} AS grype
 FROM ${CYCLONEDX_CLI_IMAGE} AS cyclonedx
 FROM ${PYTHON_BASE_IMAGE}
+LABEL org.opencontainers.image.licenses="Apache-2.0"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1
 WORKDIR /app
-COPY pyproject.toml ./
-COPY koda_tracker ./koda_tracker
+COPY apps/api/pyproject.toml ./
+COPY apps/api/koda_tracker ./koda_tracker
 COPY --from=grype /grype /usr/local/bin/grype
 COPY --from=cyclonedx /cyclonedx /usr/local/bin/cyclonedx
 RUN pip install --no-cache-dir ".[postgres]"
+COPY LICENSE NOTICE THIRD_PARTY_NOTICES.md /usr/share/doc/koda-sbom-tracker/
 RUN addgroup --system tracker && adduser --system --ingroup tracker tracker \
     && mkdir -p /var/lib/sbom-tracker/artifacts /var/lib/sbom-tracker/vuln-data \
     && chown -R tracker:tracker /var/lib/sbom-tracker

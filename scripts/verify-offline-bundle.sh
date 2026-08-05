@@ -11,7 +11,11 @@ test -d "$bundle_dir"
 test -f "${bundle_dir}/metadata.env"
 test -f "${bundle_dir}/manifest.sha256"
 test -d "${bundle_dir}/images"
+test -f "${bundle_dir}/LICENSE"
+test -f "${bundle_dir}/NOTICE"
+test -f "${bundle_dir}/THIRD_PARTY_NOTICES.md"
 grep -q '^TARGET_PLATFORM=linux/amd64$' "${bundle_dir}/metadata.env"
+grep -q '^DISTRIBUTION_SCOPE=internal-only$' "${bundle_dir}/metadata.env"
 
 verify_manifest "${bundle_dir}/manifest.sha256"
 

@@ -21,6 +21,9 @@ fi
 [[ -d "$input" && -f "$input/manifest.sha256" && -f "$input/metadata.env" ]] || { echo "invalid release directory" >&2; exit 1; }
 verify_manifest "$input/manifest.sha256"
 for required_file in \
+  LICENSE \
+  NOTICE \
+  THIRD_PARTY_NOTICES.md \
   compose.yaml \
   compose.airgap.yaml \
   deploy/nginx/gateway.conf.template \
@@ -33,6 +36,7 @@ for required_file in \
   scripts/verify-airgap-release.sh; do
   [[ -f "$input/$required_file" ]] || { echo "release file missing: $required_file" >&2; exit 1; }
 done
+grep -q '^DISTRIBUTION_SCOPE=internal-only$' "$input/metadata.env" || { echo "release is not marked internal-only" >&2; exit 1; }
 [[ -d "$input/source/apps" ]] || { echo "application source missing" >&2; exit 1; }
 [[ ! -e "$input/config/.env" ]] || { echo "release must not contain a real .env" >&2; exit 1; }
 count="$(find "$input/images" -type f -name '*.tar' | wc -l | tr -d ' ')"

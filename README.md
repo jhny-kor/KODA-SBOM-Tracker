@@ -70,6 +70,18 @@ KODA Linux 대시보드에서 결과 화면에 포털 링크를 넣을 때는
 - [운영 가이드](docs/operations-ko.md)
 - [오프라인 번들 가이드](docs/offline-bundle-ko.md)
 - [Windows 설치파일 가이드](docs/windows-installer-ko.md)
+- [오픈소스 라이선스 정책](docs/open-source-compliance-ko.md)
+
+## 라이선스와 배포 범위
+
+KODA SBOM Tracker 자체 코드는 Apache License 2.0으로 배포합니다. 라이선스 전문과
+저작권·서드파티 고지는 [LICENSE](LICENSE), [NOTICE](NOTICE),
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)에 있습니다. Docker 없는 Windows Preview는
+설치 폴더의 `legal` 디렉터리에 이 파일들과 React·Pretendard 라이선스를 포함합니다.
+
+컨테이너 이미지를 함께 묶는 폐쇄망·오프라인·전체 Windows 패키지는 내부 반입 전용입니다.
+고객·협력사·계열사·공개 저장소 등 외부 배포는 대응 소스 제공 절차와 법무 검토가 승인되기
+전까지 지원하지 않으며 빌드 스크립트가 외부 배포 범위를 거부합니다.
 
 주의:
 

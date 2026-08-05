@@ -4,6 +4,15 @@ set -euo pipefail
 source "$(cd "$(dirname "$0")" && pwd)/lib.sh"
 load_env
 
+distribution_scope="${KODA_DISTRIBUTION_SCOPE:-internal}"
+[[ "$distribution_scope" == internal ]] || {
+  echo "external image redistribution is unsupported until corresponding-source delivery and legal review are approved" >&2
+  exit 1
+}
+for legal_file in LICENSE NOTICE THIRD_PARTY_NOTICES.md; do
+  [[ -f "$ROOT_DIR/$legal_file" ]] || { echo "legal file missing: $legal_file" >&2; exit 1; }
+done
+
 timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
 bundle_root="${OFFLINE_BUNDLE_ROOT:-$ROOT_DIR/dist/offline-bundle}"
 bundle_dir="${bundle_root}/${timestamp}"
@@ -57,6 +66,7 @@ for image in "${all_images[@]}"; do
 done
 
 cp "$ROOT_DIR/compose.yaml" "$config_dir/"
+cp "$ROOT_DIR/LICENSE" "$ROOT_DIR/NOTICE" "$ROOT_DIR/THIRD_PARTY_NOTICES.md" "$bundle_dir/"
 cp "$EXAMPLE_ENV_FILE" "$config_dir/.env.example"
 cp "$ROOT_DIR/deploy/manifests/images.lock" "$config_dir/"
 cp -R "$ROOT_DIR/deploy" "$config_dir/"
@@ -66,6 +76,7 @@ cp -R "$ROOT_DIR/scripts" "$config_dir/"
 cat > "${bundle_dir}/metadata.env" <<EOF
 BUNDLE_CREATED_AT=${timestamp}
 TARGET_PLATFORM=linux/amd64
+DISTRIBUTION_SCOPE=internal-only
 DTRACK_VERSION=5.0.3
 POSTGRES_IMAGE=${POSTGRES_IMAGE}
 DTRACK_APISERVER_IMAGE=${DTRACK_APISERVER_IMAGE}

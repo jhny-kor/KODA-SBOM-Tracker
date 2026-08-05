@@ -13,6 +13,7 @@ $WebDir = Join-Path $RootDir "apps\web"
 $WebDistDir = Join-Path $WebDir "dist"
 $IssFile = Join-Path $RootDir "installer\koda-sbom-tracker-preview.iss"
 $ServerScript = Join-Path $RootDir "scripts\serve-windows-preview.ps1"
+$LegalFiles = @("LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md")
 if ([string]::IsNullOrWhiteSpace($OutputDir)) {
     $OutputDir = Join-Path $RootDir "dist\windows"
 } elseif (-not [System.IO.Path]::IsPathRooted($OutputDir)) {
@@ -119,6 +120,11 @@ if (-not (Test-Path -LiteralPath $IssFile)) {
 if (-not (Test-Path -LiteralPath $ServerScript)) {
     throw "정적 서버 스크립트가 없습니다: $ServerScript"
 }
+foreach ($legalFile in $LegalFiles) {
+    if (-not (Test-Path -LiteralPath (Join-Path $RootDir $legalFile) -PathType Leaf)) {
+        throw "법적 고지 파일이 없습니다: $legalFile"
+    }
+}
 
 $npm = Resolve-Npm
 $iscc = Resolve-InnoSetup -RequestedPath $InnoSetupPath
@@ -138,8 +144,26 @@ try {
 
     New-Item -ItemType Directory -Path (Join-Path $stageDir "web") -Force | Out-Null
     New-Item -ItemType Directory -Path (Join-Path $stageDir "scripts") -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $stageDir "legal") -Force | Out-Null
     Copy-Item -Path (Join-Path $WebDistDir "*") -Destination (Join-Path $stageDir "web") -Recurse -Force
     Copy-Item -LiteralPath $ServerScript -Destination (Join-Path $stageDir "scripts\serve-windows-preview.ps1") -Force
+    foreach ($legalFile in $LegalFiles) {
+        Copy-Item -LiteralPath (Join-Path $RootDir $legalFile) -Destination (Join-Path $stageDir "legal\$legalFile") -Force
+    }
+    $PackageLicenses = @{
+        "React-MIT.txt" = (Join-Path $WebDir "node_modules\react\LICENSE")
+        "ReactDOM-MIT.txt" = (Join-Path $WebDir "node_modules\react-dom\LICENSE")
+        "Scheduler-MIT.txt" = (Join-Path $WebDir "node_modules\scheduler\LICENSE")
+        "Vite-MIT-and-third-party.txt" = (Join-Path $WebDir "node_modules\vite\LICENSE.md")
+        "Vite-React-Plugin-MIT.txt" = (Join-Path $WebDir "node_modules\@vitejs\plugin-react\LICENSE")
+        "Pretendard-OFL-1.1.txt" = (Join-Path $WebDir "node_modules\pretendard\dist\LICENSE.txt")
+    }
+    foreach ($entry in $PackageLicenses.GetEnumerator()) {
+        if (-not (Test-Path -LiteralPath $entry.Value -PathType Leaf)) {
+            throw "패키지 라이선스 파일이 없습니다: $($entry.Value)"
+        }
+        Copy-Item -LiteralPath $entry.Value -Destination (Join-Path $stageDir "legal\$($entry.Key)") -Force
+    }
     @(
         "KODA SBOM Tracker Preview",
         "",
@@ -148,7 +172,8 @@ try {
         "",
         "이 설치파일은 Docker Desktop과 Node.js 없이 동작합니다.",
         "CycloneDX JSON/XML SBOM을 브라우저에서 업로드하면 구성요소와 파일 내 취약점을 확인할 수 있습니다.",
-        "업로드 데이터는 브라우저 메모리에만 저장되며 새로고침하면 사라집니다."
+        "업로드 데이터는 브라우저 메모리에만 저장되며 새로고침하면 사라집니다.",
+        "라이선스 및 서드파티 고지는 설치 폴더의 legal 디렉터리에 있습니다."
     ) | Set-Content -LiteralPath (Join-Path $stageDir "README-preview.txt") -Encoding UTF8
 
     $env:KODA_PREVIEW_STAGE = $stageDir

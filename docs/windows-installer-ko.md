@@ -6,6 +6,10 @@ Windows x64에서 Docker Desktop의 Linux 컨테이너로 KODA SBOM Tracker 전�
 설치파일은 React 포털만 담은 단일 EXE가 아니라 다음 실행에 필요한 이미지와 Compose 파일을
 함께 담습니다.
 
+이 전체 설치파일은 컨테이너 이미지 재배포를 포함하므로 **KODA 내부 반입 전용**입니다.
+고객·협력사·계열사·공개 배포용으로 만들 수 없으며 `-DistributionScope External`은 빌드에서
+거부됩니다. 외부 배포에는 별도의 대응 소스 제공 절차와 법무 승인이 필요합니다.
+
 - gateway, portal-web, portal-api, portal-worker
 - PostgreSQL
 - Dependency-Track backend/frontend
@@ -46,7 +50,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 1. `portal-web`, `portal-api`, `portal-worker`를 `linux/amd64`로 빌드합니다.
 2. digest가 고정된 외부 이미지를 `linux/amd64`로 반입합니다.
 3. 모든 실행 이미지를 `.tar`로 저장하고 SHA-256 manifest를 만듭니다.
-4. Compose, 운영 스크립트, 문서와 `.env.example`을 staging합니다.
+4. Compose, 운영 스크립트, 문서, 라이선스 고지와 `.env.example`을 staging합니다.
 5. Inno Setup `ISCC.exe`로 `dist\windows\KODA-SBOM-Tracker-Setup.exe`를 생성합니다.
 
 기본 설치 경로와 다른 Inno Setup 경로를 사용할 때:
@@ -131,6 +135,10 @@ Test-Path "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
 `127.0.0.1`에서만 동작하며 업로드된 SBOM과 결과는 브라우저 메모리에만 저장됩니다.
 새로고침하면 회차가 사라지고, 설치 제거 시 로컬 서버도 중지됩니다. 파일 크기는 25 MiB
 이하입니다.
+
+설치 마법사에서 Apache-2.0 라이선스를 표시하며, 설치 폴더의 `legal` 디렉터리에 KODA 고지와
+React, React DOM, Pretendard의 라이선스 전문을 함께 설치합니다. 이 디렉터리를 제거한 설치파일은
+배포하지 않습니다.
 
 이 경로는 화면·업로드·SBOM에 이미 포함된 취약점 표시를 확인하는 Preview입니다. Grype DB
 조회, 실제 취약점 재분석, Dependency-Track 연동, 로그인, PostgreSQL, 정책 판정, 영구 저장은
