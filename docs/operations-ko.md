@@ -107,6 +107,14 @@ docker compose up -d --force-recreate portal-api portal-worker
 - 취약점 데이터는 자동 다운로드하지 않고 별도 bundle 반입으로만 교체합니다.
 - `.env`는 절대 저장소에 커밋하지 않습니다.
 
+KODA 통합본은 동일 오리진의 `/`와 `/koda/`를 사용합니다. Tracker의
+`GET /api/v1/auth/session`은 gateway 내부 인증 확인용이며 쿠키 세션만 허용합니다.
+gateway는 브라우저가 보낸 신원 헤더를 제거한 뒤 Tracker가 반환한 UUID·만료 시각·
+표시 이름만 KODA에 새로 주입합니다. KODA와 Tracker의 로그아웃은
+`POST /api/v1/auth/logout-current`로 현재 브라우저 세션 하나를 폐기합니다.
+상세 경계와 장애 동작은 [KODA 통합 인증·운영 계약](koda-integration-ko.md)을
+따릅니다.
+
 반입 후 관리자가 포털의 `취약점 데이터` 화면에서 `반입 상태 동기화`를 실행합니다.
 이 작업은 `releases/<version>/metadata.env`와 manifest를 포털 DB에 불변 등록하고,
 현재 `current` 링크와 일치하는 버전만 활성으로 기록합니다. 파일 반입·롤백은

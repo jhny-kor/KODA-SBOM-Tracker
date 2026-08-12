@@ -58,6 +58,12 @@ sha256sum -c koda-sbom-airgap.tar.gz.sha256
 ./scripts/verify-airgap-release.sh ./koda-sbom-airgap.tar.gz
 ```
 
+KODA와 Tracker를 같은 서버에 설치하는 최종 전달물은 KODA 저장소의
+`platforms/linux/package-suite-offline.sh`가 이 Tracker 압축파일과 KODA Docker
+압축파일을 다시 묶어 생성합니다. 통합본은 Tracker 계정·세션을 인증 원본으로
+사용하고 `/koda/`를 같은 gateway에 추가합니다. Tracker 단독 압축파일과 통합
+압축파일을 동시에 설치하지 말고 운영 형태에 맞는 하나를 선택합니다.
+
 ### 기존 디렉터리 번들
 
 ```bash

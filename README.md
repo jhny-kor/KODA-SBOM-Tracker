@@ -63,6 +63,11 @@ suite의 동일 오리진 `/koda/` 경로에서만 적용되며, 이 저장소�
 KODA가 포함되지 않습니다. Dependency-Track UI 로그인도 Tracker 세션과 공유하지
 않고 별도 계정·Team 권한을 사용합니다.
 
+KODA와 Tracker에서 실행하는 로그아웃은 모두 현재 브라우저의 Tracker 세션을
+폐기합니다. 따라서 어느 한쪽에서 로그아웃해도 양쪽 보호 화면은 다시 로그인이
+필요합니다. 계정은 공유하지만 권한 정책은 공유하지 않습니다. Tracker 역할 정책과
+KODA 프로젝트 역할은 각각의 관리 화면에서 별도로 설정합니다.
+
 키 설정 후에는 `./scripts/verify-dtrack-connection.sh`로 v5 API와 최소 권한을
 확인할 수 있습니다. 관리자 API 키를 별도로 가진 초기 설치는
 `scripts/configure-dtrack-key.sh`로 전용 팀과 키를 자동 발급할 수 있습니다.
@@ -95,6 +100,7 @@ KODA Linux 대시보드에서 결과 화면에 포털 링크를 넣을 때는
 
 - [운영 가이드](docs/operations-ko.md)
 - [오프라인 번들 가이드](docs/offline-bundle-ko.md)
+- [KODA 통합 인증·운영 계약](docs/koda-integration-ko.md)
 - [Windows 설치파일 가이드](docs/windows-installer-ko.md)
 - [오픈소스 라이선스 정책](docs/open-source-compliance-ko.md)
 
