@@ -1,5 +1,8 @@
 #!/bin/bash
 set -euo pipefail
+# Keep macOS extended attributes out of the Linux archive. Otherwise BSD tar
+# emits `._*` AppleDouble files that Linux later mistakes for Docker images.
+export COPYFILE_DISABLE=1
 source "$(cd "$(dirname "$0")" && pwd)/lib.sh"
 # A release must use the digest-pinned example values, never an operator's
 # local runtime .env.  The latter is intentionally supplied only on the
@@ -57,6 +60,9 @@ cp -a "$ROOT_DIR/docs/." "$stage_dir/docs/"
 # Keep the checked-in application and test source in the same archive as the
 # runtime files.  Reading the working tree (rather than `git archive HEAD`)
 # ensures modified tracked files are packaged even before they are committed.
+source_args=(--cached)
+[[ "${KODA_RELEASE_INCLUDE_UNTRACKED:-0}" == 1 ]] \
+  && source_args+=(--others --exclude-standard)
 while IFS= read -r -d '' relative_path; do
   case "$relative_path" in
     .env|*.env) continue ;;
@@ -64,7 +70,7 @@ while IFS= read -r -d '' relative_path; do
   destination="$stage_dir/source/$relative_path"
   mkdir -p "$(dirname "$destination")"
   cp -p "$ROOT_DIR/$relative_path" "$destination"
-done < <(git -C "$ROOT_DIR" ls-files -z)
+done < <(git -C "$ROOT_DIR" ls-files -z "${source_args[@]}")
 
 if [[ -n "$vuln_bundle" ]]; then
   "$ROOT_DIR/scripts/verify-vuln-bundle.sh" "$vuln_bundle"

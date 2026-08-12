@@ -38,7 +38,7 @@ find "$install_dir/images" -type f -name '*.tar' -print0 | while IFS= read -r -d
 
 cd "$install_dir"
 docker compose --env-file .env -f compose.yaml -f compose.airgap.yaml up -d --no-build --pull never
-deadline=$((SECONDS + ${AIRGAP_HEALTH_TIMEOUT:-240}))
+deadline=$((SECONDS + ${AIRGAP_HEALTH_TIMEOUT:-420}))
 while (( SECONDS < deadline )); do
   ids="$(docker compose --env-file .env -f compose.yaml -f compose.airgap.yaml ps -q 2>/dev/null || true)"
   ready=1

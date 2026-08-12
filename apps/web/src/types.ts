@@ -133,6 +133,19 @@ export interface UserSummary {
   username: string;
   role: string;
   active: boolean;
+  permissions?: string[];
+}
+
+export interface AuthUser extends UserSummary { id: string; }
+
+export interface RolePolicy {
+  role: string;
+  permissions: string[];
+}
+
+export interface RolePolicyCatalog {
+  catalog: string[];
+  roles: RolePolicy[];
 }
 
 export interface DependencyTrackStatus {

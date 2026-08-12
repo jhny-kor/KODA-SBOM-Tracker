@@ -27,7 +27,8 @@ docker compose ps
 - `TRACKER_DEPENDENCY_TRACK_API_KEY`
 - `DTRACK_API_BASE_URL`
 - 필요 시 볼륨 이름과 외부 공개 포트
-- TLS 사용 시 `TRACKER_SECURE_COOKIES=true`
+- 운영은 `TRACKER_ENVIRONMENT=production`, `TRACKER_SECURE_COOKIES=true`,
+  `TRACKER_PUBLIC_ORIGIN=https://<동일-오리진-호스트>`
 
 Dependency-Track 초기 관리자 로그인 후 포털 전용 팀을 만들고 다음 최소 권한을
 부여합니다.
@@ -39,6 +40,36 @@ Dependency-Track 초기 관리자 로그인 후 포털 전용 팀을 만들고 �
 
 발급 키는 `TRACKER_DEPENDENCY_TRACK_API_KEY`에만 저장하며 frontend나 브라우저
 환경변수로 전달하지 않습니다.
+
+### 2-1. 계정과 권한 초기화
+
+최초 기동 시 `TRACKER_BOOTSTRAP_ADMIN_USERNAME` 사용자가 없고
+`TRACKER_BOOTSTRAP_ADMIN_PASSWORD`가 설정되어 있으면 활성 `admin` 계정을 한 번
+생성합니다. 로그인 후 설정 화면에서 다음 작업을 수행합니다.
+
+1. 사용자 계정을 생성하고 활성 상태와 역할을 지정합니다.
+2. 역할 정책에서 기능별 권한을 검토합니다.
+3. 서비스 범위 API 토큰은 필요한 서비스에만 발급합니다. 원문 토큰은 발급 시 한
+   번만 표시됩니다.
+
+기본 역할은 `admin`, `manager`, `analyst`, `uploader`, `viewer`입니다. 실제 접근은
+역할 이름을 직접 비교하지 않고 DB의 역할 정책 권한으로 판정합니다. 사용자 관리와
+역할 정책 관리는 별도 권한이며, 두 관리 권한을 가진 마지막 활성 사용자는
+비활성화하거나 권한을 제거할 수 없습니다.
+
+현재 인증 경계는 다음과 같습니다.
+
+- Tracker 로컬 계정은 관리자가 먼저 생성해야 하며 최초 로그인 자동 가입은 없습니다.
+- `LDAP 사용`은 아직 구현되지 않아 선택 시 `501 ldap_not_configured`를 반환합니다.
+- 통합 KODA suite는 Tracker의 HttpOnly 세션을 gateway에서 검증한 뒤 KODA에 UUID,
+  표시 이름, 만료 시각만 전달합니다. KODA 최초 접근자는 `pending`으로 등록되며
+  KODA 관리자가 별도로 활성화하고 프로젝트 권한을 부여해야 합니다.
+- Dependency-Track UI는 별도 사용자·Team 권한을 사용합니다. 포털 backend 연동용
+  API 키를 사용자 로그인이나 브라우저 SSO에 사용하지 않습니다.
+
+운영 세션은 HTTPS 동일 오리진을 전제로 합니다. `TRACKER_ENVIRONMENT=production`은
+HTTPS `TRACKER_PUBLIC_ORIGIN`과 `TRACKER_SECURE_COOKIES=true`가 아니면 기동을
+거부합니다. reverse proxy는 원래 Host와 HTTPS scheme을 보존해야 합니다.
 
 설정 후 실제 키·버전·팀 권한을 읽기 전용으로 확인합니다.
 
@@ -84,6 +115,14 @@ docker compose up -d --force-recreate portal-api portal-worker
 `kev.json`(또는 `ALIAS_INDEX`, `KEV_CATALOG`로 지정한 파일)을 포함할 수 있으며,
 분석 결과에는 CVE/GHSA canonical ID, alias, CISA KEV 여부와 기준일이 보존됩니다.
 
+Windows에서 만든 `koda-vuln-bundle-<version>.zip`은 서버에서 먼저 임시
+디렉터리에 압축 해제하고 `verify-vuln-bundle.sh`로 manifest를 확인한 뒤
+`import-vuln-bundle.sh`로 `VULN_DATA_VOLUME_NAME` named volume에 반입합니다.
+취약점 데이터는 API/worker 이미지에 굽지 않고 두 컨테이너가 읽는 volume에
+마운트되므로 이미지 재빌드는 필요하지 않습니다. 전체 절차와 Docker volume
+확인 명령은 [오프라인 bundle 가이드](offline-bundle-ko.md)의
+`Windows에서 취약점 bundle을 만들고 ZIP으로 반입하기`를 따릅니다.
+
 동일 작업을 자동화할 때는 관리자 세션의 CSRF 보호를 유지하면서
 `POST /api/v1/vulnerability-data-bundles/sync`를 호출하고, 현재 파일시스템 버전의
 기록 확인에는 `GET /api/v1/vulnerability-data-bundles`를 사용합니다.
@@ -94,7 +133,12 @@ docker compose up -d --force-recreate portal-api portal-worker
 curl -fsS http://localhost:${PUBLIC_HTTP_PORT:-8088}/healthz
 curl -fsS http://localhost:${PUBLIC_HTTP_PORT:-8088}/api/v1/healthz
 curl -I http://localhost:${PUBLIC_HTTP_PORT:-8088}/dependency-track/
+curl -fsS http://localhost:${PUBLIC_HTTP_PORT:-8088}/dependency-track/api/version
 ```
+
+gateway는 포털뿐 아니라 Dependency-Track frontend와 API readiness가 모두 정상인
+경우에만 healthy가 됩니다. Dependency-Track API의 내부 readiness endpoint는
+`/health/ready`입니다.
 
 ## 5. 백업과 복원
 

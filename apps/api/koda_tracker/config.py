@@ -14,6 +14,8 @@ class Settings(BaseSettings):
     max_upload_bytes: int = 25 * 1024 * 1024
     session_ttl_seconds: int = 8 * 60 * 60
     secure_cookies: bool = False
+    environment: str = "development"
+    public_origin: str = ""
     bootstrap_admin_username: str = "admin"
     bootstrap_admin_password: str = ""
     dependency_track_url: str = ""
@@ -27,3 +29,8 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+def session_cookie_name() -> str:
+    """Use the host-only production name; keep local HTTP installs usable."""
+    return "__Host-koda_session" if get_settings().secure_cookies else "koda_session"

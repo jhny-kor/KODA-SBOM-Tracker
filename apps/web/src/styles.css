@@ -207,6 +207,10 @@ tbody tr:hover { background: #f4fbfb; }
 .preview-empty h2 { margin: 4px 0 0; color: var(--navy); font-size: 20px; }.preview-empty p { max-width: 420px; margin: 0 0 10px; font-size: 13px; line-height: 1.55; }
 .button-row { display: flex; gap: 10px; align-items: center; }
 .settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 20px; }
+.role-policy-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; padding: 16px; }
+.role-policy-grid fieldset { display: grid; gap: 8px; border: 1px solid var(--border); }
+.role-policy-grid label { display: flex; gap: 8px; align-items: center; font-size: 12px; }
+.role-policy-grid + button { margin: 0 16px 16px; }
 .dtrack-status { margin-top: 20px; }
 .dtrack-status-body { padding: 16px; display: flex; gap: 18px; align-items: center; flex-wrap: wrap; font-size: 13px; }
 .dtrack-status-body p { flex-basis: 100%; margin: 0; color: var(--muted); }
@@ -253,6 +257,8 @@ tbody tr:hover { background: #f4fbfb; }
 .login-card form { display: grid; gap: 16px; }
 .login-card label { display: grid; gap: 7px; font-size: 13px; font-weight: 650; }
 .login-card input { height: 42px; border: 1px solid var(--border-dark); border-radius: 4px; padding: 0 11px; }
+.login-card .login-checkbox { display: flex; align-items: center; gap: 8px; }
+.login-card .login-checkbox input { width: 16px; height: 16px; padding: 0; }
 .login-card .primary { margin-top: 4px; }
 .login-card > small { display: block; color: var(--muted); margin-top: 22px; text-align: center; }
 .login-error { color: var(--danger); font-size: 13px; margin: 0; }
@@ -297,3 +303,4 @@ tbody tr:hover { background: #f4fbfb; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; }
 }
+.portal-link { display:block; margin:.5rem 1rem; padding:.7rem; color:inherit; text-decoration:none; }

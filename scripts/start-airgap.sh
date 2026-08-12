@@ -10,7 +10,7 @@ env_file="${1:-$root_dir/.env}"
 compose_args=(--env-file "$env_file" -f "$root_dir/compose.yaml" -f "$root_dir/compose.airgap.yaml")
 docker compose "${compose_args[@]}" up -d --no-build --pull never
 
-deadline=$((SECONDS + ${AIRGAP_HEALTH_TIMEOUT:-240}))
+deadline=$((SECONDS + ${AIRGAP_HEALTH_TIMEOUT:-420}))
 while (( SECONDS < deadline )); do
   ids="$(docker compose "${compose_args[@]}" ps -q 2>/dev/null || true)"
   ready=1

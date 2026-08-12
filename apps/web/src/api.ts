@@ -1,11 +1,14 @@
 import { demoChanges, demoRuns } from "./demo";
 import { compareStandaloneRuns, getStandaloneCatalogs, getStandaloneRun, getStandaloneRuns, importStandaloneSbom } from "./standalone";
-import type { AuditEvent, CatalogItem, Comparison, DependencyTrackStatus, JobState, SbomRun, SbomRunDetail, UserSummary, VulnerabilityBundle } from "./types";
+import type { AuditEvent, AuthUser, CatalogItem, Comparison, DependencyTrackStatus, JobState, RolePolicy, RolePolicyCatalog, SbomRun, SbomRunDetail, UserSummary, VulnerabilityBundle } from "./types";
 
 export const standaloneMode = import.meta.env.VITE_STANDALONE_MODE === "true";
 export const demoMode = !standaloneMode && import.meta.env.VITE_DEMO_MODE !== "false";
 export const previewMode = demoMode || standaloneMode;
 let csrfToken = "";
+let onForbidden: (() => Promise<void> | void) | undefined;
+
+export function setForbiddenHandler(handler: (() => Promise<void> | void) | undefined) { onForbidden = handler; }
 
 export class ApiError extends Error {
   constructor(message: string, readonly status: number) {
@@ -25,31 +28,52 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (!response.ok) {
     const error = await response.json().catch(() => ({ detail: response.statusText }));
-    throw new ApiError(error.detail || "요청을 처리하지 못했습니다", response.status);
+    const apiError = new ApiError(error.detail || "요청을 처리하지 못했습니다", response.status);
+    if (response.status === 403) await onForbidden?.();
+    throw apiError;
   }
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
 }
 
-export async function login(username: string, password: string) {
-  const result = await request<{ csrfToken: string; user: unknown }>("/api/v1/auth/login", {
+export async function login(username: string, password: string, useLdap = false) {
+  const result = await request<{ csrfToken: string; user: AuthUser }>("/api/v1/auth/login", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ username, password }),
+    body: JSON.stringify({ username, password, useLdap }),
   });
   csrfToken = result.csrfToken;
   return result;
 }
 
-export async function resumeSession() {
-  if (previewMode) return { user: { username: "보안운영팀", role: "admin" }, csrfToken: "preview" };
-  const result = await request<{ csrfToken: string; user: unknown }>("/api/v1/auth/me");
+export async function resumeSession(): Promise<{ user: AuthUser; csrfToken: string }> {
+  if (previewMode) return { user: { id: "preview", username: "보안운영팀", role: "admin", active: true, permissions: ["*"] }, csrfToken: "preview" };
+  const result = await request<{ csrfToken: string; user: AuthUser }>("/api/v1/auth/me");
   csrfToken = result.csrfToken;
   return result;
 }
 
+export async function fetchRolePolicies(): Promise<RolePolicyCatalog> {
+  if (previewMode) return { catalog: [], roles: [] };
+  return request<RolePolicyCatalog>("/api/v1/role-policies");
+}
+
+export async function updateRolePolicies(policies: RolePolicy[]): Promise<RolePolicy[]> {
+  const result = await request<{ roles: RolePolicy[] }>("/api/v1/role-policies", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ roles: Object.fromEntries(policies.map((item) => [item.role, item.permissions])) }),
+  });
+  return result.roles;
+}
+
 export async function logout() {
-  if (!previewMode) await request<void>("/api/v1/auth/logout", { method: "POST" });
+  if (!previewMode) await request<void>("/api/v1/auth/logout-current", {
+    method: "POST",
+    headers: {
+      "X-KODA-Logout": "current-browser",
+    },
+  });
   csrfToken = "";
 }
 

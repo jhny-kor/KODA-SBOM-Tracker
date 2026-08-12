@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import re
 import secrets
 import tempfile
+import uuid
 from collections import defaultdict, deque
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -18,9 +20,9 @@ from sqlalchemy import func, inspect, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
-from .config import get_settings
+from .config import get_settings, session_cookie_name
 from .comparison import compare_components, compare_records
-from .db import Base, SessionLocal, engine, get_db
+from .db import Base, SessionLocal, engine, get_db, ensure_postgres_manager_enum
 from .dtrack import DependencyTrackClient
 from .models import (
     AnalysisRevision,
@@ -32,9 +34,11 @@ from .models import (
     ProcessingState,
     Release,
     Role,
+    RolePolicy,
     SbomRun,
     Service,
     User,
+    UserSession,
     VulnerabilityDataBundle,
 )
 from .sbom import SbomValidationError, parse_sbom, store_artifact, validate_with_cyclonedx_cli
@@ -44,10 +48,11 @@ from .security import (
     hash_password,
     issue_session,
     require_csrf,
-    require_roles,
-    require_user_roles,
+    require_permission,
     rotate_csrf,
     verify_password,
+    DEFAULT_ROLE_PERMISSIONS,
+    PERMISSION_CATALOG,
 )
 from .services import audit, create_components, enqueue
 from .vulnerability import active_bundle, scan_bundle_releases
@@ -56,6 +61,7 @@ from .vulnerability import active_bundle, scan_bundle_releases
 class LoginRequest(BaseModel):
     username: str
     password: str
+    useLdap: bool = False
 
 
 class ServiceRequest(BaseModel):
@@ -99,6 +105,14 @@ class ArchiveRequest(BaseModel):
     reason: str
 
 
+class RolePolicyRequest(BaseModel):
+    permissions: list[str]
+
+
+class RolePoliciesRequest(BaseModel):
+    roles: dict[Role, list[str]]
+
+
 def problem(status: int, title: str, detail: str, request: Request) -> JSONResponse:
     return JSONResponse(
         status_code=status,
@@ -115,6 +129,12 @@ def problem(status: int, title: str, detail: str, request: Request) -> JSONRespo
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    settings = get_settings()
+    if settings.environment.lower() == "production" and (
+        not settings.secure_cookies or not settings.public_origin.startswith("https://")
+    ):
+        raise RuntimeError("production Tracker requires HTTPS public_origin and secure cookies")
+    ensure_postgres_manager_enum(engine)
     Base.metadata.create_all(engine)
     # v1 uses create_all for a fresh install, but keep the one additive field
     # introduced by the vulnerability-data lifecycle backward compatible with
@@ -131,7 +151,9 @@ async def lifespan(_: FastAPI):
         ]:
             if not db.scalar(select(Environment).where(Environment.slug == slug)):
                 db.add(Environment(slug=slug, name=name, sort_order=order))
-        settings = get_settings()
+        for role, permissions in DEFAULT_ROLE_PERMISSIONS.items():
+            if db.get(RolePolicy, role) is None:
+                db.add(RolePolicy(role=role, permissions=sorted(permissions)))
         if settings.bootstrap_admin_password and not db.scalar(select(User).where(User.username == settings.bootstrap_admin_username)):
             db.add(
                 User(
@@ -186,13 +208,15 @@ def health() -> dict:
 
 @app.get("/api/v1/dependency-track/status")
 async def dependency_track_status(
-    _=Depends(require_roles(Role.ADMIN, Role.ANALYST)),
+    _=Depends(require_permission("dtrack.settings")),
 ) -> dict:
     return await DependencyTrackClient().status()
 
 
 @app.post("/api/v1/auth/login")
 def login(body: LoginRequest, request: Request, response: Response, db: Session = Depends(get_db)) -> dict:
+    if body.useLdap:
+        return JSONResponse(status_code=501, content={"code": "ldap_not_configured", "detail": "LDAP 로그인은 아직 지원되지 않습니다"})
     forwarded = request.headers.get("x-forwarded-for", "").split(",", 1)[0].strip()
     client = forwarded or (request.client.host if request.client else "unknown")
     bucket = f"{client}:{body.username.strip().lower()}"
@@ -208,8 +232,9 @@ def login(body: LoginRequest, request: Request, response: Response, db: Session 
         raise HTTPException(401, "사용자 이름 또는 비밀번호가 올바르지 않습니다")
     attempts.clear()
     raw, csrf = issue_session(db, user)
+    cookie_name = session_cookie_name()
     response.set_cookie(
-        "koda_session",
+        cookie_name,
         raw,
         httponly=True,
         secure=get_settings().secure_cookies,
@@ -217,7 +242,110 @@ def login(body: LoginRequest, request: Request, response: Response, db: Session 
         max_age=get_settings().session_ttl_seconds,
         path="/",
     )
-    return {"user": {"id": user.id, "username": user.username, "role": user.role}, "csrfToken": csrf}
+    if cookie_name != "koda_session":
+        response.delete_cookie("koda_session", path="/", samesite="strict", secure=get_settings().secure_cookies)
+    policy = db.get(RolePolicy, user.role)
+    return {"user": {"id": user.id, "username": user.username, "role": user.role, "active": user.active, "permissions": sorted(policy.permissions if policy else DEFAULT_ROLE_PERMISSIONS.get(user.role, ()))}, "csrfToken": csrf}
+
+
+def _identity_display(username: str) -> str:
+    if not isinstance(username, str) or not username or len(username) > 128:
+        raise ValueError("username codepoint bound exceeded")
+    encoded = username.encode("utf-8")
+    if len(encoded) > 512:
+        raise ValueError("username byte bound exceeded")
+    value = base64.urlsafe_b64encode(encoded).rstrip(b"=").decode("ascii")
+    if len(value) > 683:
+        raise ValueError("username encoded bound exceeded")
+    return value
+
+
+def _session_from_cookie(request: Request, db: Session) -> tuple[UserSession, User] | None:
+    # Cookie-session-only endpoint: callers reject Authorization explicitly.
+    preferred = request.cookies.get("__Host-koda_session")
+    if preferred is not None:
+        names = [("__Host-koda_session", preferred)]
+    else:
+        legacy = request.cookies.get("koda_session")
+        names = [("koda_session", legacy)] if legacy is not None else []
+    for name, raw in names:
+        session = db.get(UserSession, digest(raw))
+        expires = session.expires_at if session else None
+        if expires is not None and expires.tzinfo is None:
+            expires = expires.replace(tzinfo=UTC)
+        user = db.get(User, session.user_id) if session else None
+        if session and expires and expires > datetime.now(UTC) and user and user.active:
+            return session, user
+    return None
+
+
+@app.get("/api/v1/auth/session", status_code=204)
+def auth_session(request: Request, response: Response, db: Session = Depends(get_db)) -> Response:
+    if request.headers.get("authorization"):
+        raise HTTPException(401, "쿠키 세션만 사용할 수 있습니다")
+    try:
+        authenticated = _session_from_cookie(request, db)
+        if authenticated is None:
+            raise HTTPException(401, "인증이 필요합니다")
+        session, user = authenticated
+        try:
+            display = _identity_display(user.username)
+            identity = str(uuid.UUID(str(user.id)))
+        except (ValueError, AttributeError, TypeError):
+            raise HTTPException(503, "인증 주체 정보가 올바르지 않습니다")
+        expires = session.expires_at
+        if expires.tzinfo is None:
+            expires = expires.replace(tzinfo=UTC)
+        response.headers.update({
+            "X-KODA-Identity-ID": identity,
+            "X-KODA-Identity-Expires": expires.astimezone(UTC).isoformat().replace("+00:00", "Z"),
+            "X-KODA-Identity-Display": display,
+            "Cache-Control": "no-store, private",
+            "Pragma": "no-cache",
+            "Vary": "Cookie",
+        })
+        response.status_code = 204
+        return response
+    except HTTPException:
+        raise
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(503, "인증 서비스를 사용할 수 없습니다") from exc
+
+
+def _logout_origin_allowed(request: Request) -> bool:
+    configured = get_settings().public_origin.rstrip("/")
+    if get_settings().environment.lower() == "production":
+        expected = configured
+    else:
+        expected = configured or f"{request.url.scheme}://{request.url.netloc}"
+    return bool(expected) and expected == request.headers.get("origin", "").rstrip("/")
+
+
+@app.post("/api/v1/auth/logout-current", status_code=204)
+def logout_current(request: Request, response: Response, db: Session = Depends(get_db)) -> Response:
+    if request.headers.get("authorization"):
+        raise HTTPException(401, "쿠키 세션만 사용할 수 있습니다")
+    if request.headers.get("content-length", "0") not in ("", "0"):
+        raise HTTPException(403, "로그아웃 요청 본문은 비어 있어야 합니다")
+    if not _logout_origin_allowed(request) or request.headers.get("sec-fetch-site") != "same-origin" or request.headers.get("sec-fetch-mode") != "cors" or request.headers.get("x-koda-logout") != "current-browser":
+        raise HTTPException(403, "브라우저 로그아웃 요청 검증에 실패했습니다")
+    try:
+        authenticated = _session_from_cookie(request, db)
+        if authenticated is None:
+            raise HTTPException(401, "인증이 필요합니다")
+        db.delete(authenticated[0])
+        db.commit()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(503, "로그아웃 서비스를 사용할 수 없습니다") from exc
+    secure = get_settings().secure_cookies
+    for name in ("__Host-koda_session", "koda_session"):
+        response.delete_cookie(name, path="/", samesite="strict", secure=secure)
+    response.status_code = 204
+    return response
 
 
 @app.get("/api/v1/auth/me")
@@ -225,7 +353,8 @@ def me(request: Request, db: Session = Depends(get_db), principal=Depends(curren
     if isinstance(principal, ApiToken):
         return {"token": {"id": principal.id, "name": principal.name}}
     csrf = rotate_csrf(db, request.state.session)
-    return {"user": {"id": principal.id, "username": principal.username, "role": principal.role}, "csrfToken": csrf}
+    policy = db.get(RolePolicy, principal.role)
+    return {"user": {"id": principal.id, "username": principal.username, "role": principal.role, "active": principal.active, "permissions": sorted(policy.permissions if policy else DEFAULT_ROLE_PERMISSIONS.get(principal.role, ()))}, "csrfToken": csrf}
 
 
 @app.post("/api/v1/auth/logout", status_code=204)
@@ -240,16 +369,75 @@ def logout(
     if session is not None:
         db.delete(session)
         db.commit()
-    response.delete_cookie("koda_session", path="/", samesite="strict", secure=get_settings().secure_cookies)
+    for name in ("__Host-koda_session", "koda_session"):
+        response.delete_cookie(name, path="/", samesite="strict", secure=get_settings().secure_cookies)
     response.status_code = 204
     return response
 
 
+def _policy_invariant(db: Session, overrides: dict[Role, set[str]] | None = None) -> None:
+    policies = {item.role: set(item.permissions or []) for item in db.scalars(select(RolePolicy))}
+    if overrides:
+        policies.update(overrides)
+    if not any(user.active and policies.get(user.role, set()) >= {"roles.manage", "users.manage"} for user in db.scalars(select(User))):
+        raise HTTPException(422, "roles.manage 및 users.manage 권한을 가진 활성 사용자가 최소 한 명 필요합니다")
+
+
+def _validate_permissions(permissions: list[str]) -> list[str]:
+    if len(permissions) != len(set(permissions)) or any(item not in PERMISSION_CATALOG for item in permissions):
+        raise HTTPException(422, "알 수 없거나 중복된 권한입니다")
+    return sorted(permissions)
+
+@app.get("/api/v1/role-policies")
+def list_role_policies(db: Session = Depends(get_db), _=Depends(require_permission("roles.manage"))) -> dict:
+    return {"catalog": list(PERMISSION_CATALOG), "roles": [{"role": role.value, "permissions": sorted((db.get(RolePolicy, role) or RolePolicy(role=role, permissions=[])).permissions or [])} for role in Role]}
+
+@app.put("/api/v1/role-policies/{role}")
+def update_role_policy(role: Role, body: RolePolicyRequest, db: Session = Depends(get_db), principal=Depends(require_permission("roles.manage")), _csrf=Depends(require_csrf)) -> dict:
+    permissions = _validate_permissions(body.permissions)
+    item = db.get(RolePolicy, role)
+    before = sorted(item.permissions) if item and item.permissions else []
+    if item is None:
+        item = RolePolicy(role=role, permissions=[])
+        db.add(item)
+    item.permissions = permissions
+    _policy_invariant(db, {role: set(item.permissions)})
+    audit(db, principal.username, "role_policy.update", "role_policy", role.value, {"before": before, "after": item.permissions})
+    db.commit()
+    return {"role": role.value, "permissions": item.permissions}
+
+
+@app.put("/api/v1/role-policies")
+def update_role_policies(
+    body: RolePoliciesRequest,
+    db: Session = Depends(get_db),
+    principal=Depends(require_permission("roles.manage")),
+    _csrf=Depends(require_csrf),
+) -> dict:
+    updates = {role: _validate_permissions(permissions) for role, permissions in body.roles.items()}
+    _policy_invariant(db, {role: set(permissions) for role, permissions in updates.items()})
+    result = []
+    for role, permissions in updates.items():
+        item = db.get(RolePolicy, role)
+        before = sorted(item.permissions) if item and item.permissions else []
+        if item is None:
+            item = RolePolicy(role=role, permissions=[])
+            db.add(item)
+        item.permissions = permissions
+        audit(db, principal.username, "role_policy.update", "role_policy", role.value, {"before": before, "after": permissions})
+        result.append({"role": role.value, "permissions": permissions})
+    db.commit()
+    return {"roles": result}
+
 @app.get("/api/v1/users")
-def list_users(db: Session = Depends(get_db), _=Depends(require_roles(Role.ADMIN))) -> list[dict]:
+def list_users(db: Session = Depends(get_db), _=Depends(require_permission("users.manage"))) -> list[dict]:
+    principal = _
+    policy = db.get(RolePolicy, principal.role)
+    can_roles = "roles.manage" in set(policy.permissions if policy else DEFAULT_ROLE_PERMISSIONS.get(principal.role, ()))
     return [
         {"id": item.id, "username": item.username, "role": item.role, "active": item.active}
         for item in db.scalars(select(User).order_by(User.username))
+        if can_roles or item.role not in {Role.ADMIN, Role.MANAGER}
     ]
 
 
@@ -257,15 +445,20 @@ def list_users(db: Session = Depends(get_db), _=Depends(require_roles(Role.ADMIN
 def create_user(
     body: UserRequest,
     db: Session = Depends(get_db),
-    principal=Depends(require_roles(Role.ADMIN)),
+    principal=Depends(require_permission("users.manage")),
     _csrf=Depends(require_csrf),
 ) -> dict:
     if len(body.password) < 12:
         raise HTTPException(422, "비밀번호는 12자 이상이어야 합니다")
     user = User(username=body.username, password_hash=hash_password(body.password), role=body.role)
+    if body.role in {Role.ADMIN, Role.MANAGER}:
+        policy = db.get(RolePolicy, principal.role)
+        if "roles.manage" not in set(policy.permissions if policy else DEFAULT_ROLE_PERMISSIONS.get(principal.role, ())):
+            raise HTTPException(403, "관리자 역할 변경에는 roles.manage 권한이 필요합니다")
     try:
         db.add(user)
         db.flush()
+        _policy_invariant(db)
         audit(db, principal.username, "user.create", "user", user.id, {"username": user.username, "role": user.role})
         db.commit()
     except IntegrityError as exc:
@@ -278,7 +471,7 @@ def patch_user(
     user_id: str,
     body: UserPatch,
     db: Session = Depends(get_db),
-    principal=Depends(require_roles(Role.ADMIN)),
+    principal=Depends(require_permission("users.manage")),
     _csrf=Depends(require_csrf),
 ) -> dict:
     user = db.get(User, user_id)
@@ -286,10 +479,16 @@ def patch_user(
         raise HTTPException(404, "사용자를 찾을 수 없습니다")
     if user.id == principal.id and body.active is False:
         raise HTTPException(422, "현재 로그인한 관리자 계정은 비활성화할 수 없습니다")
+    if user.role in {Role.ADMIN, Role.MANAGER} or body.role in {Role.ADMIN, Role.MANAGER}:
+        policy = db.get(RolePolicy, principal.role)
+        if "roles.manage" not in set(policy.permissions if policy else DEFAULT_ROLE_PERMISSIONS.get(principal.role, ())):
+            raise HTTPException(403, "관리자 계정 변경에는 roles.manage 권한이 필요합니다")
     if body.role is not None:
         user.role = body.role
     if body.active is not None:
         user.active = body.active
+    db.flush()
+    _policy_invariant(db)
     audit(db, principal.username, "user.update", "user", user.id, {"role": user.role, "active": user.active})
     db.commit()
     return {"id": user.id, "username": user.username, "role": user.role, "active": user.active}
@@ -299,7 +498,7 @@ def patch_user(
 def create_api_token(
     body: TokenRequest,
     db: Session = Depends(get_db),
-    principal=Depends(require_roles(Role.ADMIN)),
+    principal=Depends(require_permission("tokens.manage")),
     _csrf=Depends(require_csrf),
 ) -> dict:
     if not body.serviceId:
@@ -318,7 +517,7 @@ def create_api_token(
 @app.get("/api/v1/api-tokens")
 def list_api_tokens(
     db: Session = Depends(get_db),
-    _=Depends(require_roles(Role.ADMIN)),
+    _=Depends(require_permission("tokens.manage")),
 ) -> list[dict]:
     return [
         {
@@ -336,7 +535,7 @@ def list_api_tokens(
 def revoke_api_token(
     token_id: str,
     db: Session = Depends(get_db),
-    principal=Depends(require_roles(Role.ADMIN)),
+    principal=Depends(require_permission("tokens.manage")),
     _csrf=Depends(require_csrf),
 ) -> dict:
     item = db.get(ApiToken, token_id)
@@ -349,7 +548,10 @@ def revoke_api_token(
 
 
 @app.get("/api/v1/services")
-def list_services(db: Session = Depends(get_db), _=Depends(require_user_roles(Role.ADMIN, Role.ANALYST, Role.UPLOADER, Role.VIEWER))) -> list[dict]:
+def list_services(
+    db: Session = Depends(get_db),
+    _=Depends(require_permission("services.view")),
+) -> list[dict]:
     return [{"id": item.id, "slug": item.slug, "name": item.name, "active": item.active} for item in db.scalars(select(Service).order_by(Service.name))]
 
 
@@ -357,7 +559,7 @@ def list_services(db: Session = Depends(get_db), _=Depends(require_user_roles(Ro
 def create_service(
     body: ServiceRequest,
     db: Session = Depends(get_db),
-    principal=Depends(require_roles(Role.ADMIN)),
+    principal=Depends(require_permission("catalog.manage")),
     _csrf=Depends(require_csrf),
 ) -> dict:
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,126}[a-z0-9]", body.slug):
@@ -378,7 +580,7 @@ def patch_service(
     service_id: str,
     body: ServicePatch,
     db: Session = Depends(get_db),
-    principal=Depends(require_roles(Role.ADMIN)),
+    principal=Depends(require_permission("catalog.manage")),
     _csrf=Depends(require_csrf),
 ) -> dict:
     item = db.get(Service, service_id)
@@ -394,7 +596,10 @@ def patch_service(
 
 
 @app.get("/api/v1/environments")
-def list_environments(db: Session = Depends(get_db), _=Depends(require_user_roles(Role.ADMIN, Role.ANALYST, Role.UPLOADER, Role.VIEWER))) -> list[dict]:
+def list_environments(
+    db: Session = Depends(get_db),
+    _=Depends(require_permission("services.view")),
+) -> list[dict]:
     return [{"id": item.id, "slug": item.slug, "name": item.name, "sortOrder": item.sort_order} for item in db.scalars(select(Environment).order_by(Environment.sort_order))]
 
 
@@ -402,7 +607,7 @@ def list_environments(db: Session = Depends(get_db), _=Depends(require_user_role
 def create_environment(
     body: EnvironmentRequest,
     db: Session = Depends(get_db),
-    principal=Depends(require_roles(Role.ADMIN)),
+    principal=Depends(require_permission("catalog.manage")),
     _csrf=Depends(require_csrf),
 ) -> dict:
     item = Environment(slug=body.slug, name=body.name, sort_order=body.sortOrder)
@@ -418,7 +623,7 @@ def patch_environment(
     environment_id: str,
     body: EnvironmentPatch,
     db: Session = Depends(get_db),
-    principal=Depends(require_roles(Role.ADMIN)),
+    principal=Depends(require_permission("catalog.manage")),
     _csrf=Depends(require_csrf),
 ) -> dict:
     item = db.get(Environment, environment_id)
@@ -488,7 +693,7 @@ def _persist_run(
         artifact_path=str(path),
         normalized_bom=payload,
         uploaded_by=principal.id if isinstance(principal, User) else None,
-        idempotency_actor=actor if isinstance(principal, ApiToken) or idempotency_key else None,
+        idempotency_actor=actor,
         idempotency_key=idempotency_key,
         note=note,
         source="api" if isinstance(principal, ApiToken) else "manual",
@@ -515,7 +720,7 @@ async def upload_sbom(
     sbom: UploadFile = File(),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     db: Session = Depends(get_db),
-    principal=Depends(require_roles(Role.ADMIN, Role.ANALYST, Role.UPLOADER)),
+    principal=Depends(require_permission("sbom.upload", allow_service_token=True)),
     _csrf=Depends(require_csrf),
 ) -> dict:
     if isinstance(principal, ApiToken) and principal.service_id and principal.service_id != service_id:
@@ -599,7 +804,7 @@ def list_runs(
     page: int = 1,
     size: int = 20,
     db: Session = Depends(get_db),
-    _=Depends(require_roles(Role.ADMIN, Role.ANALYST, Role.VIEWER)),
+    _=Depends(require_permission("runs.view")),
 ) -> dict:
     query = select(SbomRun).options(
         selectinload(SbomRun.release).selectinload(Release.service),
@@ -648,7 +853,7 @@ def _load_run(db: Session, run_id: str) -> SbomRun:
 def get_run(
     run_id: str,
     db: Session = Depends(get_db),
-    _=Depends(require_roles(Role.ADMIN, Role.ANALYST, Role.VIEWER)),
+    _=Depends(require_permission("runs.view")),
 ) -> dict:
     item = _load_run(db, run_id)
     payload = _run_payload(item)
@@ -689,7 +894,7 @@ def get_run(
 def download_artifact(
     run_id: str,
     db: Session = Depends(get_db),
-    _=Depends(require_roles(Role.ADMIN, Role.ANALYST, Role.VIEWER)),
+    _=Depends(require_permission("artifact.download")),
 ):
     item = _load_run(db, run_id)
     return FileResponse(item.artifact_path, media_type=item.media_type, filename=item.original_filename)
@@ -699,7 +904,7 @@ def download_artifact(
 def retry_dependency_track(
     run_id: str,
     db: Session = Depends(get_db),
-    principal=Depends(require_roles(Role.ADMIN, Role.ANALYST)),
+    principal=Depends(require_permission("dtrack.retry")),
     _csrf=Depends(require_csrf),
 ) -> dict:
     run = _load_run(db, run_id)
@@ -718,7 +923,7 @@ def retry_dependency_track(
 def create_analysis(
     run_id: str,
     db: Session = Depends(get_db),
-    principal=Depends(require_roles(Role.ADMIN, Role.ANALYST)),
+    principal=Depends(require_permission("analysis.create")),
     _csrf=Depends(require_csrf),
 ) -> dict:
     run = _load_run(db, run_id)
@@ -737,7 +942,7 @@ def archive_run(
     run_id: str,
     body: ArchiveRequest,
     db: Session = Depends(get_db),
-    principal=Depends(require_roles(Role.ADMIN)),
+    principal=Depends(require_permission("sbom.archive")),
     _csrf=Depends(require_csrf),
 ) -> dict:
     if not body.reason.strip():
@@ -754,7 +959,7 @@ def archive_run(
 
 
 @app.get("/api/v1/jobs/{job_id}")
-def get_job(job_id: str, db: Session = Depends(get_db), principal=Depends(current_principal)) -> dict:
+def get_job(job_id: str, db: Session = Depends(get_db), principal=Depends(require_permission("runs.view", "sbom.upload", allow_service_token=True))) -> dict:
     job = db.get(Job, job_id)
     if not job:
         raise HTTPException(404, "작업을 찾을 수 없습니다")
@@ -762,6 +967,13 @@ def get_job(job_id: str, db: Session = Depends(get_db), principal=Depends(curren
         run = db.get(SbomRun, job.run_id) if job.run_id else None
         if not run or run.idempotency_actor != f"token:{principal.id}":
             raise HTTPException(403, "자신이 생성한 작업만 조회할 수 있습니다")
+    else:
+        policy = db.get(RolePolicy, principal.role)
+        permissions = set(policy.permissions if policy else DEFAULT_ROLE_PERMISSIONS.get(principal.role, ()))
+        if "runs.view" not in permissions:
+            run = db.get(SbomRun, job.run_id) if job.run_id else None
+            if not run or run.uploaded_by != principal.id:
+                raise HTTPException(403, "자신이 생성한 작업만 조회할 수 있습니다")
     return {"id": job.id, "kind": job.kind, "runId": job.run_id, "state": job.state, "attempts": job.attempts, "error": job.error}
 
 
@@ -772,7 +984,7 @@ def compare_runs(
     base_analysis_id: str | None = Query(default=None, alias="baseAnalysisId"),
     target_analysis_id: str | None = Query(default=None, alias="targetAnalysisId"),
     db: Session = Depends(get_db),
-    _=Depends(require_roles(Role.ADMIN, Role.ANALYST, Role.VIEWER)),
+    _=Depends(require_permission("compare.view")),
 ) -> dict:
     base = _load_run(db, base_run_id)
     target = _load_run(db, target_run_id)
@@ -816,7 +1028,7 @@ def audit_events(
     page: int = 1,
     size: int = 50,
     db: Session = Depends(get_db),
-    _=Depends(require_roles(Role.ADMIN, Role.ANALYST, Role.VIEWER)),
+    _=Depends(require_permission("audit.view")),
 ) -> dict:
     total = db.scalar(select(func.count()).select_from(AuditEvent)) or 0
     items = db.scalars(select(AuditEvent).order_by(AuditEvent.created_at.desc()).offset((page - 1) * size).limit(size))
@@ -909,7 +1121,7 @@ def _sync_bundle_records(db: Session, *, actor: str | None = None) -> tuple[list
 @app.get("/api/v1/vulnerability-data-bundles")
 def vulnerability_data_bundles(
     db: Session = Depends(get_db),
-    _=Depends(require_roles(Role.ADMIN, Role.ANALYST, Role.VIEWER)),
+    _=Depends(require_permission("vulnerability.view")),
 ) -> dict:
     # GET stays read-only. An administrator explicitly synchronizes the
     # filesystem release after an import or rollback.
@@ -920,7 +1132,7 @@ def vulnerability_data_bundles(
 @app.post("/api/v1/vulnerability-data-bundles/sync")
 def sync_vulnerability_data_bundles(
     db: Session = Depends(get_db),
-    principal=Depends(require_roles(Role.ADMIN)),
+    principal=Depends(require_permission("vulnerability.manage")),
     _csrf=Depends(require_csrf),
 ) -> dict:
     items, _ = _sync_bundle_records(db, actor=principal.username)
@@ -933,7 +1145,7 @@ def sync_vulnerability_data_bundles(
 def activate_vulnerability_data_bundle(
     version: str,
     db: Session = Depends(get_db),
-    principal=Depends(require_roles(Role.ADMIN)),
+    principal=Depends(require_permission("vulnerability.manage")),
     _csrf=Depends(require_csrf),
 ) -> dict:
     items, _ = _sync_bundle_records(db, actor=principal.username)

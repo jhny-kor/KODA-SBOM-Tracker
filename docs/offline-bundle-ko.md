@@ -153,6 +153,181 @@ URL을 포함한 compact offline index로 정규화합니다. 원본 feed 전체
 동기화 전에는 DB의 활성 상태를 바꾸지 않으며, 현재 `current` 링크와 다른
 버전의 활성화 요청은 거부됩니다.
 
+### 4-1. Windows에서 취약점 bundle을 만들고 ZIP으로 반입하기
+
+Windows x64의 PowerShell 5.1 또는 PowerShell 7에서
+`scripts\build-vuln-bundle.ps1`를 실행할 수 있습니다. 이 스크립트는 네트워크로
+데이터를 내려받지 않습니다. 인터넷 연결 환경에서 미리 준비·검증한 Grype DB,
+NVD 2.0 feed 또는 compact NVD index, CISA KEV JSON을 입력으로 받아 동일한
+`metadata.env`·`manifest.sha256` 형식의 bundle을 만들고 ZIP으로 압축합니다.
+
+입력으로 사용할 Grype DB는 다음 중 하나여야 합니다.
+
+```text
+C:\KODA\grype-db\6\vulnerability.db
+C:\KODA\grype-db\6\           # 위 schema 디렉터리를 직접 지정해도 됨
+```
+
+Grype DB를 새로 받는 경우에는 폐쇄망에 반입할 데이터 기준일에 맞춰 인터넷 연결
+환경에서 준비하고, 실행 서버에 포함된 Grype 버전과 호환되는 DB인지 확인합니다.
+현재 이미지에 고정된 Grype 버전은 `0.109.1`입니다. DB를 준비한 뒤
+`grype-db\<schema>\vulnerability.db`가 실제로 존재하는지 확인하고, 그 상위
+디렉터리를 `-GrypeDbPath`에 전달합니다. 이 PowerShell 스크립트는 DB나 NVD/KEV
+데이터를 다운로드하지 않습니다.
+
+PowerShell에서 저장소 루트로 이동한 뒤 실행합니다.
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+
+$nvdFeeds = @(
+  "C:\KODA\feeds\nvdcve-2.0-2024.json.gz",
+  "C:\KODA\feeds\nvdcve-2.0-2025.json.gz",
+  "C:\KODA\feeds\nvdcve-2.0-modified.json.gz"
+)
+
+.\scripts\build-vuln-bundle.ps1 `
+  -GrypeDbPath "C:\KODA\grype-db" `
+  -DataDate "2026-08-06" `
+  -Version "20260806" `
+  -OutputArchive "C:\KODA\out\koda-vuln-bundle-20260806.zip" `
+  -NvdFeed $nvdFeeds `
+  -NvdDate "2026-08-06" `
+  -KevCatalog "C:\KODA\feeds\known_exploited_vulnerabilities.json" `
+  -KevDate "2026-08-06"
+```
+
+이미 compact NVD index가 있으면 `-NvdFeed` 대신 `-NvdIndex`를 사용합니다.
+두 옵션은 동시에 사용할 수 없습니다. alias 파일이 별도로 있으면
+`-AliasIndex C:\KODA\feeds\alias-index.json`을 추가합니다. 출력 ZIP이 이미
+있을 때 교체하려면 마지막에 `-Force`를 추가합니다.
+
+생성기는 다음을 자체 검증합니다.
+
+- Grype DB에 `<schema>\vulnerability.db`가 있는지 확인
+- NVD, alias, KEV JSON을 읽을 수 있는지 확인
+- `metadata.env`의 기준일과 bundle 버전 생성
+- bundle 전체 파일의 SHA-256 `manifest.sha256` 생성 및 재검증
+- 압축 전 최종 디렉터리를 ZIP으로 생성
+
+생성 후 Windows에서 전달 파일의 해시를 기록합니다.
+
+```powershell
+Get-FileHash `
+  -LiteralPath "C:\KODA\out\koda-vuln-bundle-20260806.zip" `
+  -Algorithm SHA256
+```
+
+#### 폐쇄망 서버에서 ZIP을 Docker volume으로 반입
+
+취약점 DB를 portal-api 또는 portal-worker **이미지 안에 복사하지 않습니다.**
+두 컨테이너가 공통으로 읽는 `vuln-data` named volume에 bundle을 넣고,
+컨테이너에는 `/var/lib/sbom-tracker/vuln-data:ro`로 마운트합니다. 반입 스크립트는
+임시 Alpine 컨테이너를 사용해 volume 내부의 `releases/<version>`과
+`current` 심볼릭 링크를 원자적으로 갱신합니다. 따라서 API/worker 이미지를 다시
+빌드할 필요가 없습니다.
+
+1. ZIP과 이 저장소의 운영 스크립트를 서버에 전달합니다.
+
+Windows PowerShell에서 OpenSSH `scp`를 사용할 때:
+
+```powershell
+scp "C:\KODA\out\koda-vuln-bundle-20260806.zip" `
+  operator@tracker-server:/tmp/koda-vuln-bundle-20260806.zip
+```
+
+서버가 Linux라면 Windows의 `scp` 대신 승인된 USB·파일 반입 경로를 사용해도
+됩니다. 서버에서 압축을 풀기 전에 Windows에서 기록한 SHA-256과 비교합니다.
+
+```bash
+sha256sum /tmp/koda-vuln-bundle-20260806.zip
+```
+
+2. 운영 디렉터리에서 ZIP을 별도 임시 디렉터리에 풉니다.
+
+```bash
+cd /opt/koda-sbom
+test -f /tmp/koda-vuln-bundle-20260806.zip
+command -v unzip >/dev/null
+
+# 폐쇄망에서는 이 이미지가 이미 로컬에 있어야 합니다. pull하지 않습니다.
+set -a
+. /opt/koda-sbom/.env
+set +a
+docker image inspect "$ALPINE_BASE_IMAGE" >/dev/null
+
+bundle_dir="$(mktemp -d /tmp/koda-vuln-bundle.XXXXXX)"
+trap 'rm -rf "$bundle_dir"' EXIT
+unzip -q /tmp/koda-vuln-bundle-20260806.zip -d "$bundle_dir"
+test -f "$bundle_dir/metadata.env"
+test -f "$bundle_dir/manifest.sha256"
+```
+
+3. 서버에서 bundle manifest를 먼저 검증한 뒤 Docker volume에 반입합니다.
+
+```bash
+./scripts/verify-vuln-bundle.sh "$bundle_dir"
+ENV_FILE=/opt/koda-sbom/.env \
+  ./scripts/import-vuln-bundle.sh "$bundle_dir"
+```
+
+`import-vuln-bundle.sh`는 `.env`의 `VULN_DATA_VOLUME_NAME`과
+`ALPINE_BASE_IMAGE`를 사용합니다. 기본값이면 volume 이름은
+`koda-sbom-vuln-data`입니다. Docker 권한이 없는 운영 계정은 승인된 방식으로
+Docker 권한을 부여받아야 하며, 임의의 `docker cp`로 실행 중인 컨테이너의
+파일을 덮어쓰지 않습니다. 운영 Compose가 사용하는 volume 이름과 `.env`의
+`VULN_DATA_VOLUME_NAME`이 같은지도 확인합니다.
+
+4. 반입 결과를 volume에서 확인합니다.
+
+```bash
+set -a
+. /opt/koda-sbom/.env
+set +a
+docker volume inspect "$VULN_DATA_VOLUME_NAME" >/dev/null
+docker run --rm \
+  -v "${VULN_DATA_VOLUME_NAME}:/runtime:ro" \
+  "${ALPINE_BASE_IMAGE}" \
+  sh -ec 'test -L /runtime/current; \
+    test -f /runtime/current/metadata.env; \
+    test -f /runtime/current/manifest.sha256; \
+    readlink /runtime/current'
+```
+
+5. 포털 관리자 화면에서 `취약점 데이터 → 반입 상태 동기화`를 실행합니다.
+이 단계는 파일시스템의 bundle을 포털 DB 감사 이력과 기준일에 등록합니다.
+새 bundle을 반입해도 기존 분석 결과가 자동 재계산되지는 않으므로, 필요한 기존
+SBOM 회차에서 `새 분석 리비전`을 실행하거나 SBOM을 다시 업로드합니다.
+
+반입에 실패하면 `current` 링크가 바뀌지 않도록 설계되어 있습니다. 이전 bundle로
+돌아갈 때는 다음 순서로 실행하고 다시 동기화합니다.
+
+```bash
+./scripts/rollback-vuln-bundle.sh
+```
+
+롤백만 할 때는 새 bundle 반입 명령을 다시 실행하지 말고 포털의
+`취약점 데이터 → 반입 상태 동기화`만 실행합니다. 새 bundle을 반입하는 경우에만
+다음 명령을 사용합니다.
+
+```bash
+ENV_FILE=/opt/koda-sbom/.env \
+  ./scripts/import-vuln-bundle.sh "$bundle_dir"
+```
+
+전체 air-gap 릴리스 하나에 취약점 bundle을 포함하려면 Windows에서 만든 ZIP을
+빌드 호스트에서 먼저 압축 해제한 디렉터리로 준비한 뒤, Linux/amd64 Docker 빌드
+환경에서 다음처럼 `--vuln-bundle`을 사용합니다.
+
+```bash
+./scripts/build-airgap-release.sh \
+  ./dist/koda-sbom-airgap.tar.gz \
+  --vuln-bundle ./vuln-bundle/20260806
+```
+
+이 전체 릴리스 생성 경로는 컨테이너 이미지를 함께 묶으므로 Windows PowerShell
+bundle 생성 경로와 달리 Linux/amd64 Docker 빌드 환경이 필요합니다.
+
 ## 5. 주의
 
 - manifest 검증 없이 `docker load` 나 취약점 데이터 교체를 진행하지 않습니다.

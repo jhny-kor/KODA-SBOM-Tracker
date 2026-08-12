@@ -65,6 +65,8 @@ def analyze_offline(db: Session, run: SbomRun) -> AnalysisRevision:
     context = load_context(settings)
     env = os.environ.copy()
     env["GRYPE_DB_CACHE_DIR"] = str(settings.grype_db_dir)
+    env["GRYPE_DB_AUTO_UPDATE"] = "false"
+    env["GRYPE_DB_VALIDATE_AGE"] = "false"
     try:
         process = subprocess.run(
             [settings.grype_binary, f"sbom:{run.artifact_path}", "-o", "json"],

@@ -30,6 +30,7 @@ def now() -> datetime:
 
 class Role(str, enum.Enum):
     ADMIN = "admin"
+    MANAGER = "manager"
     ANALYST = "analyst"
     UPLOADER = "uploader"
     VIEWER = "viewer"
@@ -59,6 +60,13 @@ class User(Base):
     role: Mapped[Role] = mapped_column(Enum(Role), default=Role.VIEWER)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class RolePolicy(Base):
+    __tablename__ = "role_policies"
+    role: Mapped[Role] = mapped_column(Enum(Role), primary_key=True)
+    permissions: Mapped[list] = mapped_column(JSON, default=list)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
 
 class UserSession(Base):

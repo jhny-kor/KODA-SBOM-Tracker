@@ -32,10 +32,36 @@ PowerShell 정적 서버와 웹 대시보드를 실행합니다. CycloneDX JSON/
 SHA-256 manifest가 들어가며 실제 `.env`는 포함되지 않습니다. 상세 설치·기동은
 [오프라인 번들 가이드](docs/offline-bundle-ko.md)를 따릅니다.
 
+취약점 데이터만 Windows에서 별도 생성하려면
+`.\scripts\build-vuln-bundle.ps1`로 Grype DB·NVD·CISA KEV bundle ZIP을 만들 수
+있습니다. ZIP은 서버에서 압축 해제·manifest 검증 후 `vuln-data` Docker named
+volume에 반입하며, 상세 명령은 [오프라인 bundle 가이드](docs/offline-bundle-ko.md)의
+Windows 절을 따릅니다.
+
 처음 기동하기 전에 `.env`의 모든 `change-me-*` 값과 공개 URL을 교체합니다.
 Dependency-Track에서 전용 팀/API 키를 만든 뒤 BOM 업로드·프로젝트 생성·조회
 권한만 부여하여 `TRACKER_DEPENDENCY_TRACK_API_KEY`에 넣습니다. 키는 브라우저로
 전달되지 않습니다.
+
+## 로그인과 권한
+
+최초 Tracker 관리자는 `.env`의 `TRACKER_BOOTSTRAP_ADMIN_USERNAME`과
+`TRACKER_BOOTSTRAP_ADMIN_PASSWORD`로 생성합니다. 이후 사용자는 설정 화면에서
+관리자가 생성·활성화하며, `admin`, `manager`, `analyst`, `uploader`, `viewer`
+역할별 권한은 화면의 역할 정책에서 조정할 수 있습니다. 역할 정책 변경과 사용자
+활성화·비활성화는 감사 로그에 남고, 사용자·역할 관리 권한을 가진 마지막 활성
+계정은 제거할 수 없습니다.
+
+로그인 화면의 `LDAP 사용` 선택지는 향후 연동을 위한 UI이며 현재 선택하면
+`501 ldap_not_configured`로 실패합니다. 따라서 현재 Tracker 로그인은 관리자가
+미리 만든 로컬 계정만 지원합니다.
+
+KODA Linux 통합본에서는 Tracker 로그인 세션을 gateway가 검증해 KODA에 신원만
+전달합니다. KODA에 처음 접근한 사용자는 KODA에서 `pending` 상태가 되며 KODA
+관리자가 별도로 승인하고 프로젝트 권한을 부여해야 합니다. 이 공유 로그인은 통합
+suite의 동일 오리진 `/koda/` 경로에서만 적용되며, 이 저장소의 단독 Compose에는
+KODA가 포함되지 않습니다. Dependency-Track UI 로그인도 Tracker 세션과 공유하지
+않고 별도 계정·Team 권한을 사용합니다.
 
 키 설정 후에는 `./scripts/verify-dtrack-connection.sh`로 v5 API와 최소 권한을
 확인할 수 있습니다. 관리자 API 키를 별도로 가진 초기 설치는
@@ -88,4 +114,5 @@ KODA SBOM Tracker 자체 코드는 Apache License 2.0으로 배포합니다. 라
 - `.env`에는 실제 비밀번호와 키를 넣고 Git에 커밋하지 않습니다.
 - `portal-web`, `portal-api`, `portal-worker`는 모두 `apps/`의 실제 구현을 빌드합니다.
 - 모든 서드파티 이미지는 digest까지 고정했습니다. 로컬 빌드 이미지도 오프라인 번들에서 `docker save` 결과와 SHA-256 manifest로 검증합니다.
-- 운영 전 `TRACKER_SECURE_COOKIES=true`와 TLS 종료 프록시를 사용합니다.
+- 운영 전 `TRACKER_ENVIRONMENT=production`, `TRACKER_SECURE_COOKIES=true`,
+  `TRACKER_PUBLIC_ORIGIN=https://<동일-오리진-호스트>`와 TLS 종료 프록시를 사용합니다.

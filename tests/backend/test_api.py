@@ -100,6 +100,20 @@ def test_problem_details_and_authentication_boundary() -> None:
         assert response.json()["status"] == 401
 
 
+def test_ldap_login_fails_closed_until_configured() -> None:
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/auth/login",
+            json={
+                "username": "test-admin",
+                "password": "correct-horse-battery-staple",
+                "useLdap": True,
+            },
+        )
+        assert response.status_code == 501
+        assert response.json()["code"] == "ldap_not_configured"
+
+
 def test_service_token_is_upload_only_and_can_read_only_its_job() -> None:
     sbom = json.dumps(
         {"bomFormat": "CycloneDX", "specVersion": "1.6", "components": []}
