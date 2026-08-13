@@ -11,7 +11,7 @@ class Settings(BaseSettings):
 
     database_url: str = "sqlite:///./tracker.db"
     artifact_dir: Path = Path("./data/artifacts")
-    max_upload_bytes: int = 25 * 1024 * 1024
+    max_upload_bytes: int = 100 * 1024 * 1024
     session_ttl_seconds: int = 8 * 60 * 60
     secure_cookies: bool = False
     environment: str = "development"

@@ -21,8 +21,19 @@ def test_dependency_track_is_part_of_linux_readiness() -> None:
     assert "DTRACK_API_BASE_URL=http://localhost:8088/dependency-track" in (ROOT / ".env.example").read_text()
     assert "DTRACK_API_BASE_URL=http://localhost:8088/dependency-track/api" not in (ROOT / ".env.example").read_text()
     assert "location = /dependency-track { return 308 /dependency-track/; }" in gateway
-    assert gateway.count("client_max_body_size 25m;") == 1
+    assert "proxy_pass http://${DTRACK_FRONTEND_UPSTREAM}/;" in gateway
+    assert "proxy_pass http://${DTRACK_FRONTEND_UPSTREAM}${DTRACK_BASE_PATH}/;" not in gateway
+    assert gateway.count("client_max_body_size 100m;") == 1
+    assert "UPLOAD_MAX_BYTES=104857600" in (ROOT / ".env.example").read_text()
     assert all("AIRGAP_HEALTH_TIMEOUT:-420" in launcher for launcher in launchers)
+
+
+def test_upload_limit_defaults_match_gateway_and_ui() -> None:
+    config = (ROOT / "apps/api/koda_tracker/config.py").read_text()
+    ui = (ROOT / "apps/web/src/App.tsx").read_text()
+
+    assert "max_upload_bytes: int = 100 * 1024 * 1024" in config
+    assert "최대 100 MiB" in ui
 
 
 def test_airgap_installer_retags_manifest_verified_remote_images() -> None:

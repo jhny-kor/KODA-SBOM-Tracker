@@ -596,7 +596,7 @@ function UploadModal({
       <div className="form-row">{!standaloneMode && (<label>환경
                 <select name="environmentId" required>{environments.map((environment) => (<option key={environment.id} value={environment.id}>{environment.name}</option>))}</select></label>)}<label>{standaloneMode ? "릴리스 (선택)" : "릴리스"}<input name="releaseVersion" placeholder="예: 1.4.2" defaultValue={standaloneMode ? "preview" : undefined} required={!standaloneMode} /></label></div>
       <label>SBOM 파일
-            <input name="sbom" type="file" accept=".json,.xml,application/json,application/xml" required /><small>CycloneDX JSON/XML, 최대 25 MiB</small></label>
+            <input name="sbom" type="file" accept=".json,.xml,application/json,application/xml" required /><small>CycloneDX JSON/XML, 최대 100 MiB</small></label>
       <label>메모
             <textarea name="note" rows={3} placeholder="변경 사유 또는 배포 식별자" /></label>
       {message && (<p className="form-message" role="status">{message}{jobState && <small> · 작업 상태: {jobState}</small>}</p>)}

@@ -1,7 +1,7 @@
 server {
     listen 8080;
     server_name ${GATEWAY_SERVER_NAME};
-    client_max_body_size 25m;
+    client_max_body_size 100m;
 
     location = /healthz {
         access_log off;
@@ -47,7 +47,8 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_set_header X-Forwarded-For $remote_addr;
         proxy_set_header X-Forwarded-Prefix ${DTRACK_BASE_PATH};
-        proxy_pass http://${DTRACK_FRONTEND_UPSTREAM}${DTRACK_BASE_PATH}/;
+        # The frontend image serves static files at its container root.
+        proxy_pass http://${DTRACK_FRONTEND_UPSTREAM}/;
     }
 
     location / {
