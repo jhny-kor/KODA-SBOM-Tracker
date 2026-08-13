@@ -25,8 +25,11 @@ if unquote(parsed.password or "") != password:
     raise SystemExit("TRACKER_DATABASE_URL password does not match TRACKER_DB_PASSWORD")
 if any(host in dtrack for host in ("dtrack-apiserver", "localhost", "127.0.0.1")):
     raise SystemExit("DTRACK_API_BASE_URL must be the gateway/server URL")
-if not dtrack.rstrip("/").endswith("/api"):
-    raise SystemExit("DTRACK_API_BASE_URL must end with /api")
+base = dtrack.rstrip("/")
+if base.endswith("/api"):
+    raise SystemExit("DTRACK_API_BASE_URL must omit /api; the frontend appends it")
+if not base:
+    raise SystemExit("DTRACK_API_BASE_URL must be the browser-facing Dependency-Track base without /api")
 PY
 docker compose --env-file "$env_file" -f "$ROOT_DIR/compose.yaml" -f "$ROOT_DIR/compose.airgap.yaml" config >/dev/null
 echo "Air-gap preflight OK: $env_file"

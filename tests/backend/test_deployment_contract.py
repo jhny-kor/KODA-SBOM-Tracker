@@ -17,7 +17,11 @@ def test_dependency_track_is_part_of_linux_readiness() -> None:
     assert "http://127.0.0.1:9000/health/ready" in compose
     assert "http://127.0.0.1:8080/dependency-track/" in compose
     assert "http://127.0.0.1:8080/dependency-track/api/version" in compose
+    assert "API_BASE_URL: ${DTRACK_API_BASE_URL:-http://localhost:8088/dependency-track}" in compose
+    assert "DTRACK_API_BASE_URL=http://localhost:8088/dependency-track" in (ROOT / ".env.example").read_text()
+    assert "DTRACK_API_BASE_URL=http://localhost:8088/dependency-track/api" not in (ROOT / ".env.example").read_text()
     assert "location = /dependency-track { return 308 /dependency-track/; }" in gateway
+    assert gateway.count("client_max_body_size 25m;") == 1
     assert all("AIRGAP_HEALTH_TIMEOUT:-420" in launcher for launcher in launchers)
 
 

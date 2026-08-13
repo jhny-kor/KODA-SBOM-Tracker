@@ -207,7 +207,7 @@ export async function patchService(id: string, body: { name?: string; active?: b
   return request<CatalogItem>(`/api/v1/services/${encodeURIComponent(id)}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 }
 
-export async function patchEnvironment(id: string, body: { name?: string; sortOrder?: number }) {
+export async function patchEnvironment(id: string, body: { name?: string; slug?: string; sortOrder?: number }) {
   return request<CatalogItem>(`/api/v1/environments/${encodeURIComponent(id)}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 }
 

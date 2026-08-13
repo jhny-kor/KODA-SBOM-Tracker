@@ -10,9 +10,12 @@ if [[ -z "${TRACKER_DEPENDENCY_TRACK_API_KEY:-}" || "${TRACKER_DEPENDENCY_TRACK_
   exit 2
 fi
 
-verify_base="${DTRACK_API_BASE_URL:-}"
+verify_base="${DTRACK_ADMIN_API_BASE_URL:-${DTRACK_API_BASE_URL:-}}"
 if [[ -z "$verify_base" || "$verify_base" == *dtrack-apiserver* ]]; then
   verify_base="http://127.0.0.1:${PUBLIC_HTTP_PORT:-8088}${DTRACK_BASE_PATH:-/dependency-track}/api"
+fi
+if [[ "$verify_base" != */api ]]; then
+  verify_base="${verify_base%/}/api"
 fi
 verify_base="${verify_base%/}"
 

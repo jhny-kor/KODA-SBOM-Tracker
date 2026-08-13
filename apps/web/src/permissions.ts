@@ -1,14 +1,12 @@
 import type { AuthUser } from "./types";
 
-export type Page = "dashboard" | "services" | "runs" | "compare" | "vuln" | "audit" | "settings";
+export type Page = "dashboard" | "services" | "runs" | "compare" | "settings";
 
 export const PAGE_PERMISSIONS: Record<Page, string> = {
   dashboard: "dashboard.view",
   services: "services.view",
   runs: "runs.view",
   compare: "compare.view",
-  vuln: "vulnerability.view",
-  audit: "audit.view",
   settings: "settings.view",
 };
 

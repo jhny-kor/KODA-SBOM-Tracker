@@ -209,9 +209,15 @@ def test_api_token_requires_service_scope_and_admin_catalog_patches() -> None:
         assert patched_service.json()["active"] is False
         assert client.patch(f"/api/v1/services/{service['id']}", json={"active": True}, headers=headers).status_code == 200
         environment = client.get("/api/v1/environments").json()[0]
-        patched_environment = client.patch(f"/api/v1/environments/{environment['id']}", json={"name": "검증 환경"}, headers=headers)
+        patched_environment = client.patch(
+            f"/api/v1/environments/{environment['id']}",
+            json={"name": "검증 환경", "slug": f"{environment['slug']}-renamed", "sortOrder": 99},
+            headers=headers,
+        )
         assert patched_environment.status_code == 200
         assert patched_environment.json()["name"] == "검증 환경"
+        assert patched_environment.json()["slug"] == f"{environment['slug']}-renamed"
+        assert patched_environment.json()["sortOrder"] == 99
 
 
 def test_vulnerability_bundle_sync_is_admin_csrf_protected() -> None:

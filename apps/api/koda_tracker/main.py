@@ -46,6 +46,7 @@ from .security import (
     current_principal,
     digest,
     hash_password,
+    require_admin,
     issue_session,
     require_csrf,
     require_permission,
@@ -98,6 +99,7 @@ class ServicePatch(BaseModel):
 
 class EnvironmentPatch(BaseModel):
     name: str | None = None
+    slug: str | None = None
     sortOrder: int | None = None
 
 
@@ -563,7 +565,7 @@ def create_service(
     _csrf=Depends(require_csrf),
 ) -> dict:
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,126}[a-z0-9]", body.slug):
-        raise HTTPException(422, "slug 형식이 올바르지 않습니다")
+        raise HTTPException(422, "식별자 형식이 올바르지 않습니다")
     item = Service(slug=body.slug, name=body.name)
     try:
         db.add(item)
@@ -631,9 +633,16 @@ def patch_environment(
         raise HTTPException(404, "환경을 찾을 수 없습니다")
     if body.name is not None:
         item.name = body.name.strip()
+    if body.slug is not None:
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,126}[a-z0-9]", body.slug):
+            raise HTTPException(422, "식별자 형식이 올바르지 않습니다")
+        duplicate = db.scalar(select(Environment).where(Environment.slug == body.slug, Environment.id != item.id))
+        if duplicate:
+            raise HTTPException(409, "이미 존재하는 환경 식별자입니다")
+        item.slug = body.slug
     if body.sortOrder is not None:
         item.sort_order = body.sortOrder
-    audit(db, principal.username, "environment.update", "environment", item.id, {"sortOrder": item.sort_order})
+    audit(db, principal.username, "environment.update", "environment", item.id, {"name": item.name, "slug": item.slug, "sortOrder": item.sort_order})
     db.commit()
     return {"id": item.id, "slug": item.slug, "name": item.name, "sortOrder": item.sort_order}
 
@@ -1028,6 +1037,7 @@ def audit_events(
     page: int = 1,
     size: int = 50,
     db: Session = Depends(get_db),
+    _admin=Depends(require_admin),
     _=Depends(require_permission("audit.view")),
 ) -> dict:
     total = db.scalar(select(func.count()).select_from(AuditEvent)) or 0
@@ -1121,6 +1131,7 @@ def _sync_bundle_records(db: Session, *, actor: str | None = None) -> tuple[list
 @app.get("/api/v1/vulnerability-data-bundles")
 def vulnerability_data_bundles(
     db: Session = Depends(get_db),
+    _admin=Depends(require_admin),
     _=Depends(require_permission("vulnerability.view")),
 ) -> dict:
     # GET stays read-only. An administrator explicitly synchronizes the
@@ -1132,7 +1143,8 @@ def vulnerability_data_bundles(
 @app.post("/api/v1/vulnerability-data-bundles/sync")
 def sync_vulnerability_data_bundles(
     db: Session = Depends(get_db),
-    principal=Depends(require_permission("vulnerability.manage")),
+    principal=Depends(require_admin),
+    _permission=Depends(require_permission("vulnerability.manage")),
     _csrf=Depends(require_csrf),
 ) -> dict:
     items, _ = _sync_bundle_records(db, actor=principal.username)
@@ -1145,7 +1157,8 @@ def sync_vulnerability_data_bundles(
 def activate_vulnerability_data_bundle(
     version: str,
     db: Session = Depends(get_db),
-    principal=Depends(require_permission("vulnerability.manage")),
+    principal=Depends(require_admin),
+    _permission=Depends(require_permission("vulnerability.manage")),
     _csrf=Depends(require_csrf),
 ) -> dict:
     items, _ = _sync_bundle_records(db, actor=principal.username)

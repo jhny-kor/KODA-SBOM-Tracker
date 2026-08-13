@@ -94,9 +94,12 @@ docker compose --env-file /path/to/.env \
   up -d --no-build --pull never
 ```
 
-`DTRACK_API_BASE_URL`은 폐쇄망 서버에서 접근 가능한 gateway URL의 `/api` 주소여야
-합니다(예: `http://sbom-server:8088/dependency-track/api`). `dtrack-apiserver`,
-`localhost`, `127.0.0.1` 주소는 preflight에서 거부됩니다.
+`DTRACK_API_BASE_URL`은 브라우저가 접근할 수 있는 Dependency-Track의 공개 base
+주소여야 합니다(예: `http://sbom-server:8088/dependency-track`). 프론트엔드가
+여기에 `/api`를 붙여 호출하므로 값을 `/dependency-track/api`로 넣으면
+`/api/api/...`가 되어 화면이 비어 보일 수 있습니다. `dtrack-apiserver`,
+`localhost`, `127.0.0.1` 주소는 preflight에서 거부됩니다. 관리자 자동화 스크립트는
+`DTRACK_ADMIN_API_BASE_URL`에 `/api`가 포함된 주소를 사용합니다.
 
 ## 4. 취약점 데이터 반입 규칙
 

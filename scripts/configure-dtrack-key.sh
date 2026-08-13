@@ -15,6 +15,9 @@ base="${DTRACK_ADMIN_API_BASE_URL:-${DTRACK_API_BASE_URL:-}}"
 if [[ -z "$base" || "$base" == *dtrack-apiserver* ]]; then
   base="http://127.0.0.1:${PUBLIC_HTTP_PORT:-8088}${DTRACK_BASE_PATH:-/dependency-track}/api"
 fi
+if [[ "$base" != */api ]]; then
+  base="${base%/}/api"
+fi
 
 DTRACK_ADMIN_API_KEY="$DTRACK_ADMIN_API_KEY" \
   DTRACK_ADMIN_BASE="${base%/}" \

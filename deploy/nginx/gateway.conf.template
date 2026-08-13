@@ -1,6 +1,7 @@
 server {
     listen 8080;
     server_name ${GATEWAY_SERVER_NAME};
+    client_max_body_size 25m;
 
     location = /healthz {
         access_log off;

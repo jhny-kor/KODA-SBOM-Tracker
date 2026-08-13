@@ -21,10 +21,10 @@ PERMISSION_CATALOG = tuple(sorted({
 }))
 DEFAULT_ROLE_PERMISSIONS = {
     Role.ADMIN: set(PERMISSION_CATALOG),
-    Role.MANAGER: {"dashboard.view", "services.view", "runs.view", "compare.view", "vulnerability.view", "audit.view", "settings.view", "sbom.upload", "artifact.download", "analysis.create", "dtrack.retry", "sbom.archive", "catalog.manage", "vulnerability.manage", "users.manage"},
-    Role.ANALYST: {"dashboard.view", "services.view", "runs.view", "compare.view", "vulnerability.view", "audit.view", "sbom.upload", "artifact.download", "analysis.create", "dtrack.retry"},
-    Role.UPLOADER: {"dashboard.view", "services.view", "runs.view", "compare.view", "vulnerability.view", "audit.view", "sbom.upload", "artifact.download"},
-    Role.VIEWER: {"dashboard.view", "services.view", "runs.view", "compare.view", "vulnerability.view", "audit.view", "artifact.download"},
+    Role.MANAGER: {"dashboard.view", "services.view", "runs.view", "compare.view", "settings.view", "sbom.upload", "artifact.download", "analysis.create", "dtrack.retry", "sbom.archive", "catalog.manage", "users.manage"},
+    Role.ANALYST: {"dashboard.view", "services.view", "runs.view", "compare.view", "sbom.upload", "artifact.download", "analysis.create", "dtrack.retry"},
+    Role.UPLOADER: {"dashboard.view", "services.view", "runs.view", "compare.view", "sbom.upload", "artifact.download"},
+    Role.VIEWER: {"dashboard.view", "services.view", "runs.view", "compare.view", "artifact.download"},
 }
 
 
@@ -103,6 +103,12 @@ def require_permission(*permissions: str, allow_service_token: bool = False):
             raise HTTPException(403, "권한이 없습니다")
         return principal
     return dependency
+
+
+def require_admin(principal: User | ApiToken = Depends(current_principal)) -> User:
+    if isinstance(principal, ApiToken) or principal.role != Role.ADMIN:
+        raise HTTPException(403, "관리자 권한이 필요합니다")
+    return principal
 
 
 def require_csrf(request: Request, csrf_token: str | None = Header(default=None, alias="X-CSRF-Token")) -> None:

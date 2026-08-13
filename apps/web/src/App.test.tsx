@@ -1,7 +1,7 @@
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
-import App, { ComponentInspector, LoginPage, SettingsPage } from "./App";
+import App, { ComponentInspector, KodaPortalLink, LoginPage, SettingsPage } from "./App";
 import { allowedPages, canPermission, dataAccess, hasPermissions, pageForPermissions } from "./permissions";
 
 afterEach(() => {
@@ -24,7 +24,7 @@ describe("KODA SBOM Tracker", () => {
 
   it("honors wildcard permissions", () => {
     const admin = { id: "u1", username: "admin", role: "admin", active: true, permissions: ["*"] };
-    expect(allowedPages(admin)).toHaveLength(7);
+    expect(allowedPages(admin)).toHaveLength(5);
   });
 
   it("redirects direct and refreshed access to the first allowed page", () => {
@@ -40,8 +40,11 @@ describe("KODA SBOM Tracker", () => {
       users={[{ id: "u2", username: "analyst", role: "analyst", active: true }]}
       services={[]} tokens={[]} dtrackStatus={null}
       policies={[{ role: "admin", permissions: ["roles.manage"] }]}
-      roleCatalog={["roles.manage"]} canUsers canTokens={false} canDtrack={false}
-      canPolicyEdit={false} canRoles={false} onPolicyChanged={async () => {}} onChanged={() => {}}
+      roleCatalog={["roles.manage"]} bundles={[]} auditEvents={[]}
+      isAdmin={false} canVulnerability={false} canVulnerabilityManage={false} canAudit={false}
+      canUsers canTokens={false} canDtrack={false}
+      canPolicyEdit={false} canRoles={false} onSync={async () => {}} onActivate={async () => {}}
+      onPolicyChanged={async () => {}} onChanged={() => {}}
     />);
     expect(screen.getByRole("heading", { name: "사용자 1명" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: /API 토큰/ })).not.toBeInTheDocument();
@@ -49,6 +52,32 @@ describe("KODA SBOM Tracker", () => {
     expect(screen.queryByRole("heading", { name: "역할 정책" })).not.toBeInTheDocument();
     expect(screen.queryByRole("option", { name: "관리자" })).not.toBeInTheDocument();
     expect(screen.queryByRole("option", { name: "매니저" })).not.toBeInTheDocument();
+  });
+
+  it("groups administrator security data under Korean settings tabs", () => {
+    render(<SettingsPage
+      users={[]} services={[]} tokens={[]} dtrackStatus={null}
+      policies={[{ role: "admin", permissions: ["audit.view", "vulnerability.view"] }]}
+      roleCatalog={["audit.view", "vulnerability.view"]}
+      bundles={[{ id: "bundle-1", version: "2026.08", dataAsOf: "2026-08-01", nvdDataAsOf: "2026-08-01", kevDataAsOf: "2026-08-01", grypeDbSchema: "6", aliasCount: 1, kevCount: 1, manifestSha256: "secret-sha", active: true, importedAt: "2026-08-01T00:00:00Z" }]}
+      auditEvents={[{ id: "audit-1", actor: "admin", action: "login", targetType: "session", targetId: "1", detail: { sha256: "secret-sha", round: 1 }, createdAt: "2026-08-01T00:00:00Z" }]}
+      isAdmin canVulnerability canVulnerabilityManage canAudit
+      canUsers={false} canTokens={false} canDtrack={false} canPolicyEdit canRoles
+      onSync={async () => {}} onActivate={async () => {}}
+      onPolicyChanged={async () => {}} onChanged={() => {}}
+    />);
+    expect(screen.getByRole("tab", { name: "권한 관리" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "취약점 데이터" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "감사 로그" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "취약점 데이터" }));
+    expect(screen.getByRole("heading", { name: "취약점 데이터" })).toBeInTheDocument();
+    expect(screen.queryByText("secret-sha")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "감사 로그" }));
+    expect(screen.getByRole("heading", { name: "감사 로그" })).toBeInTheDocument();
+    expect(screen.queryByText("secret-sha")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "권한 관리" }));
+    expect(screen.getByText("관리자")).toBeInTheDocument();
+    expect(screen.getByText("감사 로그 조회")).toBeInTheDocument();
   });
 
   it("hides artifact and Dependency-Track links without action permissions", () => {
@@ -66,6 +95,15 @@ describe("KODA SBOM Tracker", () => {
     expect(screen.queryByRole("link", { name: /Dependency-Track/ })).not.toBeInTheDocument();
   });
 
+  it("opens the KODA security analysis portal in a new browser context", () => {
+    render(<KodaPortalLink />);
+    const link = screen.getByRole("link", { name: "KODA 보안 분석" });
+    expect(link).toHaveAttribute("href", "/koda/");
+    expect(link).toHaveAttribute("target", "_blank");
+    expect(link).toHaveAttribute("rel", "noopener noreferrer");
+    expect(link.querySelector("svg path")).toBeInTheDocument();
+  });
+
   it("renders dense run history and opens comparison", () => {
     render(<App />);
     expect(screen.getByRole("heading", { name: "SBOM 회차" })).toBeInTheDocument();
@@ -75,7 +113,16 @@ describe("KODA SBOM Tracker", () => {
     expect(screen.getByText("구성요소 추가")).toBeInTheDocument();
   });
 
-  it("opens the account accordion and closes it with Escape", () => {
+  it("colors comparison vulnerability status by severity", async () => {
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "회차 비교" }));
+    await screen.findByText("구성요소 추가");
+    fireEvent.click(screen.getByRole("tab", { name: "취약점" }));
+    expect(await screen.findByText("높음")).toHaveClass("severity-pill", "high");
+    expect(screen.getByText("중간")).toHaveClass("severity-pill", "medium");
+  });
+
+  it("logs out from the account accordion", async () => {
     render(<App />);
     const accountButton = screen.getByRole("button", { name: "보안운영팀" });
     expect(accountButton).toHaveAttribute("aria-expanded", "false");
@@ -83,10 +130,10 @@ describe("KODA SBOM Tracker", () => {
     expect(accountButton).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByText("미리보기 사용자")).toBeInTheDocument();
     expect(screen.getByText("관리자")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "로그아웃" })).toBeDisabled();
-    fireEvent.keyDown(document, { key: "Escape" });
-    expect(accountButton).toHaveAttribute("aria-expanded", "false");
-    expect(screen.queryByText("미리보기 사용자")).not.toBeInTheDocument();
+    const logoutButton = screen.getByRole("button", { name: "로그아웃" });
+    expect(logoutButton).toBeEnabled();
+    fireEvent.click(logoutButton);
+    await waitFor(() => expect(screen.getByRole("heading", { name: "KODA SBOM Tracker" })).toBeInTheDocument());
   });
 
   it("opens upload dialog", () => {
@@ -107,6 +154,8 @@ describe("KODA SBOM Tracker", () => {
     window.history.replaceState(null, "", "/?runId=run-1");
     render(<App />);
     expect(screen.getByRole("heading", { name: "1.4.2 · 3차" })).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "1.4.2 · 3차" })).toHaveClass("detail-modal");
+    expect(screen.queryByText("SHA-256")).not.toBeInTheDocument();
     expect(screen.getAllByText("결제 API").length).toBeGreaterThan(0);
   });
 });

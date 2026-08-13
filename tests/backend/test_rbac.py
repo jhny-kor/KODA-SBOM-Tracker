@@ -89,6 +89,19 @@ def test_default_roles_have_representative_successes_and_forbidden_hidden_functi
                 assert client.get(path).status_code == status, (role, path)
 
 
+def test_vulnerability_data_and_audit_log_are_admin_only() -> None:
+    with TestClient(app) as admin:
+        _, admin_headers = _login(admin)
+        manager = _create_user(admin, admin_headers, "manager", "security-data")
+        assert admin.get("/api/v1/audit-events").status_code == 200
+        assert admin.get("/api/v1/vulnerability-data-bundles").status_code == 200
+    with TestClient(app) as client:
+        _login(client, manager["username"])
+        assert client.get("/api/v1/audit-events").status_code == 403
+        assert client.get("/api/v1/vulnerability-data-bundles").status_code == 403
+        assert client.post("/api/v1/vulnerability-data-bundles/sync").status_code == 403
+
+
 def test_read_apis_require_their_exact_permissions() -> None:
     with SessionLocal() as db:
         policy = db.get(RolePolicy, Role.ANALYST)

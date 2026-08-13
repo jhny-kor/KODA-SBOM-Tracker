@@ -206,7 +206,7 @@ Windows 로컬 실행에서는 다음 기본값을 유지할 수 있습니다.
 
 ```dotenv
 PUBLIC_HTTP_PORT=8088
-DTRACK_API_BASE_URL=http://localhost:8088/dependency-track/api
+DTRACK_API_BASE_URL=http://localhost:8088/dependency-track
 ```
 
 실제 비밀번호와 API 키는 설치파일이나 Git에 넣지 않습니다. 설치파일에는 `.env.example`만
