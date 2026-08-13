@@ -24,8 +24,16 @@ def test_dependency_track_is_part_of_linux_readiness() -> None:
 def test_airgap_installer_retags_manifest_verified_remote_images() -> None:
     installer = (ROOT / "scripts/install-airgap.sh").read_text()
 
+    assert '[[ "$env_file" == "$install_dir/.env" ]] || cp' in installer
     assert "declare -A loaded_ids" in installer
     assert 'runtime_ref="${image_ref%@*}"' in installer
     assert 'docker tag "$image_id" "$runtime_ref"' in installer
     assert 'done < "$install_dir/config/images.lock"' in installer
     assert "--no-build --pull never" in installer
+
+
+def test_maintenance_scripts_use_the_installed_compose_file() -> None:
+    library = (ROOT / "scripts/lib.sh").read_text()
+
+    assert '--project-directory "$ROOT_DIR"' in library
+    assert '-f "$ROOT_DIR/compose.yaml"' in library

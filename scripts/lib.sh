@@ -39,9 +39,11 @@ verify_manifest() {
 
 compose() {
   if [[ -f "$ENV_FILE" ]]; then
-    docker compose --env-file "$ENV_FILE" "$@"
+    docker compose --project-directory "$ROOT_DIR" --env-file "$ENV_FILE" \
+      -f "$ROOT_DIR/compose.yaml" "$@"
   else
-    docker compose --env-file "$EXAMPLE_ENV_FILE" "$@"
+    docker compose --project-directory "$ROOT_DIR" --env-file "$EXAMPLE_ENV_FILE" \
+      -f "$ROOT_DIR/compose.yaml" "$@"
   fi
 }
 

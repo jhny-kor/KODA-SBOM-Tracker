@@ -150,9 +150,26 @@ gateway는 포털뿐 아니라 Dependency-Track frontend와 API readiness가 모
 
 ## 5. 백업과 복원
 
-- 백업 생성: `./scripts/backup-system.sh`
-- 백업 검증: `./scripts/verify-backup.sh ./backups/<timestamp>`
-- 복원: `./scripts/restore-system.sh ./backups/<timestamp>`
+백업 시점의 `.env`, 이미지 버전, 릴리스 압축파일을 한 세트로 보관합니다. 이
+스크립트는 `.env`를 기본적으로 포함하지 않으므로 비밀번호·API 키가 든 원본은
+접근 제한된 암호화 매체에 별도 보관합니다. 꼭 같은 백업 세트에 넣어야 할 때만
+`INCLUDE_ENV_IN_BACKUP=1`을 사용하고 백업 디렉터리 권한을 즉시 제한합니다.
+
+일관된 백업을 위해 유지보수 창에 쓰기 서비스를 먼저 중지합니다. PostgreSQL은
+백업 스크립트가 필요한 동안만 기동합니다.
+
+```bash
+ENV_FILE=/opt/koda-sbom/.env
+docker compose --env-file "$ENV_FILE" -f compose.yaml -f compose.airgap.yaml \
+  stop gateway portal-web portal-api portal-worker dtrack-frontend dtrack-apiserver
+
+ENV_FILE="$ENV_FILE" BACKUP_ROOT=/media/koda-backup/tracker \
+  ./scripts/backup-system.sh
+ENV_FILE="$ENV_FILE" \
+  ./scripts/verify-backup.sh /media/koda-backup/tracker/<출력된-UTC-시각>
+
+./scripts/start-airgap.sh "$ENV_FILE"
+```
 
 백업 세트에는 다음이 포함됩니다.
 
@@ -162,14 +179,74 @@ gateway는 포털뿐 아니라 Dependency-Track frontend와 API readiness가 모
 - compose/deploy 기준 설정
 - SHA-256 manifest
 
-## 6. 서비스 계약
+다음 항목은 포함되지 않습니다.
+
+- 운영 `.env` (위의 명시적 옵션을 사용한 경우만 포함)
+- 통합 Suite의 KODA 포털 SQLite·입력 파일
+- 호스트에 별도로 둔 원본 SBOM, 스캔 대상, KODA 보고서, TLS 인증서
+- Docker 이미지 tar와 릴리스 압축파일
+
+복원은 현재 데이터를 교체하므로 검증된 백업과 그 백업을 만든 당시의 `.env` 및
+호환 릴리스가 모두 준비된 경우에만 수행합니다. 현재 상태도 먼저 새 백업으로
+보존하고, 백업 디렉터리를 검증한 다음 복원합니다.
+
+```bash
+ENV_FILE=/opt/koda-sbom/.env
+BACKUP=/media/koda-backup/tracker/<UTC-시각>
+
+ENV_FILE="$ENV_FILE" ./scripts/verify-backup.sh "$BACKUP"
+ENV_FILE="$ENV_FILE" ./scripts/restore-system.sh "$BACKUP"
+./scripts/start-airgap.sh "$ENV_FILE"
+```
+
+`restore-system.sh`는 Compose 서비스를 내리고 named volume과 두 DB를 교체한 뒤
+PostgreSQL만 기동한 상태로 끝납니다. 따라서 마지막 `start-airgap.sh`와 상태 확인을
+생략하면 안 됩니다. 다른 `COMPOSE_PROJECT_NAME`, DB 이름, volume 이름으로 만든
+백업을 현재 `.env`에 임의 복원하지 않습니다.
+
+## 6. 폐쇄망 부분 교체
+
+- 포털·worker·Dependency-Track 이미지나 Compose를 바꿀 때는 개별 image tar를
+  직접 덮어쓰지 않고 새 전체 Tracker 릴리스의 manifest를 검증한 뒤 기존 설치
+  디렉터리에 `install-airgap.sh`를 다시 실행합니다. 통합 KODA Suite 운영 서버는
+  이 단독 절차 대신 Suite 압축파일의 `koda-suite install`을 사용합니다.
+- 계정·역할·회차·감사 기록은 `sbom_tracker` DB, 업로드 원문은
+  `tracker-artifacts` volume에 있으므로 관리자 대량 변경 전 전체 백업을 만듭니다.
+- Dependency-Track 프로젝트·정책은 `dtrack` DB와 `dtrack-data` volume에 있으므로
+  같은 전체 백업으로 보호합니다.
+- Grype/NVD/KEV만 바꿀 때는 이미지를 다시 설치하지 않고
+  `verify-vuln-bundle.sh` → `import-vuln-bundle.sh` → 포털 동기화 순서로 반입합니다.
+- `.env`, TLS 인증서, 외부 reverse proxy 설정은 릴리스에 포함되지 않습니다. 변경
+  전 별도 백업하고 `preflight-airgap.sh`를 통과시킨 뒤 서비스를 재기동합니다.
+
+Tracker 단독 설치를 같은 디렉터리에서 갱신하는 예시는 다음과 같습니다.
+
+```bash
+RELEASE=/media/koda-release/koda-sbom-airgap-<버전>.tar.gz
+PREFIX=/opt/koda-sbom
+
+"$PREFIX/scripts/verify-airgap-release.sh" "$RELEASE"
+docker compose --project-directory "$PREFIX" --env-file "$PREFIX/.env" \
+  -f "$PREFIX/compose.yaml" -f "$PREFIX/compose.airgap.yaml" stop
+ENV_FILE="$PREFIX/.env" BACKUP_ROOT=/media/koda-backup/tracker \
+  "$PREFIX/scripts/backup-system.sh"
+ENV_FILE="$PREFIX/.env" \
+  "$PREFIX/scripts/verify-backup.sh" /media/koda-backup/tracker/<출력된-UTC-시각>
+"$PREFIX/scripts/install-airgap.sh" "$RELEASE" "$PREFIX" --env-file "$PREFIX/.env"
+"$PREFIX/scripts/start-airgap.sh" "$PREFIX/.env"
+```
+
+새 버전 확인 전에는 이전 릴리스와 백업, 기존 Docker 이미지를 유지합니다. 문제가
+있으면 호환되는 이전 릴리스를 다시 설치한 뒤 그 시점의 검증된 백업을 복원합니다.
+
+## 7. 서비스 계약
 
 - `portal-web`: 8080 포트에서 HTTP 응답
 - `portal-api`: 8000 포트에서 `/health`, `/api/...`
 - `portal-worker`: 현재 `koda-tracker-worker` 프로세스 기반 healthcheck
 - `ARTIFACT_ROOT`, `VULN_DATA_ROOT`, `UPLOAD_MAX_BYTES` 환경변수는 유지 권장
 
-## 7. KODA/CI 업로드
+## 8. KODA/CI 업로드
 
 관리자가 서비스 범위 API 토큰을 발급한 다음 아래 보조 CLI를 사용합니다.
 

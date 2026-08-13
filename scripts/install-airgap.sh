@@ -32,7 +32,7 @@ trap cleanup EXIT
 "$script_dir/verify-airgap-release.sh" "$archive"
 tar -xzf "$archive" -C "$tmp"
 cp -a "$tmp/." "$install_dir/"
-cp "$env_file" "$install_dir/.env"
+[[ "$env_file" == "$install_dir/.env" ]] || cp "$env_file" "$install_dir/.env"
 "$install_dir/scripts/preflight-airgap.sh" "$install_dir/.env"
 declare -A loaded_ids=()
 while IFS= read -r -d '' image; do
