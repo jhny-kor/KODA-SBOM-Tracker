@@ -33,7 +33,37 @@ function replacePortalLink(updates: { page?: Page; runId?: string | null }) {
 function stateLabel(state: SbomRun["state"]) {
   return { completed: "완료", processing: "처리 중", partial: "일부 실패", failed: "실패", queued: "대기", archived: "보관" }[state];}
 
-function Header({ collapsed, onToggle, onLogout, dataAsOf, search, onSearch, preview }: { collapsed: boolean; onToggle: () => void; onLogout: () => void; dataAsOf: string; search: string; onSearch: (value: string) => void; preview: boolean;}) {
+function roleLabel(role: string) {
+  return ({ admin: "관리자", manager: "매니저", analyst: "분석자", uploader: "업로더", viewer: "조회자" } as Record<string, string>)[role] || role || "-";
+}
+
+function Header({ collapsed, onToggle, onLogout, dataAsOf, search, onSearch, preview, user }: { collapsed: boolean; onToggle: () => void; onLogout: () => void; dataAsOf: string; search: string; onSearch: (value: string) => void; preview: boolean; user: AuthUser | null;}) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const menuButtonRef = useRef<HTMLButtonElement>(null);
+  const displayName = user?.displayName || user?.username || (preview ? "미리보기 사용자" : "사용자");
+  const department = user?.department || "보안운영팀";
+  const accountLabel = department;
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      if (event.target instanceof Node && !menuRef.current?.contains(event.target)) setMenuOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setMenuOpen(false);
+        menuButtonRef.current?.focus();
+      }
+    };
+    document.addEventListener("pointerdown", closeOnOutsidePointer);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutsidePointer);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [menuOpen]);
+
   return (
     <header className="topbar">
       <button className="icon-button menu-button" onClick={onToggle} aria-label={collapsed ? "사이드바 펼치기" : "사이드바 접기"}>
@@ -48,7 +78,35 @@ function Header({ collapsed, onToggle, onLogout, dataAsOf, search, onSearch, pre
       <div className="freshness"><span className="online-dot" />오프라인 데이터 기준일: {dataAsOf || "미반입"} {" "}<span className="info">i</span></div>
       <span className="divider" />
       <button className="icon-button" aria-label="알림"><Icon name="bell" /></button>
-      <button className="user-menu" onClick={preview ? undefined : onLogout} title={preview ? "로컬 미리보기 모드" : "로그아웃"}><Icon name="user" /><span>{preview ? "미리보기" : "보안운영팀"}</span><Icon name="chevron" /></button>
+      <div className="account-menu" ref={menuRef}>
+        <button
+          ref={menuButtonRef}
+          className={`user-menu ${menuOpen ? "is-open" : ""}`}
+          onClick={() => setMenuOpen((value) => !value)}
+          aria-controls="account-menu-panel"
+          aria-expanded={menuOpen}
+          aria-haspopup="true"
+          title="계정 메뉴"
+        >
+          <Icon name="user" /><span>{accountLabel}</span><Icon name="chevron" />
+        </button>
+        {menuOpen && (
+          <div className="account-panel" id="account-menu-panel" aria-label="계정 메뉴">
+            <div className="account-summary">
+              <span className="account-avatar" aria-hidden="true"><Icon name="user" /></span>
+              <div><strong>{displayName}</strong><span>{department}</span></div>
+            </div>
+            <dl className="account-details">
+              <div><dt>아이디</dt><dd>{user?.username || "-"}</dd></div>
+              <div><dt>역할</dt><dd>{roleLabel(user?.role || "")}</dd></div>
+            </dl>
+            {preview && <p className="account-note">로컬 미리보기 모드에서는 서버 세션을 사용하지 않습니다.</p>}
+            <button className="account-logout" onClick={() => { setMenuOpen(false); onLogout(); }} disabled={preview}>
+              로그아웃
+            </button>
+          </div>
+        )}
+      </div>
     </header>
   );}
 
@@ -810,7 +868,9 @@ export default function App() {
     previewMode
       ? {
           id: "preview",
-          username: "보안운영팀",
+          username: "preview",
+          displayName: "미리보기 사용자",
+          department: "보안운영팀",
           role: "admin",
           active: true,
           permissions: ["*"]}
@@ -966,7 +1026,7 @@ export default function App() {
   if (permittedPage !== page) return null;
   return (<div className={`app-shell ${collapsed ? "is-collapsed" : ""}`}>
     <Sidebar page={page} collapsed={collapsed} can={can}onNavigate={(next) => can(PAGE_PERMISSIONS[next]) &&navigate(next)} />
-    <Header collapsed={collapsed} search={globalSearch} onSearch={setGlobalSearch} dataAsOf={runs.map((run) => run.dataAsOf).filter(Boolean).sort().at(-1) || ""} onToggle={() => setCollapsed((value) => !value)} onLogout={() => { void logout().then(() => setAuthenticated(false));}} preview={previewMode} />
+    <Header collapsed={collapsed} search={globalSearch} onSearch={setGlobalSearch} dataAsOf={runs.map((run) => run.dataAsOf).filter(Boolean).sort().at(-1) || ""} onToggle={() => setCollapsed((value) => !value)} onLogout={() => { void logout().then(() => setAuthenticated(false));}} preview={previewMode} user={authUser} />
     <main>{loadError && <p className="form-message" role="alert">{loadError}</p>}{standaloneMode && (<div className="standalone-banner" role="status"><strong>로컬 미리보기 모드</strong><span>로그인·Docker 없이 CycloneDX 구조와 파일 내장 취약점 레코드만
               표시합니다.
             </span></div>)}{content}</main>

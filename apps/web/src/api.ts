@@ -47,7 +47,7 @@ export async function login(username: string, password: string, useLdap = false)
 }
 
 export async function resumeSession(): Promise<{ user: AuthUser; csrfToken: string }> {
-  if (previewMode) return { user: { id: "preview", username: "보안운영팀", role: "admin", active: true, permissions: ["*"] }, csrfToken: "preview" };
+  if (previewMode) return { user: { id: "preview", username: "preview", displayName: "미리보기 사용자", department: "보안운영팀", role: "admin", active: true, permissions: ["*"] }, csrfToken: "preview" };
   const result = await request<{ csrfToken: string; user: AuthUser }>("/api/v1/auth/me");
   csrfToken = result.csrfToken;
   return result;

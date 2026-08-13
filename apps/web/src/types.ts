@@ -131,6 +131,8 @@ export interface AuditEvent {
 export interface UserSummary {
   id?: string;
   username: string;
+  displayName?: string;
+  department?: string;
   role: string;
   active: boolean;
   permissions?: string[];

@@ -34,7 +34,37 @@ tar -xzf "$archive" -C "$tmp"
 cp -a "$tmp/." "$install_dir/"
 cp "$env_file" "$install_dir/.env"
 "$install_dir/scripts/preflight-airgap.sh" "$install_dir/.env"
-find "$install_dir/images" -type f -name '*.tar' -print0 | while IFS= read -r -d '' image; do docker load -i "$image"; done
+declare -A loaded_ids=()
+while IFS= read -r -d '' image; do
+  output="$(docker load -i "$image")"
+  printf '%s\n' "$output"
+  loaded_id="$(awk '/Loaded image ID:/ { print $4; exit }' <<<"$output")"
+  [[ -z "$loaded_id" ]] || loaded_ids["$(basename "$image")"]="$loaded_id"
+done < <(find "$install_dir/images" -type f -name '*.tar' -print0)
+
+# Registry manifest digests do not survive the Docker save/load archive format.
+# The release manifest authenticates each tar, so pin the verified loaded image
+# to its configured tag and use only that local tag with --pull never.
+while IFS='=' read -r variable image_ref; do
+  [[ -n "$variable" && -n "$image_ref" ]] || continue
+  safe_name="$(printf '%s' "$image_ref" | tr '/:@' '___').tar"
+  [[ -f "$install_dir/images/$safe_name" ]] || continue
+  runtime_ref="${image_ref%@*}"
+  image_id="${loaded_ids[$safe_name]:-}"
+  [[ -n "$image_id" ]] || image_id="$(docker image inspect "$runtime_ref" --format '{{.Id}}' 2>/dev/null || true)"
+  [[ -n "$image_id" ]] || { echo "could not identify loaded image: $safe_name" >&2; exit 1; }
+  docker tag "$image_id" "$runtime_ref"
+  [[ "$(docker image inspect "$runtime_ref" --format '{{.Architecture}}')" == amd64 ]] \
+    || { echo "loaded image is not linux/amd64: $runtime_ref" >&2; exit 1; }
+  python3 - "$install_dir/.env" "$variable" "$runtime_ref" <<'PY'
+import pathlib
+import sys
+
+path, key, value = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+lines = path.read_text(encoding="utf-8").splitlines()
+path.write_text("\n".join(f"{key}={value}" if line.startswith(f"{key}=") else line for line in lines) + "\n", encoding="utf-8")
+PY
+done < "$install_dir/config/images.lock"
 
 cd "$install_dir"
 docker compose --env-file .env -f compose.yaml -f compose.airgap.yaml up -d --no-build --pull never

@@ -75,6 +75,20 @@ describe("KODA SBOM Tracker", () => {
     expect(screen.getByText("구성요소 추가")).toBeInTheDocument();
   });
 
+  it("opens the account accordion and closes it with Escape", () => {
+    render(<App />);
+    const accountButton = screen.getByRole("button", { name: "보안운영팀" });
+    expect(accountButton).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(accountButton);
+    expect(accountButton).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText("미리보기 사용자")).toBeInTheDocument();
+    expect(screen.getByText("관리자")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "로그아웃" })).toBeDisabled();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(accountButton).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText("미리보기 사용자")).not.toBeInTheDocument();
+  });
+
   it("opens upload dialog", () => {
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: /SBOM 업로드/ }));
