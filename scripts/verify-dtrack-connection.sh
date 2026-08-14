@@ -54,9 +54,8 @@ def get(path: str):
 
 _, version = get("version")
 _, team = get("v1/team/self")
-_, permissions_payload = get("v1/user/self/permissions")
 
-permissions = permissions_payload if isinstance(permissions_payload, list) else permissions_payload.get("permissions", [])
+permissions = team.get("permissions", []) if isinstance(team, dict) else []
 permission_names = {
     item.get("name") if isinstance(item, dict) else str(item)
     for item in permissions

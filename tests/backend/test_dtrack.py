@@ -92,9 +92,10 @@ def test_dependency_track_status_reports_version_team_and_permissions() -> None:
         if request.url.path == "/api/version":
             return httpx.Response(200, json={"version": "5.0.3"})
         if request.url.path == "/api/v1/team/self":
-            return httpx.Response(200, json={"name": "koda-automation"})
-        if request.url.path == "/api/v1/user/self/permissions":
-            return httpx.Response(200, json=[{"name": name} for name in required])
+            return httpx.Response(
+                200,
+                json={"name": "koda-automation", "permissions": [{"name": name} for name in required]},
+            )
         return httpx.Response(500, json={"unexpected": str(request.url)})
 
     async def scenario() -> None:
@@ -107,5 +108,31 @@ def test_dependency_track_status_reports_version_team_and_permissions() -> None:
         assert status["team"] == "koda-automation"
         assert status["missingPermissions"] == []
         assert set(status["permissions"]) == required
+
+    asyncio.run(scenario())
+
+
+def test_dependency_track_upload_exposes_validation_error(tmp_path: Path) -> None:
+    artifact = tmp_path / "bom.json"
+    artifact.write_text('{"bomFormat":"CycloneDX","specVersion":"1.6","components":[]}')
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, text="The uploaded CycloneDX BOM is invalid: duplicate bom-ref")
+
+    async def scenario() -> None:
+        client = DependencyTrackClient(transport=httpx.MockTransport(handler))
+        try:
+            await client.upload(
+                project_name="KODA::demo",
+                project_version="r1",
+                artifact=artifact,
+            )
+        except RuntimeError as exc:
+            assert str(exc) == (
+                "Dependency-Track BOM 업로드 실패 (HTTP 400): "
+                "The uploaded CycloneDX BOM is invalid: duplicate bom-ref"
+            )
+        else:
+            raise AssertionError("400 응답이 실패로 전달되지 않았습니다")
 
     asyncio.run(scenario())

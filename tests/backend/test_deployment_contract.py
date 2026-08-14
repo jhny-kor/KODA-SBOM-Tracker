@@ -23,6 +23,8 @@ def test_dependency_track_is_part_of_linux_readiness() -> None:
     assert "location = /dependency-track { return 308 /dependency-track/; }" in gateway
     assert "proxy_pass http://${DTRACK_FRONTEND_UPSTREAM}/;" in gateway
     assert "proxy_pass http://${DTRACK_FRONTEND_UPSTREAM}${DTRACK_BASE_PATH}/;" not in gateway
+    assert "location = /dependency-track/static/config.json" in gateway
+    assert 'add_header Cache-Control "no-store" always;' in gateway
     assert gateway.count("client_max_body_size 100m;") == 1
     assert "UPLOAD_MAX_BYTES=104857600" in (ROOT / ".env.example").read_text()
     assert all("AIRGAP_HEALTH_TIMEOUT:-420" in launcher for launcher in launchers)
@@ -52,3 +54,12 @@ def test_maintenance_scripts_use_the_installed_compose_file() -> None:
 
     assert '--project-directory "$ROOT_DIR"' in library
     assert '-f "$ROOT_DIR/compose.yaml"' in library
+
+
+def test_dtrack_provisioner_accepts_unchanged_permissions() -> None:
+    provisioner = (ROOT / "scripts/configure-dtrack-key.sh").read_text()
+    verifier = (ROOT / "scripts/verify-dtrack-connection.sh").read_text()
+
+    assert 'exc.code == 304 and method == "PUT" and path == "v1/permission/team"' in provisioner
+    assert 'get("v1/user/self/permissions")' not in verifier
+    assert 'team.get("permissions", [])' in verifier

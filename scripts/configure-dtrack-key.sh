@@ -61,6 +61,8 @@ def request(method: str, path: str, payload=None):
             data = response.read()
             return response.status, json.loads(data.decode("utf-8")) if data else {}
     except urllib.error.HTTPError as exc:
+        if exc.code == 304 and method == "PUT" and path == "v1/permission/team":
+            return exc.code, {}
         print(f"Dependency-Track provisioning failed: {method} {path} (HTTP {exc.code})", file=sys.stderr)
         if exc.code == 401:
             print("The administrator key is invalid or expired", file=sys.stderr)

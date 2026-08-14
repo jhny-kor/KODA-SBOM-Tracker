@@ -57,10 +57,7 @@ class DependencyTrackClient:
                 team_payload = team_response.json()
                 result["authenticated"] = True
                 result["team"] = team_payload.get("name") if isinstance(team_payload, dict) else None
-                permissions_response = await client.get(f"{self.base_url}/api/v1/user/self/permissions", headers=headers)
-                permissions_response.raise_for_status()
-                permissions_payload = permissions_response.json()
-                entries = permissions_payload if isinstance(permissions_payload, list) else permissions_payload.get("permissions", [])
+                entries = team_payload.get("permissions", []) if isinstance(team_payload, dict) else []
                 permissions = sorted(
                     item.get("name") if isinstance(item, dict) else str(item)
                     for item in entries
@@ -131,7 +128,12 @@ class DependencyTrackClient:
                     data=fields,
                     files={"bom": (artifact.name, handle, "application/octet-stream")},
                 )
-            response.raise_for_status()
+            if response.is_error:
+                detail = response.text.strip()[:1000]
+                raise RuntimeError(
+                    f"Dependency-Track BOM 업로드 실패 (HTTP {response.status_code})"
+                    + (f": {detail}" if detail else "")
+                )
             return response.json()
 
     async def wait_for_token(self, token: str, timeout_seconds: int = 180) -> None:

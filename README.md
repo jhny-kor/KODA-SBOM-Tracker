@@ -41,7 +41,9 @@ Windows 절을 따릅니다.
 처음 기동하기 전에 `.env`의 모든 `change-me-*` 값과 공개 URL을 교체합니다.
 Dependency-Track에서 전용 팀/API 키를 만든 뒤 BOM 업로드·프로젝트 생성·조회
 권한만 부여하여 `TRACKER_DEPENDENCY_TRACK_API_KEY`에 넣습니다. 키는 브라우저로
-전달되지 않습니다.
+전달되지 않습니다. team 사용자 멤버가 0명이어도 API 키 인증에는 문제가 없으며,
+현재 연결 검사는 `v1/team/self`가 반환한 team 권한을 확인합니다. 공개
+`DTRACK_API_BASE_URL`에는 `/api`를 붙이지 않고 관리자 자동화 주소에만 붙입니다.
 
 ## 로그인과 권한
 
@@ -101,6 +103,7 @@ KODA Linux 대시보드에서 결과 화면에 포털 링크를 넣을 때는
 - [운영 가이드](docs/operations-ko.md)
 - [오프라인 번들 가이드](docs/offline-bundle-ko.md)
 - [KODA 통합 인증·운영 계약](docs/koda-integration-ko.md)
+- [폐쇄망 장애 대응](docs/troubleshooting-ko.md)
 - [Windows 설치파일 가이드](docs/windows-installer-ko.md)
 - [오픈소스 라이선스 정책](docs/open-source-compliance-ko.md)
 

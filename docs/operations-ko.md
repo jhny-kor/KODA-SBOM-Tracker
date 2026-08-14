@@ -36,7 +36,9 @@ Dependency-Track 초기 관리자 로그인 후 포털 전용 팀을 만들고 �
 - `BOM_UPLOAD`
 - `PROJECT_CREATION_UPLOAD`
 - `PORTFOLIO_MANAGEMENT_UPDATE` (정상 완료 회차의 latest 승격에만 사용)
-- 프로젝트·메트릭·정책 위반 조회 권한
+- `VIEW_PORTFOLIO`
+- `VIEW_VULNERABILITY`
+- `VIEW_POLICY_VIOLATION`
 
 발급 키는 `TRACKER_DEPENDENCY_TRACK_API_KEY`에만 저장하며 frontend나 브라우저
 환경변수로 전달하지 않습니다.
@@ -91,6 +93,9 @@ KODA_DTRACK_LIVE_API_KEY='전용 팀 키' \
 관리자 API 키가 있는 초기 설치에서만 자동 팀/권한/키 발급 도구를 사용할 수
 있습니다. 관리자 키는 셸 환경변수로만 전달하고 `.env`에는 저장하지 않습니다.
 기존 키가 있는 팀은 자동 회전하지 않으므로 실수로 기존 연동을 끊지 않습니다.
+권한이 이미 같은 경우 Dependency-Track의 `PUT v1/permission/team`은 `304`를
+반환할 수 있으며 최신 스크립트는 이를 성공으로 처리합니다. team에 사용자 멤버가
+0명이어도 API 키 인증에는 영향을 주지 않습니다.
 
 ```bash
 export DTRACK_ADMIN_API_KEY='관리자 API 키'
@@ -142,11 +147,17 @@ curl -fsS http://localhost:${PUBLIC_HTTP_PORT:-8088}/healthz
 curl -fsS http://localhost:${PUBLIC_HTTP_PORT:-8088}/api/v1/healthz
 curl -I http://localhost:${PUBLIC_HTTP_PORT:-8088}/dependency-track/
 curl -fsS http://localhost:${PUBLIC_HTTP_PORT:-8088}/dependency-track/api/version
+curl -fsS http://localhost:${PUBLIC_HTTP_PORT:-8088}/dependency-track/static/config.json \
+  | python3 -m json.tool
 ```
 
 gateway는 포털뿐 아니라 Dependency-Track frontend와 API readiness가 모두 정상인
 경우에만 healthy가 됩니다. Dependency-Track API의 내부 readiness endpoint는
 `/health/ready`입니다.
+원격 브라우저를 사용하는 경우 `static/config.json`의 `API_BASE_URL`에
+`localhost`, `127.0.0.1`, `dtrack-apiserver`가 없어야 합니다. 설치 중 발생한
+흰 화면·401·304·400·413 오류는 [폐쇄망 장애 대응](troubleshooting-ko.md)을
+따릅니다.
 
 ## 5. 백업과 복원
 
