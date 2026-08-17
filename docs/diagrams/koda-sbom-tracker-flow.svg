@@ -1,0 +1,120 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 850" role="img" aria-labelledby="flow-title flow-desc">
+  <title id="flow-title">KODA SBOM Tracker 기능 흐름</title>
+  <desc id="flow-desc">로그인과 역할 권한 판정부터 CycloneDX 업로드, 오프라인 분석, 회차 상세, 회차 비교, 관리자 설정과 감사 로그까지의 기능 흐름입니다.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#087b82"/>
+    </marker>
+    <marker id="arrow-muted" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8b9aa1"/>
+    </marker>
+  </defs>
+  <style>
+    text { font-family: Pretendard, "Noto Sans KR", Arial, sans-serif; fill: #17232d; }
+    .eyebrow { font-size: 12px; letter-spacing: 2px; font-weight: 700; fill: #087b82; }
+    .title { font-size: 30px; font-weight: 750; letter-spacing: -1px; }
+    .subtitle { font-size: 14px; fill: #667680; }
+    .zone-title { font-size: 13px; font-weight: 750; letter-spacing: .5px; }
+    .node-title { font-size: 15px; font-weight: 750; }
+    .node-note { font-size: 11px; fill: #667680; }
+    .small { font-size: 11px; fill: #667680; }
+    .node { fill: #fff; stroke: #bcc8cf; stroke-width: 1.2; }
+    .focus { fill: #eaf7f7; stroke: #087b82; stroke-width: 1.6; }
+    .admin { fill: #fff8eb; stroke: #d9a44d; stroke-width: 1.2; }
+    .boundary { fill: none; stroke: #d8e0e5; stroke-width: 1; stroke-dasharray: 5 5; }
+    .flow { fill: none; stroke: #087b82; stroke-width: 2; marker-end: url(#arrow); }
+    .secondary-flow { fill: none; stroke: #8b9aa1; stroke-width: 1.5; marker-end: url(#arrow-muted); }
+    .dashed-flow { fill: none; stroke: #c86b00; stroke-width: 1.5; stroke-dasharray: 5 5; marker-end: url(#arrow-muted); }
+  </style>
+
+  <rect width="1600" height="1030" fill="#f7f9fa"/>
+  <text x="54" y="52" class="eyebrow">KODA SECURITY OPERATIONS</text>
+  <text x="54" y="88" class="title">기능 흐름 / 데이터와 권한이 만나는 지점</text>
+  <text x="54" y="114" class="subtitle">한 번의 SBOM 업로드가 회차·분석·비교·감사 이력으로 이어지는 구조</text>
+  <text x="1546" y="58" text-anchor="end" class="small">STATIC FUNCTION MAP</text>
+  <line x1="54" y1="130" x2="1546" y2="130" stroke="#bcc8cf"/>
+
+  <rect x="54" y="157" width="1492" height="318" class="boundary"/>
+  <text x="76" y="184" class="zone-title">01 · 사용자 요청과 포털 화면</text>
+  <text x="1523" y="184" text-anchor="end" class="small">모든 화면은 세션과 역할 정책을 통과</text>
+
+  <rect x="82" y="248" width="166" height="82" class="node"/>
+  <text x="165" y="278" text-anchor="middle" class="node-title">로그인·세션</text>
+  <text x="165" y="300" text-anchor="middle" class="node-note">HttpOnly 세션</text>
+  <text x="165" y="316" text-anchor="middle" class="node-note">현재 브라우저</text>
+
+  <rect x="302" y="248" width="190" height="82" class="focus"/>
+  <text x="397" y="278" text-anchor="middle" class="node-title">권한 판정</text>
+  <text x="397" y="300" text-anchor="middle" class="node-note">역할 → 기능 권한</text>
+  <text x="397" y="316" text-anchor="middle" class="node-note">페이지·API 동일 기준</text>
+
+  <rect x="546" y="248" width="194" height="82" class="node"/>
+  <text x="643" y="278" text-anchor="middle" class="node-title">대시보드·회차</text>
+  <text x="643" y="300" text-anchor="middle" class="node-note">서비스 / 환경 / 릴리스</text>
+  <text x="643" y="316" text-anchor="middle" class="node-note">업로드·상태 확인</text>
+
+  <rect x="794" y="248" width="194" height="82" class="focus"/>
+  <text x="891" y="278" text-anchor="middle" class="node-title">회차 상세</text>
+  <text x="891" y="300" text-anchor="middle" class="node-note">구성요소·취약점·정책</text>
+  <text x="891" y="316" text-anchor="middle" class="node-note">큰 팝업에서 확인</text>
+
+  <rect x="1042" y="248" width="194" height="82" class="focus"/>
+  <text x="1139" y="278" text-anchor="middle" class="node-title">회차 비교</text>
+  <text x="1139" y="300" text-anchor="middle" class="node-note">구성요소 / 취약점 / 정책</text>
+  <text x="1139" y="316" text-anchor="middle" class="node-note">변경·심각도 시각화</text>
+
+  <rect x="1290" y="248" width="194" height="82" class="admin"/>
+  <text x="1387" y="278" text-anchor="middle" class="node-title">설정</text>
+  <text x="1387" y="300" text-anchor="middle" class="node-note">관리자·허용 역할만</text>
+  <text x="1387" y="316" text-anchor="middle" class="node-note">하위 메뉴로 관리</text>
+
+  <path d="M248 289 H302" class="flow"/>
+  <path d="M492 289 H546" class="flow"/>
+  <path d="M740 289 H794" class="flow"/>
+  <path d="M988 289 H1042" class="flow"/>
+  <path d="M1236 289 H1290" class="dashed-flow"/>
+  <text x="1261" y="274" text-anchor="middle" class="small" fill="#c86b00">admin</text>
+
+  <rect x="54" y="519" width="1492" height="300" class="boundary"/>
+  <text x="76" y="546" class="zone-title">02 · 업로드와 분석 데이터 흐름</text>
+  <text x="1523" y="546" text-anchor="end" class="small">폐쇄망 입력 · 서버 측 분석 · 회차 결과 저장</text>
+
+  <rect x="92" y="626" width="188" height="82" class="node"/>
+  <text x="186" y="656" text-anchor="middle" class="node-title">CycloneDX SBOM</text>
+  <text x="186" y="678" text-anchor="middle" class="node-note">JSON / XML 업로드</text>
+  <text x="186" y="694" text-anchor="middle" class="node-note">서비스·환경 연결</text>
+
+  <rect x="340" y="626" width="188" height="82" class="node"/>
+  <text x="434" y="656" text-anchor="middle" class="node-title">Portal API</text>
+  <text x="434" y="678" text-anchor="middle" class="node-note">검증·회차 생성</text>
+  <text x="434" y="694" text-anchor="middle" class="node-note">권한·감사 기록</text>
+
+  <rect x="588" y="626" width="188" height="82" class="focus"/>
+  <text x="682" y="656" text-anchor="middle" class="node-title">분석 Worker</text>
+  <text x="682" y="678" text-anchor="middle" class="node-note">Grype·정책 검사</text>
+  <text x="682" y="694" text-anchor="middle" class="node-note">Dependency-Track 연동</text>
+
+  <rect x="836" y="626" width="188" height="82" class="node"/>
+  <text x="930" y="656" text-anchor="middle" class="node-title">오프라인 기준 데이터</text>
+  <text x="930" y="678" text-anchor="middle" class="node-note">취약점 bundle</text>
+  <text x="930" y="694" text-anchor="middle" class="node-note">NVD · CISA KEV · Grype DB</text>
+
+  <rect x="1084" y="626" width="188" height="82" class="focus"/>
+  <text x="1178" y="656" text-anchor="middle" class="node-title">SBOM 회차 결과</text>
+  <text x="1178" y="678" text-anchor="middle" class="node-note">구성요소·취약점·정책</text>
+  <text x="1178" y="694" text-anchor="middle" class="node-note">기준일·상태·변경</text>
+
+  <rect x="1332" y="626" width="164" height="82" class="node"/>
+  <text x="1414" y="656" text-anchor="middle" class="node-title">감사 로그</text>
+  <text x="1414" y="678" text-anchor="middle" class="node-note">업로드·재분석·정책</text>
+  <text x="1414" y="694" text-anchor="middle" class="node-note">관리자 조회</text>
+
+  <path d="M280 667 H340" class="flow"/>
+  <path d="M528 667 H588" class="flow"/>
+  <path d="M776 667 H836" class="secondary-flow"/>
+  <path d="M1024 667 H1084" class="flow"/>
+  <path d="M1272 667 H1332" class="secondary-flow"/>
+  <path d="M930 708 V754 H1178 V708" class="secondary-flow"/>
+  <text x="1054" y="749" text-anchor="middle" class="small">분석 기준 참조</text>
+
+</svg>

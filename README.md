@@ -100,6 +100,7 @@ KODA Linux 대시보드에서 결과 화면에 포털 링크를 넣을 때는
 
 운영 문서:
 
+- [화면·기능 한눈에 보기](docs/koda-sbom-tracker-overview-ko.md)
 - [운영 가이드](docs/operations-ko.md)
 - [오프라인 번들 가이드](docs/offline-bundle-ko.md)
 - [KODA 통합 인증·운영 계약](docs/koda-integration-ko.md)
