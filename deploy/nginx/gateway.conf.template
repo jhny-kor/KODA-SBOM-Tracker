@@ -1,7 +1,9 @@
 server {
     listen 8080;
     server_name ${GATEWAY_SERVER_NAME};
-    client_max_body_size 100m;
+    # The API still limits the file itself to 100 MiB; this extra MiB covers
+    # multipart form fields and boundaries.
+    client_max_body_size 101m;
 
     location = /healthz {
         access_log off;

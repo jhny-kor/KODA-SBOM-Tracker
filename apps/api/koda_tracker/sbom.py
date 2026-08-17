@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -13,6 +14,17 @@ from defusedxml import ElementTree as SafeET
 
 class SbomValidationError(ValueError):
     pass
+
+
+def _validated_payload(payload: object) -> dict:
+    if not isinstance(payload, dict) or payload.get("bomFormat") != "CycloneDX":
+        raise SbomValidationError("CycloneDX SBOM이 아닙니다")
+    version = str(payload.get("specVersion", ""))
+    if version not in {"1.4", "1.5", "1.6", "1.7"}:
+        raise SbomValidationError(f"지원하지 않는 CycloneDX 버전입니다: {version or 'unknown'}")
+    if not isinstance(payload.get("components", []), list):
+        raise SbomValidationError("components는 배열이어야 합니다")
+    return payload
 
 
 def parse_sbom(raw: bytes) -> tuple[dict, str]:
@@ -37,14 +49,36 @@ def parse_sbom(raw: bytes) -> tuple[dict, str]:
         media = "application/vnd.cyclonedx+xml"
     else:
         raise SbomValidationError("CycloneDX JSON 또는 XML만 지원합니다")
-    if not isinstance(payload, dict) or payload.get("bomFormat") != "CycloneDX":
-        raise SbomValidationError("CycloneDX SBOM이 아닙니다")
-    version = str(payload.get("specVersion", ""))
-    if version not in {"1.4", "1.5", "1.6", "1.7"}:
-        raise SbomValidationError(f"지원하지 않는 CycloneDX 버전입니다: {version or 'unknown'}")
-    if not isinstance(payload.get("components", []), list):
-        raise SbomValidationError("components는 배열이어야 합니다")
-    return payload, media
+    return _validated_payload(payload), media
+
+
+def parse_sbom_file(path: Path) -> tuple[dict, str]:
+    with path.open("rb") as candidate:
+        prefix = candidate.read(4096).lstrip()
+        candidate.seek(0)
+        if prefix.startswith((b"{", b"[")):
+            try:
+                payload = json.load(candidate)
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise SbomValidationError("유효한 JSON 문서가 아닙니다") from exc
+            media = "application/vnd.cyclonedx+json"
+        elif prefix.startswith(b"<"):
+            carry = b""
+            while chunk := candidate.read(1024 * 1024):
+                upper = (carry + chunk).upper()
+                if b"<!DOCTYPE" in upper or b"<!ENTITY" in upper:
+                    raise SbomValidationError("DTD와 외부 엔티티는 허용되지 않습니다")
+                carry = upper[-16:]
+            candidate.seek(0)
+            try:
+                root = SafeET.parse(candidate).getroot()
+            except Exception as exc:
+                raise SbomValidationError("유효한 XML 문서가 아닙니다") from exc
+            payload = _xml_payload(root)
+            media = "application/vnd.cyclonedx+xml"
+        else:
+            raise SbomValidationError("CycloneDX JSON 또는 XML만 지원합니다")
+    return _validated_payload(payload), media
 
 
 def validate_with_cyclonedx_cli(raw: bytes, binary: str) -> None:
@@ -56,13 +90,22 @@ def validate_with_cyclonedx_cli(raw: bytes, binary: str) -> None:
         with tempfile.NamedTemporaryFile(suffix=suffix) as candidate:
             candidate.write(raw)
             candidate.flush()
-            process = subprocess.run(
-                [binary, "validate", "--input-file", candidate.name],
-                capture_output=True,
-                text=True,
-                timeout=30,
-                check=False,
-            )
+            validate_file_with_cyclonedx_cli(Path(candidate.name), binary)
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        raise SbomValidationError(f"CycloneDX CLI 검증기를 실행할 수 없습니다: {exc}") from exc
+
+
+def validate_file_with_cyclonedx_cli(path: Path, binary: str) -> None:
+    if not binary:
+        return
+    try:
+        process = subprocess.run(
+            [binary, "validate", "--input-file", str(path)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
         raise SbomValidationError(f"CycloneDX CLI 검증기를 실행할 수 없습니다: {exc}") from exc
     if process.returncode != 0:
@@ -137,6 +180,21 @@ def store_artifact(base: Path, raw: bytes, *, digest: str | None = None) -> tupl
     if not target.exists():
         with tempfile.NamedTemporaryFile(dir=target.parent, prefix=f".{digest}.", delete=False) as candidate:
             candidate.write(raw)
+            temp = Path(candidate.name)
+        try:
+            temp.replace(target)
+        finally:
+            temp.unlink(missing_ok=True)
+    return digest, target
+
+
+def store_artifact_file(base: Path, source: Path, *, digest: str) -> tuple[str, Path]:
+    target = artifact_path(base, digest)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if not target.exists():
+        with tempfile.NamedTemporaryFile(dir=target.parent, prefix=f".{digest}.", delete=False) as candidate:
+            with source.open("rb") as staged:
+                shutil.copyfileobj(staged, candidate, length=1024 * 1024)
             temp = Path(candidate.name)
         try:
             temp.replace(target)

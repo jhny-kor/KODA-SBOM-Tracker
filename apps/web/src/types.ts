@@ -10,7 +10,10 @@ export interface SbomRun {
   state: RunState;
   sha256: string;
   componentCount: number;
+  componentTypeCounts?: Record<string, number>;
   vulnerabilityCount: number;
+  severityCounts?: Record<string, number>;
+  kevCount?: number;
   policyViolationCount: number;
   dataAsOf: string | null;
   createdAt: string;
@@ -32,6 +35,8 @@ export interface AnalysisRevisionSummary {
   toolVersion?: string | null;
   dataSources?: Record<string, unknown>;
   error?: string | null;
+  findingCount?: number;
+  policyCount?: number;
   findings?: Record<string, unknown>[];
   policies?: Record<string, unknown>[];
 }
@@ -126,6 +131,13 @@ export interface AuditEvent {
   targetId: string;
   detail?: Record<string, unknown>;
   createdAt: string;
+}
+
+export interface PageResult<T> {
+  items: T[];
+  page: number;
+  size: number;
+  total: number;
 }
 
 export interface UserSummary {

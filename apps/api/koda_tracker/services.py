@@ -36,17 +36,23 @@ def create_components(db: Session, run: SbomRun) -> None:
             bom_ref = str(raw.get("bom-ref") or "")
             identity = f"{identity}|bom-ref:{bom_ref}" if bom_ref else f"{identity}|ambiguous:{index}"
             status = "review_required"
+        group_name = str(raw.get("group") or "")
+        name = str(raw.get("name") or raw.get("bom-ref") or "unknown")
+        version = str(raw.get("version") or "")
+        purl = str(raw.get("purl") or "")
+        bom_ref = str(raw.get("bom-ref") or "")
         db.add(
             RunComponent(
                 run_id=run.id,
                 identity_key=identity,
                 identity_status=status,
                 component_type=str(raw.get("type") or "library"),
-                group_name=str(raw.get("group") or ""),
-                name=str(raw.get("name") or raw.get("bom-ref") or "unknown"),
-                version=str(raw.get("version") or ""),
-                purl=str(raw.get("purl") or ""),
-                bom_ref=str(raw.get("bom-ref") or ""),
+                group_name=group_name,
+                name=name,
+                version=version,
+                purl=purl,
+                bom_ref=bom_ref,
+                search_text=" ".join((group_name, name, version, purl, bom_ref)).lower(),
                 sha256=sha256_for(raw),
                 licenses=licenses_for(raw),
                 properties=list(raw.get("properties") or []),

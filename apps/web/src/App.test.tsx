@@ -142,7 +142,7 @@ describe("KODA SBOM Tracker", () => {
     render(<App />);
     fireEvent.change(screen.getByRole("textbox", { name: "전체 검색" }), { target: { value: "httpclient" } });
     expect(await screen.findByRole("cell", { name: "결제 API" })).toBeInTheDocument();
-    expect(screen.queryByText("회원 서비스")).not.toBeInTheDocument();
+    expect(screen.queryByRole("cell", { name: "회원 서비스" })).not.toBeInTheDocument();
   });
 
   it("colors comparison vulnerability status by severity", async () => {
@@ -191,6 +191,7 @@ describe("KODA SBOM Tracker", () => {
     expect(screen.getByRole("textbox", { name: "구성요소 검색" })).toBeInTheDocument();
     expect(screen.getAllByRole("combobox", { name: "상세 페이지당 행 수" })).toHaveLength(2);
     await waitFor(() => expect(screen.getByText((_, element) => element?.tagName === "LI" && element.textContent?.includes("r1 · 완료 ·") === true)).toBeInTheDocument());
+    expect(await screen.findByText("높음")).toHaveClass("severity-pill", "high");
     expect(screen.getAllByText("결제 API").length).toBeGreaterThan(0);
   });
 });

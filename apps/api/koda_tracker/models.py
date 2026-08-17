@@ -80,6 +80,14 @@ class UserSession(Base):
     user: Mapped[User] = relationship()
 
 
+class AuthAttempt(Base):
+    __tablename__ = "auth_attempts"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    kind: Mapped[str] = mapped_column(String(32), index=True)
+    bucket_hash: Mapped[str] = mapped_column(String(64), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, index=True)
+
+
 class ApiToken(Base):
     __tablename__ = "api_tokens"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
@@ -169,6 +177,7 @@ class RunComponent(Base):
     version: Mapped[str] = mapped_column(String(255), default="")
     purl: Mapped[str] = mapped_column(Text, default="")
     bom_ref: Mapped[str] = mapped_column(Text, default="")
+    search_text: Mapped[str] = mapped_column(Text, default="")
     sha256: Mapped[str] = mapped_column(String(64), default="")
     licenses: Mapped[list] = mapped_column(JSON, default=list)
     properties: Mapped[list] = mapped_column(JSON, default=list)

@@ -1,6 +1,6 @@
 import { demoChanges, demoRuns } from "./demo";
 import { compareStandaloneRuns, getStandaloneCatalogs, getStandaloneRun, getStandaloneRuns, importStandaloneSbom } from "./standalone";
-import type { AuditEvent, AuthUser, CatalogItem, Comparison, DependencyTrackStatus, JobState, RolePolicy, RolePolicyCatalog, SbomRun, SbomRunDetail, UserSummary, VulnerabilityBundle } from "./types";
+import type { AuditEvent, AuthUser, CatalogItem, Comparison, ComponentSnapshot, DependencyTrackStatus, JobState, PageResult, RolePolicy, RolePolicyCatalog, SbomRun, SbomRunDetail, UserSummary, VulnerabilityBundle } from "./types";
 
 export const standaloneMode = import.meta.env.VITE_STANDALONE_MODE === "true";
 export const demoMode = !standaloneMode && import.meta.env.VITE_DEMO_MODE !== "false";
@@ -85,12 +85,26 @@ export async function logout() {
   csrfToken = "";
 }
 
-export async function fetchRuns(search = ""): Promise<SbomRun[]> {
+export type RunQuery = {
+  page?: number;
+  size?: number;
+  q?: string;
+  serviceId?: string;
+  environmentId?: string;
+  state?: string;
+};
+
+export async function fetchRuns(options: RunQuery = {}): Promise<PageResult<SbomRun>> {
+  const page = options.page || 1;
+  const size = options.size || 20;
   if (previewMode) {
     const runs = standaloneMode ? [...demoRuns, ...getStandaloneRuns()] : demoRuns;
-    const term = search.trim().toLowerCase();
-    if (!term) return runs;
-    return runs.filter((run) => {
+    const term = options.q?.trim().toLowerCase() || "";
+    const filtered = runs.filter((run) => {
+      if (options.serviceId && run.service.id !== options.serviceId) return false;
+      if (options.environmentId && run.environment.id !== options.environmentId) return false;
+      if (options.state && run.state !== options.state) return false;
+      if (!term) return true;
       const summary = `${run.service.name} ${run.environment.name} ${run.releaseVersion} ${run.filename || ""} ${run.id}`.toLowerCase();
       const standaloneComponents = getStandaloneRun(run.id)?.components || [];
       const componentText = [
@@ -99,20 +113,15 @@ export async function fetchRuns(search = ""): Promise<SbomRun[]> {
       ].filter(Boolean).join(" ").toLowerCase();
       return summary.includes(term) || componentText.includes(term);
     });
+    const start = (page - 1) * size;
+    return { items: filtered.slice(start, start + size), page, size, total: filtered.length };
   }
-  const items: SbomRun[] = [];
-  let page = 1;
-  let total = 0;
-  do {
-    const params = new URLSearchParams({ page: String(page), size: "100" });
-    if (search.trim()) params.set("q", search.trim());
-    const result = await request<{ items: SbomRun[]; total: number }>(`/api/v1/sbom-runs?${params}`);
-    items.push(...result.items);
-    total = result.total;
-    page += 1;
-    if (!result.items.length) break;
-  } while (items.length < total);
-  return items;
+  const params = new URLSearchParams({ page: String(page), size: String(size) });
+  if (options.q?.trim()) params.set("q", options.q.trim());
+  if (options.serviceId) params.set("service_id", options.serviceId);
+  if (options.environmentId) params.set("environment_id", options.environmentId);
+  if (options.state) params.set("state", options.state);
+  return request<PageResult<SbomRun>>(`/api/v1/sbom-runs?${params}`);
 }
 
 export async function fetchRun(runId: string): Promise<SbomRunDetail> {
@@ -120,9 +129,39 @@ export async function fetchRun(runId: string): Promise<SbomRunDetail> {
   if (standaloneRun) return standaloneRun;
   if (previewMode) {
     const run = demoRuns.find((item) => item.id === runId) || demoRuns[0];
-    return { ...run, components: [{ identityKey: "pkg:maven/org.apache.httpcomponents/httpclient@4.5.13", identityStatus: "stable", componentType: "library", group: "org.apache.httpcomponents", name: "httpclient", version: "4.5.13", purl: "pkg:maven/org.apache.httpcomponents/httpclient@4.5.13", bomRef: "pkg:maven/org.apache.httpcomponents/httpclient@4.5.13", sha256: "demo-sha256", licenses: [{ license: { id: "Apache-2.0" } }], properties: {} }], analyses: [{ id: `demo-analysis-${run.id}`, sequence: 1, state: "completed", dataAsOf: "2025-05-21", toolVersion: "grype-demo", dataSources: {} }] };
+    return { ...run, components: [{ identityKey: "pkg:maven/org.apache.httpcomponents/httpclient@4.5.13", identityStatus: "stable", componentType: "library", group: "org.apache.httpcomponents", name: "httpclient", version: "4.5.13", purl: "pkg:maven/org.apache.httpcomponents/httpclient@4.5.13", bomRef: "pkg:maven/org.apache.httpcomponents/httpclient@4.5.13", sha256: "demo-sha256", licenses: [{ license: { id: "Apache-2.0" } }], properties: {} }], analyses: [{ id: `demo-analysis-${run.id}`, sequence: 1, state: "completed", dataAsOf: "2025-05-21", toolVersion: "grype-demo", dataSources: {}, findings: [{ canonicalId: "CVE-2025-DEMO", severity: "high", component: "httpclient@4.5.13", kev: false }] }] };
   }
   return request<SbomRunDetail>(`/api/v1/sbom-runs/${encodeURIComponent(runId)}`);
+}
+
+export async function fetchRunComponents(runId: string, page = 1, size = 25, q = ""): Promise<PageResult<ComponentSnapshot>> {
+  if (previewMode) {
+    const detail = await fetchRun(runId);
+    const term = q.trim().toLowerCase();
+    const filtered = detail.components.filter((component) =>
+      !term || [component.group, component.name, component.version, component.purl, component.bomRef]
+        .filter(Boolean).join(" ").toLowerCase().includes(term));
+    const start = (page - 1) * size;
+    return { items: filtered.slice(start, start + size), page, size, total: filtered.length };
+  }
+  const params = new URLSearchParams({ page: String(page), size: String(size) });
+  if (q.trim()) params.set("q", q.trim());
+  return request<PageResult<ComponentSnapshot>>(`/api/v1/sbom-runs/${encodeURIComponent(runId)}/components?${params}`);
+}
+
+export async function fetchRunFindings(runId: string, page = 1, size = 25, analysisId = ""): Promise<PageResult<Record<string, unknown>>> {
+  if (previewMode) {
+    const detail = await fetchRun(runId);
+    const analysis = analysisId
+      ? detail.analyses.find((item) => item.id === analysisId)
+      : detail.analyses[0];
+    const findings = analysis?.findings || [];
+    const start = (page - 1) * size;
+    return { items: findings.slice(start, start + size), page, size, total: findings.length };
+  }
+  const params = new URLSearchParams({ page: String(page), size: String(size) });
+  if (analysisId) params.set("analysisId", analysisId);
+  return request<PageResult<Record<string, unknown>>>(`/api/v1/sbom-runs/${encodeURIComponent(runId)}/findings?${params}`);
 }
 
 export interface JobSummary {
@@ -160,10 +199,11 @@ export async function fetchCatalogs(): Promise<{ services: CatalogItem[]; enviro
   return { services, environments };
 }
 
-export async function fetchAuditEvents() {
-  if (previewMode) return [];
-  const result = await request<{ items: AuditEvent[] }>("/api/v1/audit-events?size=100");
-  return result.items;
+export async function fetchAuditEvents(page = 1, size = 25, q = ""): Promise<PageResult<AuditEvent>> {
+  if (previewMode) return { items: [], page, size, total: 0 };
+  const params = new URLSearchParams({ page: String(page), size: String(size) });
+  if (q.trim()) params.set("q", q.trim());
+  return request<PageResult<AuditEvent>>(`/api/v1/audit-events?${params}`);
 }
 
 export async function fetchUsers() {

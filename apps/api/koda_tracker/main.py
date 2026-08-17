@@ -3,30 +3,32 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import ipaddress
 import re
 import secrets
 import tempfile
 import uuid
-from collections import defaultdict, deque
+from collections import defaultdict
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, Response, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
-from sqlalchemy import func, inspect, or_, select, text
+from sqlalchemy import Text, cast, delete, func, inspect, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from .config import get_settings, session_cookie_name
 from .comparison import compare_components, compare_records
-from .db import Base, SessionLocal, engine, ensure_postgres_manager_enum, ensure_user_approval_state_column, get_db
+from .db import Base, SessionLocal, engine, ensure_component_search_support, ensure_postgres_manager_enum, ensure_user_approval_state_column, get_db
 from .dtrack import DependencyTrackClient
 from .models import (
     AnalysisRevision,
     ApiToken,
+    AuthAttempt,
     AuditEvent,
     Environment,
     Job,
@@ -42,7 +44,7 @@ from .models import (
     UserSession,
     VulnerabilityDataBundle,
 )
-from .sbom import SbomValidationError, parse_sbom, store_artifact, validate_with_cyclonedx_cli
+from .sbom import SbomValidationError, parse_sbom_file, store_artifact_file, validate_file_with_cyclonedx_cli
 from .security import (
     current_principal,
     digest,
@@ -146,6 +148,7 @@ async def lifespan(_: FastAPI):
     ensure_postgres_manager_enum(engine)
     Base.metadata.create_all(engine)
     ensure_user_approval_state_column(engine)
+    ensure_component_search_support(engine)
     # v1 uses create_all for a fresh install, but keep the one additive field
     # introduced by the vulnerability-data lifecycle backward compatible with
     # an already initialized portal database.
@@ -153,6 +156,16 @@ async def lifespan(_: FastAPI):
         with engine.begin() as connection:
             connection.execute(text("ALTER TABLE analysis_revisions ADD COLUMN data_sources JSON"))
     with SessionLocal() as db:
+        normalized_usernames: dict[str, str] = {}
+        for user in db.scalars(select(User)):
+            try:
+                normalized = _normalize_username(user.username)
+            except HTTPException as exc:
+                raise RuntimeError(f"invalid existing username: {user.username}") from exc
+            if normalized in normalized_usernames and normalized_usernames[normalized] != user.id:
+                raise RuntimeError(f"case-insensitive username collision: {normalized}")
+            normalized_usernames[normalized] = user.id
+            user.username = normalized
         for slug, name, order in [
             ("dev", "개발", 10),
             ("qa", "검증", 20),
@@ -164,10 +177,11 @@ async def lifespan(_: FastAPI):
         for role, permissions in DEFAULT_ROLE_PERMISSIONS.items():
             if db.get(RolePolicy, role) is None:
                 db.add(RolePolicy(role=role, permissions=sorted(permissions)))
-        if settings.bootstrap_admin_password and not db.scalar(select(User).where(User.username == settings.bootstrap_admin_username)):
+        bootstrap_username = _normalize_username(settings.bootstrap_admin_username)
+        if settings.bootstrap_admin_password and not db.scalar(select(User).where(func.lower(User.username) == bootstrap_username)):
             db.add(
                 User(
-                    username=settings.bootstrap_admin_username,
+                    username=bootstrap_username,
                     password_hash=hash_password(settings.bootstrap_admin_password),
                     role=Role.ADMIN,
                 )
@@ -177,8 +191,6 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="KODA SBOM Tracker API", version="0.1.0", lifespan=lifespan)
-_login_attempts: dict[str, deque[datetime]] = defaultdict(deque)
-_registration_attempts: dict[str, deque[datetime]] = defaultdict(deque)
 _round_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
 
@@ -198,24 +210,91 @@ def _user_payload(user: User) -> dict:
     }
 
 
-async def _read_upload_stream(upload: UploadFile, max_bytes: int) -> tuple[bytes, str]:
-    """Read an upload through a bounded temporary stream before validation.
+def _normalize_username(value: str) -> str:
+    username = value.strip().lower()
+    if not re.fullmatch(r"[a-z0-9][a-z0-9._-]{2,63}", username):
+        raise HTTPException(422, "사용자 이름은 영문, 숫자, 점, 밑줄, 하이픈으로 3~64자여야 합니다")
+    return username
 
-    UploadFile may be backed by memory or disk depending on the multipart
-    parser. Keeping our own bounded temporary stream ensures hashing and the
-    size check happen incrementally before the artifact is committed.
-    """
+
+def _client_address(request: Request) -> str:
+    peer = request.client.host if request.client else "unknown"
+    try:
+        peer_ip = ipaddress.ip_address(peer)
+    except ValueError:
+        return peer
+    trusted = []
+    for raw in get_settings().trusted_proxy_cidrs.split(","):
+        if raw.strip():
+            try:
+                trusted.append(ipaddress.ip_network(raw.strip(), strict=False))
+            except ValueError:
+                continue
+    if any(peer_ip in network for network in trusted):
+        forwarded = request.headers.get("x-forwarded-for", "").split(",", 1)[0].strip()
+        try:
+            return str(ipaddress.ip_address(forwarded))
+        except ValueError:
+            pass
+    return str(peer_ip)
+
+
+def _consume_rate_limit(db: Session, kind: str, bucket: str, limit: int, window_seconds: int) -> None:
+    bucket_hash = digest(f"{kind}:{bucket}")
+    if db.bind and db.bind.dialect.name == "postgresql":
+        advisory_key = int.from_bytes(hashlib.sha256(bucket_hash.encode()).digest()[:8], "big", signed=True)
+        db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": advisory_key})
+    cutoff = datetime.now(UTC) - timedelta(seconds=window_seconds)
+    db.execute(
+        delete(AuthAttempt).where(
+            AuthAttempt.kind == kind,
+            AuthAttempt.bucket_hash == bucket_hash,
+            AuthAttempt.created_at < cutoff,
+        )
+    )
+    count = db.scalar(
+        select(func.count()).select_from(AuthAttempt).where(
+            AuthAttempt.kind == kind,
+            AuthAttempt.bucket_hash == bucket_hash,
+            AuthAttempt.created_at >= cutoff,
+        )
+    ) or 0
+    if count >= limit:
+        db.rollback()
+        raise HTTPException(429, "인증 시도가 너무 많습니다. 잠시 후 다시 시도하세요")
+    db.add(AuthAttempt(kind=kind, bucket_hash=bucket_hash))
+    db.commit()
+
+
+def _clear_rate_limit(db: Session, kind: str, bucket: str) -> None:
+    db.execute(
+        delete(AuthAttempt).where(
+            AuthAttempt.kind == kind,
+            AuthAttempt.bucket_hash == digest(f"{kind}:{bucket}"),
+        )
+    )
+
+
+async def _stage_upload(upload: UploadFile, max_bytes: int) -> tuple[Path, str, int]:
+    """Bound and hash the upload while keeping the payload on disk."""
     total = 0
     hasher = hashlib.sha256()
-    with tempfile.TemporaryFile() as staged:
+    staged = tempfile.NamedTemporaryFile(prefix="koda-sbom-", delete=False)
+    path = Path(staged.name)
+    try:
         while chunk := await upload.read(1024 * 1024):
             total += len(chunk)
             if total > max_bytes:
                 raise HTTPException(413, "SBOM 파일이 업로드 제한을 초과했습니다")
             hasher.update(chunk)
             staged.write(chunk)
-        staged.seek(0)
-        return staged.read(), hasher.hexdigest()
+        staged.flush()
+        return path, hasher.hexdigest(), total
+    except Exception:
+        path.unlink(missing_ok=True)
+        raise
+    finally:
+        staged.close()
 
 
 @app.exception_handler(HTTPException)
@@ -244,26 +323,24 @@ async def dependency_track_status(
 def login(body: LoginRequest, request: Request, response: Response, db: Session = Depends(get_db)) -> dict:
     if body.useLdap:
         return JSONResponse(status_code=501, content={"code": "ldap_not_configured", "detail": "LDAP 로그인은 아직 지원되지 않습니다"})
-    forwarded = request.headers.get("x-forwarded-for", "").split(",", 1)[0].strip()
-    client = forwarded or (request.client.host if request.client else "unknown")
-    bucket = f"{client}:{body.username.strip().lower()}"
-    current = datetime.now(UTC)
-    attempts = _login_attempts[bucket]
-    while attempts and (current - attempts[0]).total_seconds() > 300:
-        attempts.popleft()
-    if len(attempts) >= 10:
-        raise HTTPException(429, "로그인 시도가 너무 많습니다. 잠시 후 다시 시도하세요")
-    user = db.scalar(select(User).where(User.username == body.username))
+    try:
+        username = _normalize_username(body.username)
+    except HTTPException:
+        username = body.username.strip().lower()
+    bucket = f"{_client_address(request)}:{username}"
+    _consume_rate_limit(db, "login", bucket, 10, 300)
+    user = db.scalar(select(User).where(func.lower(User.username) == username))
     if not user or not verify_password(user.password_hash, body.password):
-        attempts.append(current)
         raise HTTPException(401, "사용자 이름 또는 비밀번호가 올바르지 않습니다")
     if user.approval_state == "pending":
-        attempts.clear()
+        _clear_rate_limit(db, "login", bucket)
+        db.commit()
         raise HTTPException(403, "계정이 관리자 승인 대기 중입니다")
     if not user.active:
-        attempts.clear()
+        _clear_rate_limit(db, "login", bucket)
+        db.commit()
         raise HTTPException(403, "비활성화된 계정입니다")
-    attempts.clear()
+    _clear_rate_limit(db, "login", bucket)
     raw, csrf = issue_session(db, user)
     cookie_name = session_cookie_name()
     response.set_cookie(
@@ -283,23 +360,13 @@ def login(body: LoginRequest, request: Request, response: Response, db: Session 
 
 @app.post("/api/v1/auth/register", status_code=202)
 def register(body: RegistrationRequest, request: Request, db: Session = Depends(get_db)) -> dict:
-    username = body.username.strip().lower()
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{2,63}", username):
-        raise HTTPException(422, "사용자 이름은 영문, 숫자, 점, 밑줄, 하이픈으로 3~64자여야 합니다")
+    username = _normalize_username(body.username)
     if len(body.password) < 12:
         raise HTTPException(422, "비밀번호는 12자 이상이어야 합니다")
     if body.password != body.passwordConfirm:
         raise HTTPException(422, "비밀번호 확인이 일치하지 않습니다")
 
-    forwarded = request.headers.get("x-forwarded-for", "").split(",", 1)[0].strip()
-    client = forwarded or (request.client.host if request.client else "unknown")
-    current = datetime.now(UTC)
-    attempts = _registration_attempts[client]
-    while attempts and (current - attempts[0]).total_seconds() > 3600:
-        attempts.popleft()
-    if len(attempts) >= 5:
-        raise HTTPException(429, "가입 신청이 너무 많습니다. 잠시 후 다시 시도하세요")
-    attempts.append(current)
+    _consume_rate_limit(db, "registration", _client_address(request), 5, 3600)
 
     detail = "가입 신청이 접수되었습니다. 관리자 승인 후 로그인할 수 있습니다."
     if db.scalar(select(User.id).where(func.lower(User.username) == username)):
@@ -316,7 +383,9 @@ def register(body: RegistrationRequest, request: Request, db: Session = Depends(
         db.flush()
     except IntegrityError:
         db.rollback()
-        return {"status": "pending", "detail": detail}
+        if db.scalar(select(User.id).where(func.lower(User.username) == username)):
+            return {"status": "pending", "detail": detail}
+        raise
     audit(db, "self-service", "user.register", "user", user.id, {"username": username, "role": Role.VIEWER})
     db.commit()
     return {"status": "pending", "detail": detail}
@@ -522,9 +591,10 @@ def create_user(
     principal=Depends(require_permission("users.manage")),
     _csrf=Depends(require_csrf),
 ) -> dict:
+    username = _normalize_username(body.username)
     if len(body.password) < 12:
         raise HTTPException(422, "비밀번호는 12자 이상이어야 합니다")
-    user = User(username=body.username, password_hash=hash_password(body.password), role=body.role)
+    user = User(username=username, password_hash=hash_password(body.password), role=body.role)
     if body.role in {Role.ADMIN, Role.MANAGER}:
         policy = db.get(RolePolicy, principal.role)
         if "roles.manage" not in set(policy.permissions if policy else DEFAULT_ROLE_PERMISSIONS.get(principal.role, ())):
@@ -536,7 +606,10 @@ def create_user(
         audit(db, principal.username, "user.create", "user", user.id, {"username": user.username, "role": user.role})
         db.commit()
     except IntegrityError as exc:
-        raise HTTPException(409, "이미 존재하는 사용자입니다") from exc
+        db.rollback()
+        if db.scalar(select(User.id).where(func.lower(User.username) == username)):
+            raise HTTPException(409, "이미 존재하는 사용자입니다") from exc
+        raise
     return _user_payload(user)
 
 
@@ -754,7 +827,8 @@ def _persist_run(
     service: Service,
     environment: Environment,
     release_version: str,
-    raw: bytes,
+    staged_path: Path,
+    size_bytes: int,
     payload: dict,
     media_type: str,
     filename: str,
@@ -784,7 +858,7 @@ def _persist_run(
         db.add(release)
         db.flush()
     round_number = int(db.scalar(select(func.max(SbomRun.round_number)).where(SbomRun.release_id == release.id)) or 0) + 1
-    sha256, path = store_artifact(get_settings().artifact_dir, raw, digest=raw_sha256)
+    sha256, path = store_artifact_file(get_settings().artifact_dir, staged_path, digest=raw_sha256)
     run = SbomRun(
         release_id=release.id,
         round_number=round_number,
@@ -793,7 +867,7 @@ def _persist_run(
         spec_version=str(payload.get("specVersion")),
         serial_number=payload.get("serialNumber"),
         sha256=sha256,
-        size_bytes=len(raw),
+        size_bytes=size_bytes,
         artifact_path=str(path),
         normalized_bom=payload,
         uploaded_by=principal.id if isinstance(principal, User) else None,
@@ -836,39 +910,53 @@ async def upload_sbom(
         )
         if existing:
             return {"runId": existing.id, "state": existing.state, "idempotentReplay": True}
-    raw, raw_sha256 = await _read_upload_stream(sbom, get_settings().max_upload_bytes)
+    staged_path, raw_sha256, size_bytes = await _stage_upload(sbom, get_settings().max_upload_bytes)
     try:
-        payload, media_type = parse_sbom(raw)
-        validate_with_cyclonedx_cli(raw, get_settings().cyclonedx_cli_binary)
-    except SbomValidationError as exc:
-        raise HTTPException(422, str(exc)) from exc
-    service = db.get(Service, service_id)
-    environment = db.get(Environment, environment_id)
-    if not service or not environment:
-        raise HTTPException(404, "서비스 또는 환경을 찾을 수 없습니다")
-    if not service.active:
-        raise HTTPException(409, "비활성 서비스에는 SBOM을 업로드할 수 없습니다")
-    lock_key = f"{service.id}:{environment.id}:{release_version}"
-    async with _round_locks[lock_key]:
-        return _persist_run(
-            db,
-            principal=principal,
-            actor=actor,
-            service=service,
-            environment=environment,
-            release_version=release_version,
-            raw=raw,
-            payload=payload,
-            media_type=media_type,
-            filename=sbom.filename or "sbom",
-            note=note,
-            idempotency_key=idempotency_key,
-            raw_sha256=raw_sha256,
-        )
+        try:
+            payload, media_type = parse_sbom_file(staged_path)
+            validate_file_with_cyclonedx_cli(staged_path, get_settings().cyclonedx_cli_binary)
+        except SbomValidationError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        service = db.get(Service, service_id)
+        environment = db.get(Environment, environment_id)
+        if not service or not environment:
+            raise HTTPException(404, "서비스 또는 환경을 찾을 수 없습니다")
+        if not service.active:
+            raise HTTPException(409, "비활성 서비스에는 SBOM을 업로드할 수 없습니다")
+        lock_key = f"{service.id}:{environment.id}:{release_version}"
+        async with _round_locks[lock_key]:
+            return _persist_run(
+                db,
+                principal=principal,
+                actor=actor,
+                service=service,
+                environment=environment,
+                release_version=release_version,
+                staged_path=staged_path,
+                size_bytes=size_bytes,
+                payload=payload,
+                media_type=media_type,
+                filename=sbom.filename or "sbom",
+                note=note,
+                idempotency_key=idempotency_key,
+                raw_sha256=raw_sha256,
+            )
+    finally:
+        staged_path.unlink(missing_ok=True)
 
 
-def _run_payload(item: SbomRun) -> dict:
+def _run_payload(
+    item: SbomRun,
+    *,
+    component_count: int | None = None,
+    component_type_counts: dict[str, int] | None = None,
+) -> dict:
     latest = max(item.analyses, key=lambda analysis: analysis.sequence, default=None)
+    findings = latest.findings if latest else []
+    severity_counts: dict[str, int] = defaultdict(int)
+    for finding in findings:
+        severity = str(finding.get("severity") or "unknown").lower()
+        severity_counts[severity if severity in {"critical", "high", "medium", "low", "info"} else "unknown"] += 1
     return {
         "id": item.id,
         "service": {"id": item.release.service.id, "name": item.release.service.name, "slug": item.release.service.slug},
@@ -882,8 +970,11 @@ def _run_payload(item: SbomRun) -> dict:
         "sizeBytes": item.size_bytes,
         "specVersion": item.spec_version,
         "filename": item.original_filename,
-        "componentCount": len(item.components),
-        "vulnerabilityCount": len(latest.findings) if latest else 0,
+        "componentCount": component_count if component_count is not None else len(item.components),
+        "componentTypeCounts": component_type_counts or {},
+        "vulnerabilityCount": len(findings),
+        "severityCounts": dict(severity_counts),
+        "kevCount": sum(1 for finding in findings if finding.get("kev") is True),
         "policyViolationCount": len(latest.policies) if latest else 0,
         "dataAsOf": latest.data_as_of if latest else None,
         "analysisDataSources": (latest.data_sources or {}) if latest else {},
@@ -905,15 +996,14 @@ def list_runs(
     environment_id: str | None = None,
     state: ProcessingState | None = None,
     q: str | None = Query(default=None, min_length=1, max_length=200),
-    page: int = 1,
-    size: int = 20,
+    page: int = Query(default=1, ge=1),
+    size: int = Query(default=20, ge=1, le=100),
     db: Session = Depends(get_db),
     _=Depends(require_permission("runs.view")),
 ) -> dict:
     query = select(SbomRun).options(
         selectinload(SbomRun.release).selectinload(Release.service),
         selectinload(SbomRun.release).selectinload(Release.environment),
-        selectinload(SbomRun.components),
         selectinload(SbomRun.analyses),
     )
     if service_id:
@@ -930,32 +1020,59 @@ def list_runs(
                 SbomRun.original_filename.ilike(pattern),
                 SbomRun.release.has(Release.version.ilike(pattern)),
                 SbomRun.release.has(Release.service.has(Service.name.ilike(pattern))),
-                SbomRun.components.any(
-                    or_(
-                        RunComponent.name.ilike(pattern),
-                        RunComponent.group_name.ilike(pattern),
-                        RunComponent.version.ilike(pattern),
-                        RunComponent.purl.ilike(pattern),
-                        RunComponent.bom_ref.ilike(pattern),
-                    )
-                ),
+                SbomRun.components.any(RunComponent.search_text.ilike(pattern.lower())),
             )
         )
     total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
-    items = db.scalars(query.order_by(SbomRun.created_at.desc()).offset((page - 1) * size).limit(min(size, 100))).unique()
-    return {"items": [_run_payload(item) for item in items], "page": page, "size": size, "total": total}
+    items = list(db.scalars(query.order_by(SbomRun.created_at.desc()).offset((page - 1) * size).limit(size)).unique())
+    run_ids = [item.id for item in items]
+    component_counts = dict(
+        db.execute(
+            select(RunComponent.run_id, func.count()).where(RunComponent.run_id.in_(run_ids)).group_by(RunComponent.run_id)
+        ).all()
+    ) if run_ids else {}
+    component_type_counts: dict[str, dict[str, int]] = defaultdict(dict)
+    if run_ids:
+        for run_id, component_type, count in db.execute(
+            select(RunComponent.run_id, RunComponent.component_type, func.count())
+            .where(RunComponent.run_id.in_(run_ids))
+            .group_by(RunComponent.run_id, RunComponent.component_type)
+        ):
+            component_type_counts[run_id][component_type or "library"] = count
+    return {
+        "items": [
+            _run_payload(
+                item,
+                component_count=component_counts.get(item.id, 0),
+                component_type_counts=component_type_counts.get(item.id, {}),
+            )
+            for item in items
+        ],
+        "page": page,
+        "size": size,
+        "total": total,
+    }
 
 
-def _load_run(db: Session, run_id: str) -> SbomRun:
+def _load_run(
+    db: Session,
+    run_id: str,
+    *,
+    include_components: bool = False,
+    include_analyses: bool = False,
+) -> SbomRun:
+    options = [
+        selectinload(SbomRun.release).selectinload(Release.service),
+        selectinload(SbomRun.release).selectinload(Release.environment),
+    ]
+    if include_components:
+        options.append(selectinload(SbomRun.components))
+    if include_analyses:
+        options.append(selectinload(SbomRun.analyses))
     item = db.scalar(
         select(SbomRun)
         .where(SbomRun.id == run_id)
-        .options(
-            selectinload(SbomRun.release).selectinload(Release.service),
-            selectinload(SbomRun.release).selectinload(Release.environment),
-            selectinload(SbomRun.components),
-            selectinload(SbomRun.analyses),
-        )
+        .options(*options)
     )
     if not item:
         raise HTTPException(404, "SBOM 회차를 찾을 수 없습니다")
@@ -968,24 +1085,12 @@ def get_run(
     db: Session = Depends(get_db),
     _=Depends(require_permission("runs.view")),
 ) -> dict:
-    item = _load_run(db, run_id)
-    payload = _run_payload(item)
-    payload["components"] = [
-        {
-            "identityKey": component.identity_key,
-            "identityStatus": component.identity_status,
-            "componentType": component.component_type,
-            "group": component.group_name,
-            "name": component.name,
-            "version": component.version,
-            "purl": component.purl,
-            "bomRef": component.bom_ref,
-            "sha256": component.sha256,
-            "licenses": component.licenses,
-            "properties": component.properties,
-        }
-        for component in item.components
-    ]
+    item = _load_run(db, run_id, include_analyses=True)
+    component_count = db.scalar(
+        select(func.count()).select_from(RunComponent).where(RunComponent.run_id == run_id)
+    ) or 0
+    payload = _run_payload(item, component_count=component_count)
+    payload["components"] = []
     payload["analyses"] = [
         {
             "id": analysis.id,
@@ -994,13 +1099,79 @@ def get_run(
             "dataAsOf": analysis.data_as_of,
             "toolVersion": analysis.tool_version,
             "dataSources": analysis.data_sources or {},
-            "findings": analysis.findings,
-            "policies": analysis.policies,
+            "findingCount": len(analysis.findings or []),
+            "policyCount": len(analysis.policies or []),
             "error": analysis.error,
         }
         for analysis in sorted(item.analyses, key=lambda value: value.sequence, reverse=True)
     ]
     return payload
+
+
+@app.get("/api/v1/sbom-runs/{run_id}/components")
+def get_run_components(
+    run_id: str,
+    q: str | None = Query(default=None, min_length=1, max_length=200),
+    page: int = Query(default=1, ge=1),
+    size: int = Query(default=25, ge=1, le=100),
+    db: Session = Depends(get_db),
+    _=Depends(require_permission("runs.view")),
+) -> dict:
+    if db.get(SbomRun, run_id) is None:
+        raise HTTPException(404, "SBOM 회차를 찾을 수 없습니다")
+    query = select(RunComponent).where(RunComponent.run_id == run_id)
+    if q:
+        query = query.where(RunComponent.search_text.ilike(f"%{q.strip().lower()}%"))
+    total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
+    components = db.scalars(
+        query.order_by(RunComponent.name, RunComponent.version).offset((page - 1) * size).limit(size)
+    )
+    return {
+        "items": [
+            {
+                "identityKey": component.identity_key,
+                "identityStatus": component.identity_status,
+                "componentType": component.component_type,
+                "group": component.group_name,
+                "name": component.name,
+                "version": component.version,
+                "purl": component.purl,
+                "bomRef": component.bom_ref,
+                "licenses": component.licenses,
+                "properties": component.properties,
+            }
+            for component in components
+        ],
+        "page": page,
+        "size": size,
+        "total": total,
+    }
+
+
+@app.get("/api/v1/sbom-runs/{run_id}/findings")
+def get_run_findings(
+    run_id: str,
+    analysis_id: str | None = Query(default=None, alias="analysisId"),
+    page: int = Query(default=1, ge=1),
+    size: int = Query(default=25, ge=1, le=100),
+    db: Session = Depends(get_db),
+    _=Depends(require_permission("runs.view")),
+) -> dict:
+    if db.get(SbomRun, run_id) is None:
+        raise HTTPException(404, "SBOM 회차를 찾을 수 없습니다")
+    query = select(AnalysisRevision).where(AnalysisRevision.run_id == run_id)
+    if analysis_id:
+        query = query.where(AnalysisRevision.id == analysis_id)
+    analysis = db.scalar(query.order_by(AnalysisRevision.sequence.desc()).limit(1))
+    findings = list(analysis.findings or []) if analysis else []
+    start = (page - 1) * size
+    return {
+        "analysisId": analysis.id if analysis else None,
+        "items": findings[start:start + size],
+        "page": page,
+        "size": size,
+        "total": len(findings),
+    }
 
 
 @app.get("/api/v1/sbom-runs/{run_id}/artifact")
@@ -1099,8 +1270,8 @@ def compare_runs(
     db: Session = Depends(get_db),
     _=Depends(require_permission("compare.view")),
 ) -> dict:
-    base = _load_run(db, base_run_id)
-    target = _load_run(db, target_run_id)
+    base = _load_run(db, base_run_id, include_components=True, include_analyses=True)
+    target = _load_run(db, target_run_id, include_components=True, include_analyses=True)
 
     def analysis(run: SbomRun, requested: str | None):
         values = [item for item in run.analyses if not requested or item.id == requested]
@@ -1138,14 +1309,27 @@ def compare_runs(
 
 @app.get("/api/v1/audit-events")
 def audit_events(
-    page: int = 1,
-    size: int = 50,
+    q: str | None = Query(default=None, min_length=1, max_length=200),
+    page: int = Query(default=1, ge=1),
+    size: int = Query(default=50, ge=1, le=100),
     db: Session = Depends(get_db),
     _admin=Depends(require_admin),
     _=Depends(require_permission("audit.view")),
 ) -> dict:
-    total = db.scalar(select(func.count()).select_from(AuditEvent)) or 0
-    items = db.scalars(select(AuditEvent).order_by(AuditEvent.created_at.desc()).offset((page - 1) * size).limit(size))
+    query = select(AuditEvent)
+    if q:
+        pattern = f"%{q.strip()}%"
+        query = query.where(
+            or_(
+                AuditEvent.actor.ilike(pattern),
+                AuditEvent.action.ilike(pattern),
+                AuditEvent.target_type.ilike(pattern),
+                AuditEvent.target_id.ilike(pattern),
+                cast(AuditEvent.detail, Text).ilike(pattern),
+            )
+        )
+    total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
+    items = db.scalars(query.order_by(AuditEvent.created_at.desc()).offset((page - 1) * size).limit(size))
     return {
         "items": [
             {
@@ -1159,6 +1343,8 @@ def audit_events(
             }
             for item in items
         ],
+        "page": page,
+        "size": size,
         "total": total,
     }
 

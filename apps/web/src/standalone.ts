@@ -160,6 +160,16 @@ export async function parseStandaloneSbom(raw: string, filename: string, release
   const createdAt = new Date().toISOString();
   const id = `standalone-${Date.now()}-${sequence += 1}`;
   const dataAsOf = parsed.dataAsOf || createdAt.slice(0, 10);
+  const componentTypeCounts = parsed.components.reduce<Record<string, number>>((counts, component) => {
+    const kind = component.componentType || "library";
+    counts[kind] = (counts[kind] || 0) + 1;
+    return counts;
+  }, {});
+  const severityCounts = parsed.vulnerabilities.reduce<Record<string, number>>((counts, finding) => {
+    const severity = String(finding.severity || "unknown").toLowerCase();
+    counts[severity] = (counts[severity] || 0) + 1;
+    return counts;
+  }, {});
   const run: SbomRun = {
     id,
     service: standaloneService,
@@ -169,7 +179,10 @@ export async function parseStandaloneSbom(raw: string, filename: string, release
     state: "completed",
     sha256: await fingerprint(raw),
     componentCount: parsed.components.length,
+    componentTypeCounts,
     vulnerabilityCount: parsed.vulnerabilities.length,
+    severityCounts,
+    kevCount: parsed.vulnerabilities.filter((finding) => finding.kev === true).length,
     policyViolationCount: 0,
     dataAsOf,
     createdAt,

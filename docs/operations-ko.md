@@ -264,6 +264,8 @@ ENV_FILE="$PREFIX/.env" \
 - `portal-api`: 8000 포트에서 `/health`, `/api/...`
 - `portal-worker`: 현재 `koda-tracker-worker` 프로세스 기반 healthcheck
 - `ARTIFACT_ROOT`, `VULN_DATA_ROOT`, `UPLOAD_MAX_BYTES` 환경변수는 유지 권장
+- `GATEWAY_APP_IP`를 바꾸면 `TRACKER_TRUSTED_PROXY_CIDRS`도 같은 gateway 주소로
+  바꿉니다. 신뢰 목록 밖의 요청이 보낸 `X-Forwarded-For`는 사용하지 않습니다.
 
 ## 8. KODA/CI 업로드
 

@@ -43,6 +43,33 @@ def ensure_user_approval_state_column(bind=engine) -> None:
         )
 
 
+def ensure_component_search_support(bind=engine) -> None:
+    """Backfill the component search field and enable trigram indexes."""
+    if "run_components" not in inspect(bind).get_table_names():
+        return
+    columns = {column["name"] for column in inspect(bind).get_columns("run_components")}
+    with bind.begin() as connection:
+        if "search_text" not in columns:
+            connection.execute(text("ALTER TABLE run_components ADD COLUMN search_text TEXT NOT NULL DEFAULT ''"))
+        connection.execute(
+            text(
+                "UPDATE run_components SET search_text = lower("
+                "coalesce(group_name, '') || ' ' || coalesce(name, '') || ' ' || "
+                "coalesce(version, '') || ' ' || coalesce(purl, '') || ' ' || coalesce(bom_ref, '')"
+                ") WHERE search_text = ''"
+            )
+        )
+        if bind.dialect.name == "postgresql":
+            connection.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
+            for statement in (
+                "CREATE INDEX IF NOT EXISTS ix_run_components_search_trgm ON run_components USING gin (search_text gin_trgm_ops)",
+                "CREATE INDEX IF NOT EXISTS ix_services_name_trgm ON services USING gin (name gin_trgm_ops)",
+                "CREATE INDEX IF NOT EXISTS ix_releases_version_trgm ON releases USING gin (version gin_trgm_ops)",
+                "CREATE INDEX IF NOT EXISTS ix_sbom_runs_filename_trgm ON sbom_runs USING gin (original_filename gin_trgm_ops)",
+            ):
+                connection.execute(text(statement))
+
+
 def get_db() -> Generator[Session, None, None]:
     with SessionLocal() as session:
         yield session

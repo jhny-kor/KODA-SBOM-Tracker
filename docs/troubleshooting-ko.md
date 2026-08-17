@@ -166,8 +166,8 @@ unset DTRACK_ADMIN_API_KEY
 
 ## 8. 작은 파일인데 `413 Request Entity Too Large`
 
-현재 Tracker API와 gateway 기본 제한은 100MiB입니다. 3MiB 수준에서 413이면
-대부분 구형 gateway 또는 앞단 TLS reverse proxy 제한입니다.
+현재 Tracker API 파일 제한은 100MiB이고 gateway 요청 제한은 101MiB입니다. 3MiB
+수준에서 413이면 대부분 구형 gateway 또는 앞단 TLS reverse proxy 제한입니다.
 
 ```bash
 grep '^UPLOAD_MAX_BYTES=' .env
@@ -175,8 +175,9 @@ docker compose --env-file .env "${COMPOSE_FILES[@]}" \
   exec gateway nginx -T 2>/dev/null | grep client_max_body_size
 ```
 
-정상값은 `UPLOAD_MAX_BYTES=104857600`, `client_max_body_size 100m;`입니다. 외부
-Nginx·Apache·L7 장비가 있으면 그 제한도 100MiB 이상이어야 합니다.
+정상값은 `UPLOAD_MAX_BYTES=104857600`, `client_max_body_size 101m;`입니다. API는
+파일 자체를 100MiB로 제한하고 gateway의 추가 1MiB는 multipart 요청 정보를 수용합니다.
+외부 Nginx·Apache·L7 장비가 있으면 그 제한도 101MiB 이상이어야 합니다.
 
 ## 9. 수정한 UI가 아니라 이전 화면
 

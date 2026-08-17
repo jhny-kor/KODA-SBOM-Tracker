@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     secure_cookies: bool = False
     environment: str = "development"
     public_origin: str = ""
+    trusted_proxy_cidrs: str = ""
     bootstrap_admin_username: str = "admin"
     bootstrap_admin_password: str = ""
     dependency_track_url: str = ""

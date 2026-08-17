@@ -31,8 +31,9 @@ services:
       retries: 5
       start_period: 10s
     networks:
-      - edge
-      - app
+      edge:
+      app:
+        ipv4_address: ${GATEWAY_APP_IP:-172.30.80.10}
     restart: unless-stopped
 
   portal-web:
@@ -72,6 +73,7 @@ services:
       TRACKER_SECURE_COOKIES: ${TRACKER_SECURE_COOKIES:-false}
       TRACKER_ENVIRONMENT: ${TRACKER_ENVIRONMENT:-development}
       TRACKER_PUBLIC_ORIGIN: ${TRACKER_PUBLIC_ORIGIN:-}
+      TRACKER_TRUSTED_PROXY_CIDRS: ${TRACKER_TRUSTED_PROXY_CIDRS:-172.30.80.10/32}
       TRACKER_DEPENDENCY_TRACK_URL: ${TRACKER_DEPENDENCY_TRACK_URL:-http://dtrack-apiserver:8080}
       TRACKER_DEPENDENCY_TRACK_API_KEY: ${TRACKER_DEPENDENCY_TRACK_API_KEY}
       TRACKER_DEPENDENCY_TRACK_UI_URL: ${TRACKER_DEPENDENCY_TRACK_UI_URL:-/dependency-track/}
@@ -212,6 +214,9 @@ networks:
   app:
     name: ${COMPOSE_PROJECT_NAME:-koda-sbom}-app
     internal: true
+    ipam:
+      config:
+        - subnet: ${APP_NETWORK_SUBNET:-172.30.80.0/24}
 
 volumes:
   postgres-data:

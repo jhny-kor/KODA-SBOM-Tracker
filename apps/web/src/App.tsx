@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import { demoMode, previewMode, standaloneMode, activateVulnerabilityBundle, approveUser, archiveRun, createApiToken, createAnalysis, createEnvironment, createService, createUser, fetchAuditEvents, fetchApiTokens, fetchCatalogs, fetchComparison, fetchDependencyTrackStatus, fetchJob, fetchRun, fetchRuns, fetchUsers, fetchVulnerabilityBundles, login, patchEnvironment, patchService, patchUser, logout, register, resumeSession, retryDependencyTrack, revokeApiToken, uploadRun, syncVulnerabilityBundles, fetchRolePolicies, updateRolePolicies, setForbiddenHandler } from "./api";
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { demoMode, previewMode, standaloneMode, activateVulnerabilityBundle, approveUser, archiveRun, createApiToken, createAnalysis, createEnvironment, createService, createUser, fetchAuditEvents, fetchApiTokens, fetchCatalogs, fetchComparison, fetchDependencyTrackStatus, fetchJob, fetchRun, fetchRunComponents, fetchRunFindings, fetchRuns, fetchUsers, fetchVulnerabilityBundles, login, patchEnvironment, patchService, patchUser, logout, register, resumeSession, retryDependencyTrack, revokeApiToken, uploadRun, syncVulnerabilityBundles, fetchRolePolicies, updateRolePolicies, setForbiddenHandler } from "./api";
 import { demoChanges, demoRuns } from "./demo";
 import { Icon } from "./icons";
 import { dataAccess, hasPermissions, pageForPermissions, PAGE_PERMISSIONS, permissionSet, type Page } from "./permissions";
@@ -44,8 +44,6 @@ const PERMISSION_LABELS: Record<string, string> = {
 };
 
 const pageIds = new Set<Page>(nav.map((item) => item.id));
-const EMPTY_RUNS: SbomRun[] = [];
-
 function readPortalLink() {
   const params = new URLSearchParams(window.location.search);
   const requestedPage = params.get("page");
@@ -241,32 +239,17 @@ function Dashboard({ runs, onUpload,
     .sort((left, right) => left.createdAt.localeCompare(right.createdAt)), [runs, standalone]);
   // ponytail: chart the latest 12 uploads to keep the local preview readable; add pagination when history needs to scale.
   const chartRuns = useMemo(() => uploadedRuns.slice(-12), [uploadedRuns]);
-  const [details, setDetails] = useState<Record<string, SbomRunDetail>>({});
-
-  useEffect(() => {
-    let cancelled = false;
-    if (!chartRuns.length) {
-      return () => { cancelled = true;};}
-    void Promise.all(chartRuns.map(async (run) => [run.id, await fetchRun(run.id)] as const))
-      .then((items) => {
-        if (!cancelled) setDetails(Object.fromEntries(items));})
-      .catch(() => undefined);
-    return () => { cancelled = true;};}, [chartRuns]);
 
   const latest = uploadedRuns.at(-1);
-  const latestDetail = latest ? details[latest.id] : undefined;
-  const findings = latestDetail?.analyses?.[0]?.findings || [];
-  const kevCount = findings.filter((finding) => finding.kev === true).length;
+  const severityCounts = latest?.severityCounts || {};
+  const kevCount = latest?.kevCount || 0;
   const severityItems = [
-    { label: "Critical", value: findings.filter((finding) => String(finding.severity || "").toLowerCase() === "critical").length, tone: "critical" },
-    { label: "High", value: findings.filter((finding) => String(finding.severity || "").toLowerCase() === "high").length, tone: "high" },
-    { label: "Medium", value: findings.filter((finding) => String(finding.severity || "").toLowerCase() === "medium").length, tone: "medium" },
-    { label: "Low", value: findings.filter((finding) => String(finding.severity || "").toLowerCase() === "low").length, tone: "low" },
-    { label: "Unknown", value: findings.filter((finding) => !["critical", "high", "medium", "low"].includes(String(finding.severity || "").toLowerCase())).length, tone: "unknown" }];
-  const componentTypes = [...(latestDetail?.components || []).reduce((counts, component) => {
-    const label = component.componentType || "library";
-    counts.set(label, (counts.get(label) || 0) + 1);
-    return counts;}, new Map<string, number>())].map(([label, value]) => ({ label, value }));
+    { label: "Critical", value: severityCounts.critical || 0, tone: "critical" },
+    { label: "High", value: severityCounts.high || 0, tone: "high" },
+    { label: "Medium", value: severityCounts.medium || 0, tone: "medium" },
+    { label: "Low", value: severityCounts.low || 0, tone: "low" },
+    { label: "Unknown", value: severityCounts.unknown || 0, tone: "unknown" }];
+  const componentTypes = Object.entries(latest?.componentTypeCounts || {}).map(([label, value]) => ({ label, value }));
 
   if (!uploadedRuns.length) return (<section className="page preview-dashboard-page">
     <div className="page-heading"><div><p className="preview-eyebrow">{standalone ? "LOCAL" : "OPERATIONS"} SBOM PORTFOLIO
@@ -298,7 +281,7 @@ function Dashboard({ runs, onUpload,
           }values={uploadedRuns.map((_, index) => index + 1)} color="#32c6d1" />
       <PreviewMetric label="구성요소" value={(latest?.componentCount || 0).toLocaleString()} description={`최신 · ${latest?.filename || "SBOM"}`} values={chartRuns.map((run) => run.componentCount)} color="#32c6d1" />
       <PreviewMetric label="취약점" value={(latest?.vulnerabilityCount || 0).toLocaleString()} description={standalone ?"CycloneDX 내장 레코드" : "최신 분석 결과"}values={chartRuns.map((run) => run.vulnerabilityCount)} color="#a970ff" />
-      <PreviewMetric label="KEV" value={kevCount.toLocaleString()} description={standalone ?"내장 KEV 플래그" : "분석 결과 KEV 플래그"}values={chartRuns.map((run) => details[run.id]?.analyses?.[0]?.findings?.filter((finding) => finding.kev === true).length || 0)} color="#ff8b8b" />
+      <PreviewMetric label="KEV" value={kevCount.toLocaleString()} description={standalone ?"내장 KEV 플래그" : "분석 결과 KEV 플래그"}values={chartRuns.map((run) => run.kevCount || 0)} color="#ff8b8b" />
     </div>
     <div className="preview-chart-grid">
       <article className="preview-chart-card preview-trend-card"><header><div><h2>업로드별 분석 추이</h2><p>최근 SBOM 회차의 구성요소·취약점 변화</p></div><span className="preview-chart-meta">{latest?.dataAsOf || "기준일 미상"}</span></header>
@@ -310,7 +293,7 @@ function Dashboard({ runs, onUpload,
           {chartRuns.map((run, index) => (<text key={run.id} x={chartRuns.length === 1 ? 390 : 36 + (index / (chartRuns.length - 1)) * 708} y="238" textAnchor="middle" className="preview-axis-label">#{uploadedRuns.length - chartRuns.length + index + 1}</text>))}
         </svg></div>
       </article>
-      <article className="preview-chart-card"><header><div><h2>최신 SBOM 심각도</h2><p>{latest?.filename || "업로드 파일"}</p></div><span className="preview-chart-total">{findings.length}건</span></header>
+      <article className="preview-chart-card"><header><div><h2>최신 SBOM 심각도</h2><p>{latest?.filename || "업로드 파일"}</p></div><span className="preview-chart-total">{latest?.vulnerabilityCount || 0}건</span></header>
         <PreviewBars items={severityItems} emptyLabel="최신 분석에 취약점 레코드가 없습니다." />
         <div className="preview-chart-footnote">분석 기준일 {latest?.dataAsOf || "미상"} · KEV {kevCount}건
           </div>
@@ -323,25 +306,39 @@ function Dashboard({ runs, onUpload,
     </div>
   </section>);}
 
-function RunsPage({ runs, onUpload, onSelect, searching,
-  canUpload}: { runs: SbomRun[]; onUpload: () => void; onSelect: (run: SbomRun) => void; searching: boolean;
+function RunsPage({ runs, services, environments, search, onUpload, onSelect,
+  canUpload}: { runs: SbomRun[]; services: CatalogItem[]; environments: CatalogItem[]; search: string; onUpload: () => void; onSelect: (run: SbomRun) => void;
   canUpload: boolean;}) {
   const [service, setService] = useState("");
   const [environment, setEnvironment] = useState("");
   const [state, setState] = useState("");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
-  const filtered = runs.filter((run) =>
-    (!service || run.service.name === service) &&
-    (!environment || run.environment.name === environment) &&
-    (!state || run.state === state)
-  );
-  const pageCount = Math.max(1, Math.ceil(filtered.length / pageSize));
+  const [result, setResult] = useState({ items: runs.slice(0, 20), page: 1, size: 20, total: runs.length });
+  const [searching, setSearching] = useState(false);
+  const [error, setError] = useState("");
+  const deferredSearch = useDeferredValue(search.trim());
+  useEffect(() => { queueMicrotask(() => setPage(1)); }, [deferredSearch]);
+  useEffect(() => {
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (!cancelled) {
+        setSearching(true);
+        setError("");
+      }
+    });
+    void fetchRuns({ page, size: pageSize, q: deferredSearch, serviceId: service, environmentId: environment, state })
+      .then((next) => { if (!cancelled) setResult(next); })
+      .catch((reason) => { if (!cancelled) setError(reason instanceof Error ? reason.message : "회차를 불러오지 못했습니다."); })
+      .finally(() => { if (!cancelled) setSearching(false); });
+    return () => { cancelled = true; };
+  }, [deferredSearch, environment, page, pageSize, runs, service, state]);
+  const pageCount = Math.max(1, Math.ceil(result.total / pageSize));
   const currentPage = Math.min(page, pageCount);
-  const visible = filtered.slice((currentPage - 1) * pageSize, currentPage * pageSize);
-  const dataAsOf = runs.map((run) => run.dataAsOf).filter(Boolean).sort().at(-1) || "미반입";
-  const queued = runs.filter((run) => run.state === "queued" || run.state === "processing").length;
-  const failed = runs.filter((run) => run.state === "failed" || run.state === "partial").length;
+  const visible = result.items;
+  const dataAsOf = visible.map((run) => run.dataAsOf).filter(Boolean).sort().at(-1) || "미반입";
+  const queued = visible.filter((run) => run.state === "queued" || run.state === "processing").length;
+  const failed = visible.filter((run) => run.state === "failed" || run.state === "partial").length;
   return (
     <section className="page runs-page">
       <div className="page-heading">
@@ -357,9 +354,9 @@ function RunsPage({ runs, onUpload, onSelect, searching,
         </div>
       </div>
       <div className="filters">
-        <SelectFilter label="서비스" value={service} values={[...new Set(runs.map((run) => run.service.name))]} onChange={setService} />
-        <SelectFilter label="환경" value={environment} values={[...new Set(runs.map((run) => run.environment.name))]} onChange={setEnvironment} />
-        <SelectFilter label="상태" value={state} values={["completed", "processing", "partial", "failed", "queued", "archived"]} onChange={setState} formatValue={(value) => stateLabel(value as SbomRun["state"])} />
+        <SelectFilter label="서비스" value={service} values={services.map((item) => item.id)} onChange={(value) => { setService(value); setPage(1); }} formatValue={(value) => services.find((item) => item.id === value)?.name || value} />
+        <SelectFilter label="환경" value={environment} values={environments.map((item) => item.id)} onChange={(value) => { setEnvironment(value); setPage(1); }} formatValue={(value) => environments.find((item) => item.id === value)?.name || value} />
+        <SelectFilter label="상태" value={state} values={["completed", "processing", "partial", "failed", "queued", "archived"]} onChange={(value) => { setState(value); setPage(1); }} formatValue={(value) => stateLabel(value as SbomRun["state"])} />
         <button className="secondary reset" onClick={() => { setService(""); setEnvironment(""); setState(""); setPage(1);}}>초기화 <Icon name="reset" /></button>
       </div>
       <div className="table-frame">
@@ -376,11 +373,11 @@ function RunsPage({ runs, onUpload, onSelect, searching,
                   <td>{new Date(run.createdAt).toISOString().replace("T", " ").slice(0, 16)}</td>
                 </tr>
               ))}
-              {!visible.length && (<tr><td colSpan={10}>{searching ? "구성요소와 회차를 검색하고 있습니다…" : "조건에 맞는 회차가 없습니다."}</td></tr>)}
+              {!visible.length && (<tr><td colSpan={10}>{searching ? "구성요소와 회차를 검색하고 있습니다…" : error || "조건에 맞는 회차가 없습니다."}</td></tr>)}
             </tbody>
           </table>
         </div>
-        <div className="table-footer"><span>전체 {filtered.length}건 · {currentPage}/{pageCount}페이지
+        <div className="table-footer"><span>전체 {result.total}건 · {currentPage}/{pageCount}페이지
           </span><div><select aria-label="페이지당 행 수" value={pageSize} onChange={(event) => { setPageSize(Number(event.target.value)); setPage(1);}}><option value={20}>20개씩 보기</option><option value={50}>50개씩 보기</option><option value={100}>100개씩 보기</option></select><button aria-label="첫 페이지" disabled={currentPage === 1} onClick={() => setPage(1)}>|‹
             </button><button aria-label="이전 페이지" disabled={currentPage === 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>‹
             </button>{Array.from({ length: Math.min(pageCount, 5) }, (_, index) => { const first = Math.min(Math.max(1, currentPage - 2), Math.max(1, pageCount - 4)); const value = first + index; return (<button key={value} className={currentPage === value ? "current" : ""} onClick={() => setPage(value)}>{value}</button>);})}<button aria-label="다음 페이지" disabled={currentPage === pageCount} onClick={() => setPage((value) => Math.min(pageCount, value + 1))}>›
@@ -632,29 +629,39 @@ function RunDetail({ run, onClose, onChanged,
   const [componentPageSize, setComponentPageSize] = useState(25);
   const [findingPage, setFindingPage] = useState(1);
   const [findingPageSize, setFindingPageSize] = useState(25);
+  const [componentResult, setComponentResult] = useState<{ items: ComponentSnapshot[]; total: number }>({ items: [], total: 0 });
+  const [findingResult, setFindingResult] = useState<{ items: Record<string, unknown>[]; total: number }>({ items: [], total: 0 });
+  const deferredComponentQuery = useDeferredValue(componentQuery.trim());
+  const latestAnalysisId = detail?.analyses?.[0]?.id || "";
   useEffect(() => {
     let cancelled = false;
     void fetchRun(run.id).then((result) => { if (!cancelled) setDetail(result);}).catch((error) => { if (!cancelled) setMessage(error instanceof Error ? error.message : "회차 상세를 불러오지 못했습니다.");});
     return () => { cancelled = true;};}, [run.id]);
+  useEffect(() => {
+    let cancelled = false;
+    void fetchRunComponents(run.id, componentPage, componentPageSize, deferredComponentQuery)
+      .then((result) => { if (!cancelled) setComponentResult(result); })
+      .catch((error) => { if (!cancelled) setMessage(error instanceof Error ? error.message : "구성요소를 불러오지 못했습니다."); });
+    return () => { cancelled = true; };
+  }, [componentPage, componentPageSize, deferredComponentQuery, run.id]);
+  useEffect(() => {
+    let cancelled = false;
+    void fetchRunFindings(run.id, findingPage, findingPageSize, latestAnalysisId)
+      .then((result) => { if (!cancelled) setFindingResult(result); })
+      .catch((error) => { if (!cancelled) setMessage(error instanceof Error ? error.message : "취약점을 불러오지 못했습니다."); });
+    return () => { cancelled = true; };
+  }, [findingPage, findingPageSize, latestAnalysisId, run.id]);
   async function runAction(action: () => Promise<unknown>, success: string) {
     setBusy(true); setMessage("");
     try { await action(); const refreshed = await fetchRun(run.id); setDetail(refreshed); setMessage(success); onChanged();} catch (error) { setMessage(error instanceof Error ? error.message : "작업에 실패했습니다");} finally { setBusy(false);}
   }
   const current = detail || run;
-  const components: ComponentSnapshot[] = detail?.components || [];
-  const findings = detail?.analyses?.[0]?.findings || [];
-  const filteredComponents = useMemo(() => {
-    const source = detail?.components || [];
-    const term = componentQuery.trim().toLowerCase();
-    if (!term) return source;
-    return source.filter((component) => [component.group, component.name, component.version, component.purl, component.bomRef].filter(Boolean).join(" ").toLowerCase().includes(term));
-  }, [componentQuery, detail?.components]);
-  const componentPageCount = Math.max(1, Math.ceil(filteredComponents.length / componentPageSize));
+  const components = componentResult.items;
+  const findings = findingResult.items;
+  const componentPageCount = Math.max(1, Math.ceil(componentResult.total / componentPageSize));
   const currentComponentPage = Math.min(componentPage, componentPageCount);
-  const visibleComponents = filteredComponents.slice((currentComponentPage - 1) * componentPageSize, currentComponentPage * componentPageSize);
-  const findingPageCount = Math.max(1, Math.ceil(findings.length / findingPageSize));
+  const findingPageCount = Math.max(1, Math.ceil(findingResult.total / findingPageSize));
   const currentFindingPage = Math.min(findingPage, findingPageCount);
-  const visibleFindings = findings.slice((currentFindingPage - 1) * findingPageSize, currentFindingPage * findingPageSize);
   return (<div className="drawer-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><section className="detail-modal" role="dialog" aria-modal="true" aria-labelledby="run-detail-title"><header><div><span>{current.service.name}</span><h2 id="run-detail-title">{current.releaseVersion} · {current.roundNumber}차
             </h2></div><button type="button" className="icon-button" aria-label="회차 상세 닫기" onClick={onClose}><Icon name="close" /></button></header>
     <div className="detail-status"><span className={`state ${current.state}`}>{stateLabel(current.state)}</span><span>{current.environment.name}</span><span>CycloneDX {current.specVersion}</span></div>
@@ -662,8 +669,8 @@ function RunDetail({ run, onClose, onChanged,
     <h3>분석 리비전</h3><ul className="paths">{detail?.analyses?.length ? (detail.analyses.map((analysis) => (<li key={analysis.id}>r{analysis.sequence} · {jobStateLabel(analysis.state)} ·{" "}
                 {analysis.dataAsOf || "기준일 미상"}{analysis.error ? ` · ${analysis.error}` : ""}</li>) )
           ): (<li>상세를 불러오는 중이거나 분석 리비전이 없습니다.</li>)}</ul>
-    <div className="detail-table-heading"><h3>구성요소 검사기 ({filteredComponents.length.toLocaleString()}/{components.length.toLocaleString()})</h3><label className="detail-search"><Icon name="search" /><input aria-label="구성요소 검색" value={componentQuery} onChange={(event) => { setComponentQuery(event.target.value); setComponentPage(1); }} placeholder="이름, 버전, PURL 검색" /></label></div><div className="table-scroll"><table><thead><tr><th>이름</th><th>버전</th><th>PURL</th><th>라이선스</th></tr></thead><tbody>{visibleComponents.map((component) => (<tr key={component.identityKey}><td>{component.name}</td><td>{component.version || "-"}</td><td className="mono">{component.purl || component.bomRef || "-"}</td><td>{component.licenses?.length ? component.licenses.map((license) => typeof license === "string" ? license : String((license as { license?: { id?: string; name?: string };}).license?.id || (license as { license?: { id?: string; name?: string;};}).license?.name || "식별 불가")).join(", ") : "-"}</td></tr>))}{!visibleComponents.length && (<tr><td colSpan={4}>{components.length ? "검색 조건에 맞는 구성요소가 없습니다." : "구성요소 상세가 없습니다."}</td></tr>)}</tbody></table></div><DetailPagination total={filteredComponents.length} page={currentComponentPage} pageSize={componentPageSize} onPage={setComponentPage} onPageSize={(size) => { setComponentPageSize(size); setComponentPage(1); }} />
-    <h3>취약점 검사기 ({findings.length.toLocaleString()})</h3><div className="table-scroll"><table><thead><tr><th>식별자</th><th>심각도</th><th>구성요소</th><th>KEV</th></tr></thead><tbody>{visibleFindings.map((finding, index) => (<tr key={`${String(finding.canonicalId || finding.id || "finding")}-${(currentFindingPage - 1) * findingPageSize + index}`}><td className="mono">{String(finding.canonicalId || finding.id || "식별자 없음")}</td><td>{String(finding.severity || "Unknown")}</td><td className="mono">{String(finding.component || "-")}</td><td>{finding.kev ? "KEV" : "-"}</td></tr>))}{!findings.length && (<tr><td colSpan={4}>취약점 결과가 없습니다.</td></tr>)}</tbody></table></div><DetailPagination total={findings.length} page={currentFindingPage} pageSize={findingPageSize} onPage={setFindingPage} onPageSize={(size) => { setFindingPageSize(size); setFindingPage(1); }} />
+    <div className="detail-table-heading"><h3>구성요소 검사기 ({componentResult.total.toLocaleString()})</h3><label className="detail-search"><Icon name="search" /><input aria-label="구성요소 검색" value={componentQuery} onChange={(event) => { setComponentQuery(event.target.value); setComponentPage(1); }} placeholder="이름, 버전, PURL 검색" /></label></div><div className="table-scroll"><table><thead><tr><th>이름</th><th>버전</th><th>PURL</th><th>라이선스</th></tr></thead><tbody>{components.map((component) => (<tr key={component.identityKey}><td>{component.name}</td><td>{component.version || "-"}</td><td className="mono">{component.purl || component.bomRef || "-"}</td><td>{component.licenses?.length ? component.licenses.map((license) => typeof license === "string" ? license : String((license as { license?: { id?: string; name?: string };}).license?.id || (license as { license?: { id?: string; name?: string;};}).license?.name || "식별 불가")).join(", ") : "-"}</td></tr>))}{!components.length && (<tr><td colSpan={4}>{deferredComponentQuery ? "검색 조건에 맞는 구성요소가 없습니다." : "구성요소 상세가 없습니다."}</td></tr>)}</tbody></table></div><DetailPagination total={componentResult.total} page={currentComponentPage} pageSize={componentPageSize} onPage={setComponentPage} onPageSize={(size) => { setComponentPageSize(size); setComponentPage(1); }} />
+    <h3>취약점 검사기 ({findingResult.total.toLocaleString()})</h3><div className="table-scroll"><table><thead><tr><th>식별자</th><th>심각도</th><th>구성요소</th><th>KEV</th></tr></thead><tbody>{findings.map((finding, index) => { const severity = String(finding.severity || "unknown"); return (<tr key={`${String(finding.canonicalId || finding.id || "finding")}-${(currentFindingPage - 1) * findingPageSize + index}`}><td className="mono">{String(finding.canonicalId || finding.id || "식별자 없음")}</td><td><span className={`severity-pill ${severityClass(severity)}`}>{severityLabel(severity)}</span></td><td className="mono">{String(finding.component || "-")}</td><td>{finding.kev ? "KEV" : "-"}</td></tr>);})}{!findings.length && (<tr><td colSpan={4}>취약점 결과가 없습니다.</td></tr>)}</tbody></table></div><DetailPagination total={findingResult.total} page={currentFindingPage} pageSize={findingPageSize} onPage={setFindingPage} onPageSize={(size) => { setFindingPageSize(size); setFindingPage(1); }} />
     <div className="drawer-actions">{message && (<p className="form-message" role="status">{message}</p>)}{standaloneMode ? (<p className="preview-note">미리보기 모드에서는 원본 파일을 저장하거나
               Grype·Dependency-Track을 실행하지 않습니다.
             </p> ): (<>{current.dependencyTrackError && (<p className="drawer-error">{current.dependencyTrackError}</p>)}<div className="drawer-action-row">{can("dtrack.retry") && (<button className="secondary" disabled={busy || current.state === "archived"} onClick={() => void runAction(() => retryDependencyTrack(current.id), "Dependency-Track 재시도를 접수했습니다.")}>DTrack 재시도
@@ -775,9 +782,30 @@ function VulnerabilityPage({ bundles, onSync, onActivate, canManage, embedded = 
 
 function AuditPage({ events, embedded = false }: { events: AuditEvent[]; embedded?: boolean }) {
   const [query, setQuery] = useState("");
-  const filtered = events.filter((item) => `${item.actor} ${item.action} ${item.targetId}`.toLowerCase().includes(query.toLowerCase()));
-  return (<section className={embedded ? "settings-panel generic-page" : "page generic-page"}><h1>감사 로그</h1><p>업로드·재분석·설정 변경과 관리자 작업을 불변 이력으로 조회합니다.</p><div className="generic-toolbar"><label className="global-search"><Icon name="search" /><input aria-label="감사 로그 검색" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="행위자, 작업, 대상 검색" /></label><span>{filtered.length}건</span></div><div className="table-frame"><div className="table-scroll"><table><thead><tr><th>시각</th><th>행위자</th><th>작업</th><th>대상</th><th>상세</th></tr></thead><tbody>{filtered.length ? (filtered.map((item) => (<tr key={item.id}><td>{new Date(item.createdAt).toLocaleString("ko-KR")}</td><td>{item.actor}</td><td className="mono">{item.action}</td><td>{item.targetType}:{item.targetId}</td><td className="mono">{auditDetailLabel(item.detail)}</td></tr>) )
-              ): (<tr><td colSpan={5}>감사 로그가 없습니다.</td></tr>)}</tbody></table></div></div></section>);}
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
+  const [result, setResult] = useState({ items: events.slice(0, 25), total: events.length });
+  const deferredQuery = useDeferredValue(query.trim());
+  useEffect(() => {
+    let cancelled = false;
+    if (previewMode) {
+      const term = deferredQuery.toLowerCase();
+      const filtered = events.filter((item) =>
+        !term || `${item.actor} ${item.action} ${item.targetType} ${item.targetId} ${JSON.stringify(redactSha256(item.detail))}`
+          .toLowerCase().includes(term));
+      const start = (page - 1) * pageSize;
+      queueMicrotask(() => {
+        if (!cancelled) setResult({ items: filtered.slice(start, start + pageSize), total: filtered.length });
+      });
+      return () => { cancelled = true; };
+    }
+    void fetchAuditEvents(page, pageSize, deferredQuery)
+      .then((next) => { if (!cancelled) setResult(next); })
+      .catch(() => { if (!cancelled) setResult({ items: [], total: 0 }); });
+    return () => { cancelled = true; };
+  }, [deferredQuery, events, page, pageSize]);
+  return (<section className={embedded ? "settings-panel generic-page" : "page generic-page"}><h1>감사 로그</h1><p>업로드·재분석·설정 변경과 관리자 작업을 불변 이력으로 조회합니다.</p><div className="generic-toolbar"><label className="global-search"><Icon name="search" /><input aria-label="감사 로그 검색" value={query} onChange={(event) => { setQuery(event.target.value); setPage(1); }} placeholder="행위자, 작업, 대상, 상세 검색" /></label><span>{result.total}건</span></div><div className="table-frame"><div className="table-scroll"><table><thead><tr><th>시각</th><th>행위자</th><th>작업</th><th>대상</th><th>상세</th></tr></thead><tbody>{result.items.length ? (result.items.map((item) => (<tr key={item.id}><td>{new Date(item.createdAt).toLocaleString("ko-KR")}</td><td>{item.actor}</td><td className="mono">{item.action}</td><td>{item.targetType}:{item.targetId}</td><td className="mono">{auditDetailLabel(item.detail)}</td></tr>) )
+              ): (<tr><td colSpan={5}>감사 로그가 없습니다.</td></tr>)}</tbody></table></div><DetailPagination total={result.total} page={Math.min(page, Math.max(1, Math.ceil(result.total / pageSize)))} pageSize={pageSize} onPage={setPage} onPageSize={(size) => { setPageSize(size); setPage(1); }} /></div></section>);}
 
 type ApiTokenSummary = { id: string; name: string; serviceId?: string; active: boolean; createdAt: string;};
 
@@ -937,7 +965,6 @@ export default function App() {
   const [collapsed, setCollapsed] = useState(false);
   const [globalSearch, setGlobalSearch] = useState("");
   const [runs, setRuns] = useState<SbomRun[]>(previewMode ? demoRuns : []);
-  const [searchedRuns, setSearchedRuns] = useState<{ query: string; runs: SbomRun[] } | null>(null);
   const [services, setServices] = useState<CatalogItem[]>(previewMode ? demoServices : []);
   const [environments, setEnvironments] = useState<CatalogItem[]>(previewMode ? demoEnvironments : []);
   const [authenticated, setAuthenticated] = useState<boolean | null>(previewMode ? true : null);
@@ -989,10 +1016,12 @@ export default function App() {
     let nextRuns: SbomRun[];
     let catalogs: { services: CatalogItem[]; environments: CatalogItem[] };
     try {
-      [nextRuns, catalogs] = await Promise.all([
-        access.runs ? fetchRuns() : Promise.resolve([] as SbomRun[]),
+      const [runResult, nextCatalogs] = await Promise.all([
+        access.runs ? fetchRuns({ size: 100 }) : Promise.resolve({ items: [] as SbomRun[], page: 1, size: 100, total: 0 }),
         access.catalogs ? fetchCatalogs() : Promise.resolve({ services: [], environments: [] }),
       ]);
+      nextRuns = runResult.items;
+      catalogs = nextCatalogs;
     } catch (error) {
       setLoadError(error instanceof Error ? error.message : "데이터를 불러오지 못했습니다.");
       return [];
@@ -1001,14 +1030,23 @@ export default function App() {
     setServices(catalogs.services);
     setEnvironments(catalogs.environments);
     if (initialLink.runId) {
-      const linkedRun = nextRuns.find((run) => run.id === initialLink.runId);
+      let linkedRun = nextRuns.find((run) => run.id === initialLink.runId);
+      if (!linkedRun && access.runs) {
+        try {
+          linkedRun = await fetchRun(initialLink.runId);
+        } catch {
+          setLoadError("링크의 SBOM 회차를 찾을 수 없습니다.");
+        }
+      }
       if (linkedRun) {
         setPage("runs");
         setSelectedRun(linkedRun);}
     }
     if (!demoMode && !standaloneMode) {
       const [auditResult, usersResult, bundlesResult, tokensResult, dtrackResult] = await Promise.allSettled([
-        loadedUser?.role === "admin" && loadCan("audit.view") ? fetchAuditEvents(): Promise.resolve([]),
+        loadedUser?.role === "admin" && loadCan("audit.view")
+          ? fetchAuditEvents()
+          : Promise.resolve({ items: [] as AuditEvent[], page: 1, size: 25, total: 0 }),
         loadCan("users.manage") ?fetchUsers(): Promise.resolve([]),
         loadedUser?.role === "admin" && loadCan("vulnerability.view")
           ?fetchVulnerabilityBundles(): Promise.resolve([]),
@@ -1016,7 +1054,7 @@ export default function App() {
         loadCan("dtrack.settings")
           ?fetchDependencyTrackStatus()
           : Promise.resolve(null)]);
-      if (auditResult.status === "fulfilled") setAuditEvents(auditResult.value);
+      if (auditResult.status === "fulfilled") setAuditEvents(auditResult.value.items);
       if (usersResult.status === "fulfilled") setUsers(usersResult.value);
       if (bundlesResult.status === "fulfilled") setBundles(bundlesResult.value);
       if (tokensResult.status === "fulfilled") setTokens(tokensResult.value);
@@ -1027,7 +1065,7 @@ export default function App() {
           ["SBOM 회차", "회차", String(nextRuns.length), nextRuns[0]?.createdAt || "-"],
           ["일부 실패", "처리 상태", String(nextRuns.filter((run) => run.state === "partial" || run.state === "failed").length), "검토 필요"]],
         services: catalogs.services.map((service) => [service.name, service.slug, service.id, "활성"]),
-        audit: auditResult.status === "fulfilled" ? auditResult.value.map((item) => [item.actor, item.action, `${item.targetType}:${item.targetId}`, item.createdAt]) : [],
+        audit: auditResult.status === "fulfilled" ? auditResult.value.items.map((item) => [item.actor, item.action, `${item.targetType}:${item.targetId}`, item.createdAt]) : [],
         settings: usersResult.status === "fulfilled" ? usersResult.value.map((item) => [item.username, item.role, item.active ? "활성" : "비활성", "-"]) : [],
         vuln: []});}
     if (standaloneMode) {
@@ -1067,24 +1105,10 @@ export default function App() {
   useEffect(() => {
     const listener = () => window.innerWidth <= 1024 && setCollapsed(true);
     listener(); window.addEventListener("resize", listener); return () => window.removeEventListener("resize", listener);}, []);
-  useEffect(() => {
-    const term = authenticated === true && page === "runs" ? globalSearch.trim() : "";
-    if (!term) return;
-    let cancelled = false;
-    const timer = window.setTimeout(() => {
-      void fetchRuns(term)
-        .then((items) => { if (!cancelled) setSearchedRuns({ query: term, runs: items }); })
-        .catch((error) => { if (!cancelled) setLoadError(error instanceof Error ? error.message : "검색에 실패했습니다."); })
-    }, 250);
-    return () => { cancelled = true; window.clearTimeout(timer); };
-  }, [authenticated, globalSearch, page]);
-  const searchQuery = authenticated === true && page === "runs" ? globalSearch.trim() : "";
-  const searchingRuns = Boolean(searchQuery && searchedRuns?.query !== searchQuery);
-  const displayedRuns = !searchQuery ? runs : searchedRuns?.query === searchQuery ? searchedRuns.runs : EMPTY_RUNS;
   const content = useMemo(() => {
     if (page === "dashboard" ) return (<Dashboard runs={runs} onUpload={() => setUploadOpen(true)} canUpload={canUpload}
           standalone={standaloneMode}/>);
-    if (page === "runs") return (<RunsPage runs={displayedRuns} searching={searchingRuns}
+    if (page === "runs") return (<RunsPage runs={runs} services={services} environments={environments} search={globalSearch}
           canUpload={canUpload} onUpload={() => setUploadOpen(true)} onSelect={openRun} />);
     if (page === "compare") return <ComparePage runs={runs} can={can} />;
     if (page === "services") return (<ServicesPage services={services} environments={environments} onChanged={() => void loadData(authUser)} canManage={can("catalog.manage")}/>);
@@ -1111,7 +1135,7 @@ export default function App() {
             const nextPage = pageForPermissions(session.user, page);
             if (nextPage && nextPage !== page) navigate(nextPage);
           }}onChanged={() => void loadData(authUser)} />);
-    return <GenericPage rows={genericRows.dashboard || []} />;}, [auditEvents, bundles, can,dtrackStatus, displayedRuns, environments, genericRows, loadData, openRun, page, runs, searchingRuns, services, tokens, users,
+    return <GenericPage rows={genericRows.dashboard || []} />;}, [auditEvents, bundles, can,dtrackStatus, environments, genericRows, globalSearch, loadData, openRun, page, runs, services, tokens, users,
     rolePolicyCatalog,
     rolePolicies, authUser, navigate, canUpload]);
   useEffect(() => {

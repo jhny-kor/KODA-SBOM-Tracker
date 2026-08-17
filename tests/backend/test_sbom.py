@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor
 
@@ -9,7 +10,9 @@ from koda_tracker.sbom import (
     SbomValidationError,
     normalized_identity,
     parse_sbom,
+    parse_sbom_file,
     store_artifact,
+    store_artifact_file,
     validate_with_cyclonedx_cli,
 )
 
@@ -71,3 +74,18 @@ def test_content_addressed_store_is_safe_for_concurrent_duplicates(tmp_path) -> 
     assert len({digest for digest, _ in results}) == 1
     assert len({path for _, path in results}) == 1
     assert results[0][1].read_bytes() == raw
+
+
+def test_file_parser_and_store_keep_upload_on_disk(tmp_path) -> None:
+    raw = json.dumps({"bomFormat": "CycloneDX", "specVersion": "1.6", "components": []}).encode()
+    source = tmp_path / "upload.json"
+    source.write_bytes(raw)
+
+    payload, media = parse_sbom_file(source)
+    digest, stored = store_artifact_file(tmp_path / "artifacts", source, digest=hashlib.sha256(raw).hexdigest())
+
+    assert payload["components"] == []
+    assert media.endswith("+json")
+    assert source.read_bytes() == raw
+    assert stored.read_bytes() == raw
+    assert digest == hashlib.sha256(raw).hexdigest()

@@ -7,7 +7,9 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from koda_tracker.config import get_settings
+from koda_tracker.db import SessionLocal
 from koda_tracker.main import app
+from koda_tracker.models import AnalysisRevision, JobState
 
 
 def test_authenticated_upload_idempotency_and_artifact_round_trip() -> None:
@@ -87,6 +89,50 @@ def test_authenticated_upload_idempotency_and_artifact_round_trip() -> None:
         component_searched = client.get("/api/v1/sbom-runs", params={"q": "pkg:pypi/demo"})
         assert component_searched.status_code == 200
         assert component_searched.json()["total"] == 2
+        page = client.get("/api/v1/sbom-runs", params={"page": 2, "size": 1})
+        assert page.status_code == 200
+        assert page.json()["page"] == 2
+        assert page.json()["total"] == 2
+        assert len(page.json()["items"]) == 1
+
+        detail = client.get(f"/api/v1/sbom-runs/{first.json()['runId']}")
+        assert detail.status_code == 200
+        assert detail.json()["components"] == []
+        components = client.get(
+            f"/api/v1/sbom-runs/{first.json()['runId']}/components",
+            params={"q": "pkg:pypi/demo", "page": 1, "size": 1},
+        )
+        assert components.status_code == 200
+        assert components.json()["total"] == 1
+        assert components.json()["items"][0]["name"] == "demo"
+
+        with SessionLocal() as db:
+            db.add(
+                AnalysisRevision(
+                    run_id=first.json()["runId"],
+                    sequence=1,
+                    state=JobState.COMPLETED,
+                    findings=[
+                        {"canonicalId": "CVE-2026-0001", "severity": "critical", "component": "demo@1.0"},
+                        {"canonicalId": "CVE-2026-0002", "severity": "medium", "component": "demo@1.0"},
+                    ],
+                    policies=[],
+                )
+            )
+            db.commit()
+        findings = client.get(
+            f"/api/v1/sbom-runs/{first.json()['runId']}/findings",
+            params={"page": 2, "size": 1},
+        )
+        assert findings.status_code == 200
+        assert findings.json()["total"] == 2
+        assert findings.json()["items"][0]["canonicalId"] == "CVE-2026-0002"
+
+        audits = client.get("/api/v1/audit-events", params={"q": "sbom.upload", "page": 2, "size": 1})
+        assert audits.status_code == 200
+        assert audits.json()["total"] == 2
+        assert audits.json()["page"] == 2
+        assert len(audits.json()["items"]) == 1
         comparison = client.get(
             "/api/v1/comparisons",
             params={"baseRunId": first.json()["runId"], "targetRunId": second.json()["runId"]},
@@ -202,7 +248,8 @@ def test_api_token_requires_service_scope_and_admin_catalog_patches() -> None:
         csrf = login.json()["csrfToken"]
         headers = {"X-CSRF-Token": csrf}
         assert client.post("/api/v1/api-tokens", json={"name": "global"}, headers=headers).status_code == 422
-        user = client.post("/api/v1/users", json={"username": "patch-me", "password": "long-enough-password", "role": "viewer"}, headers=headers).json()
+        user = client.post("/api/v1/users", json={"username": "  Patch-Me  ", "password": "long-enough-password", "role": "viewer"}, headers=headers).json()
+        assert user["username"] == "patch-me"
         patched_user = client.patch(f"/api/v1/users/{user['id']}", json={"active": False}, headers=headers)
         assert patched_user.status_code == 200
         assert patched_user.json()["active"] is False
