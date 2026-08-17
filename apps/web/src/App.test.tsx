@@ -13,6 +13,9 @@ describe("KODA SBOM Tracker", () => {
   it("offers LDAP as an explicit login choice", () => {
     render(<LoginPage onAuthenticated={() => {}} />);
     expect(screen.getByRole("checkbox", { name: "LDAP 사용" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "회원가입" }));
+    expect(screen.getByRole("button", { name: "가입 신청" })).toBeInTheDocument();
+    expect(screen.getByLabelText("비밀번호 확인")).toBeInTheDocument();
   });
 
   it("uses only explicit permissions in real auth users", () => {
@@ -52,6 +55,26 @@ describe("KODA SBOM Tracker", () => {
     expect(screen.queryByRole("heading", { name: "역할 정책" })).not.toBeInTheDocument();
     expect(screen.queryByRole("option", { name: "관리자" })).not.toBeInTheDocument();
     expect(screen.queryByRole("option", { name: "매니저" })).not.toBeInTheDocument();
+  });
+
+  it("distinguishes pending signup approval from inactive users", () => {
+    render(<SettingsPage
+      users={[
+        { id: "pending", username: "new-user", role: "viewer", active: false, status: "pending" },
+        { id: "inactive", username: "stopped-user", role: "viewer", active: false, status: "inactive" },
+      ]}
+      services={[]} tokens={[]} dtrackStatus={null}
+      policies={[{ role: "admin", permissions: ["roles.manage"] }]}
+      roleCatalog={["roles.manage"]} bundles={[]} auditEvents={[]}
+      isAdmin canVulnerability={false} canVulnerabilityManage={false} canAudit={false}
+      canUsers canTokens={false} canDtrack={false}
+      canPolicyEdit canRoles onSync={async () => {}} onActivate={async () => {}}
+      onPolicyChanged={async () => {}} onChanged={() => {}}
+    />);
+    expect(screen.getByText("승인 대기")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "승인" })).toBeInTheDocument();
+    expect(screen.getByText("비활성")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "활성화" })).toBeInTheDocument();
   });
 
   it("groups administrator security data under Korean settings tabs", () => {
@@ -107,10 +130,19 @@ describe("KODA SBOM Tracker", () => {
   it("renders dense run history and opens comparison", () => {
     render(<App />);
     expect(screen.getByRole("heading", { name: "SBOM 회차" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "완료" })).toHaveValue("completed");
+    expect(screen.queryByRole("button", { name: "알림" })).not.toBeInTheDocument();
     expect(screen.getAllByText("결제 API").length).toBeGreaterThan(0);
     fireEvent.click(screen.getByRole("button", { name: "회차 비교" }));
     expect(screen.getByRole("heading", { name: "회차 비교" })).toBeInTheDocument();
     expect(screen.getByText("구성요소 추가")).toBeInTheDocument();
+  });
+
+  it("searches run history by component metadata", async () => {
+    render(<App />);
+    fireEvent.change(screen.getByRole("textbox", { name: "전체 검색" }), { target: { value: "httpclient" } });
+    expect(await screen.findByRole("cell", { name: "결제 API" })).toBeInTheDocument();
+    expect(screen.queryByText("회원 서비스")).not.toBeInTheDocument();
   });
 
   it("colors comparison vulnerability status by severity", async () => {
@@ -150,12 +182,15 @@ describe("KODA SBOM Tracker", () => {
     expect(screen.getByText("OPERATIONS SBOM PORTFOLIO")).toBeInTheDocument();
   });
 
-  it("opens a run from a KODA deep link", () => {
+  it("opens a run from a KODA deep link", async () => {
     window.history.replaceState(null, "", "/?runId=run-1");
     render(<App />);
     expect(screen.getByRole("heading", { name: "1.4.2 · 3차" })).toBeInTheDocument();
     expect(screen.getByRole("dialog", { name: "1.4.2 · 3차" })).toHaveClass("detail-modal");
     expect(screen.queryByText("SHA-256")).not.toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "구성요소 검색" })).toBeInTheDocument();
+    expect(screen.getAllByRole("combobox", { name: "상세 페이지당 행 수" })).toHaveLength(2);
+    await waitFor(() => expect(screen.getByText((_, element) => element?.tagName === "LI" && element.textContent?.includes("r1 · 완료 ·") === true)).toBeInTheDocument());
     expect(screen.getAllByText("결제 API").length).toBeGreaterThan(0);
   });
 });

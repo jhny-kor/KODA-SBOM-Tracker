@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import uuid
 
 from fastapi.testclient import TestClient
 
@@ -39,6 +40,37 @@ def test_ldap_returns_explicit_not_configured_before_password_check() -> None:
         response = client.post("/api/v1/auth/login", json={"username": "missing", "password": "wrong", "useLdap": True})
         assert response.status_code == 501
         assert response.json() == {"code": "ldap_not_configured", "detail": "LDAP 로그인은 아직 지원되지 않습니다"}
+
+
+def test_registration_requires_admin_approval_before_login() -> None:
+    username = f"request-{uuid.uuid4().hex[:12]}"
+    password = "registration-password-123"
+    with TestClient(app) as client:
+        response = client.post("/api/v1/auth/register", json={"username": username, "password": password, "passwordConfirm": password})
+        assert response.status_code == 202
+        assert response.json()["status"] == "pending"
+        duplicate = client.post("/api/v1/auth/register", json={"username": username.upper(), "password": "replacement-password-123", "passwordConfirm": "replacement-password-123"})
+        assert duplicate.status_code == 202
+        assert client.post("/api/v1/auth/login", json={"username": username, "password": "replacement-password-123"}).status_code == 401
+        assert client.post("/api/v1/auth/login", json={"username": username, "password": password}).status_code == 403
+
+        admin = client.post("/api/v1/auth/login", json={"username": "test-admin", "password": "correct-horse-battery-staple"})
+        csrf = admin.json()["csrfToken"]
+        pending = next(item for item in client.get("/api/v1/users").json() if item["username"] == username)
+        assert pending["role"] == "viewer"
+        assert pending["active"] is False
+        assert pending["status"] == "pending"
+        assert client.patch(f"/api/v1/users/{pending['id']}", json={"active": True}, headers={"X-CSRF-Token": csrf}).status_code == 422
+        approved = client.post(f"/api/v1/users/{pending['id']}/approve", headers={"X-CSRF-Token": csrf})
+        assert approved.status_code == 200
+        assert approved.json()["status"] == "active"
+
+        client.post("/api/v1/auth/logout", headers={"X-CSRF-Token": csrf})
+        assert client.post("/api/v1/auth/login", json={"username": username, "password": password}).status_code == 200
+
+        admin = client.post("/api/v1/auth/login", json={"username": "test-admin", "password": "correct-horse-battery-staple"})
+        csrf = admin.json()["csrfToken"]
+        assert client.patch(f"/api/v1/users/{pending['id']}", json={"active": False}, headers={"X-CSRF-Token": csrf}).json()["status"] == "inactive"
 
 
 def test_logout_current_requires_browser_headers_and_invalidates_session() -> None:

@@ -46,8 +46,16 @@ export async function login(username: string, password: string, useLdap = false)
   return result;
 }
 
+export function register(username: string, password: string, passwordConfirm: string) {
+  return request<{ status: "pending"; detail: string }>("/api/v1/auth/register", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, password, passwordConfirm }),
+  });
+}
+
 export async function resumeSession(): Promise<{ user: AuthUser; csrfToken: string }> {
-  if (previewMode) return { user: { id: "preview", username: "preview", displayName: "미리보기 사용자", department: "보안운영팀", role: "admin", active: true, permissions: ["*"] }, csrfToken: "preview" };
+  if (previewMode) return { user: { id: "preview", username: "preview", displayName: "미리보기 사용자", department: "보안운영팀", role: "admin", active: true, status: "active", permissions: ["*"] }, csrfToken: "preview" };
   const result = await request<{ csrfToken: string; user: AuthUser }>("/api/v1/auth/me");
   csrfToken = result.csrfToken;
   return result;
@@ -78,8 +86,20 @@ export async function logout() {
 }
 
 export async function fetchRuns(search = ""): Promise<SbomRun[]> {
-  if (standaloneMode) return [...demoRuns, ...getStandaloneRuns()];
-  if (demoMode) return demoRuns;
+  if (previewMode) {
+    const runs = standaloneMode ? [...demoRuns, ...getStandaloneRuns()] : demoRuns;
+    const term = search.trim().toLowerCase();
+    if (!term) return runs;
+    return runs.filter((run) => {
+      const summary = `${run.service.name} ${run.environment.name} ${run.releaseVersion} ${run.filename || ""} ${run.id}`.toLowerCase();
+      const standaloneComponents = getStandaloneRun(run.id)?.components || [];
+      const componentText = [
+        ...standaloneComponents.flatMap((component) => [component.group, component.name, component.version, component.purl, component.bomRef]),
+        ...(run.id === "run-1" ? demoChanges.flatMap((component) => [component.name, component.purl, component.baseVersion, component.targetVersion]) : []),
+      ].filter(Boolean).join(" ").toLowerCase();
+      return summary.includes(term) || componentText.includes(term);
+    });
+  }
   const items: SbomRun[] = [];
   let page = 1;
   let total = 0;
@@ -201,6 +221,10 @@ export async function revokeApiToken(id: string) {
 
 export async function patchUser(id: string, body: { role?: string; active?: boolean }) {
   return request<UserSummary>(`/api/v1/users/${encodeURIComponent(id)}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+}
+
+export async function approveUser(id: string) {
+  return request<UserSummary>(`/api/v1/users/${encodeURIComponent(id)}/approve`, { method: "POST" });
 }
 
 export async function patchService(id: string, body: { name?: string; active?: boolean }) {

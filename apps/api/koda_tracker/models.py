@@ -59,6 +59,7 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(Text)
     role: Mapped[Role] = mapped_column(Enum(Role), default=Role.VIEWER)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
+    approval_state: Mapped[str] = mapped_column(String(16), default="approved")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Generator
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from .config import get_settings
@@ -29,6 +29,18 @@ def ensure_postgres_manager_enum(bind=engine) -> None:
     with bind.begin() as connection:
         if connection.scalar(text("SELECT to_regtype('role') IS NOT NULL")):
             connection.execute(text("ALTER TYPE role ADD VALUE IF NOT EXISTS 'MANAGER'"))
+
+
+def ensure_user_approval_state_column(bind=engine) -> None:
+    """Add the explicit signup approval state to an existing users table."""
+    if "users" not in inspect(bind).get_table_names():
+        return
+    if "approval_state" in {column["name"] for column in inspect(bind).get_columns("users")}:
+        return
+    with bind.begin() as connection:
+        connection.execute(
+            text("ALTER TABLE users ADD COLUMN approval_state VARCHAR(16) NOT NULL DEFAULT 'approved'")
+        )
 
 
 def get_db() -> Generator[Session, None, None]:

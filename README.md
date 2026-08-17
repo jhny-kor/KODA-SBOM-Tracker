@@ -48,19 +48,20 @@ Dependency-Track에서 전용 팀/API 키를 만든 뒤 BOM 업로드·프로젝
 ## 로그인과 권한
 
 최초 Tracker 관리자는 `.env`의 `TRACKER_BOOTSTRAP_ADMIN_USERNAME`과
-`TRACKER_BOOTSTRAP_ADMIN_PASSWORD`로 생성합니다. 이후 사용자는 설정 화면에서
-관리자가 생성·활성화하며, `admin`, `manager`, `analyst`, `uploader`, `viewer`
+`TRACKER_BOOTSTRAP_ADMIN_PASSWORD`로 생성합니다. LDAP 연동 전에는 사용자가 로그인
+화면에서 로컬 계정 가입을 신청하고, 계정은 `viewer`·`승인 대기` 상태로 생성됩니다.
+관리자가 설정의 사용자 화면에서 역할을 정한 뒤 `승인`해야 로그인할 수 있습니다.
+`admin`, `manager`, `analyst`, `uploader`, `viewer`
 역할별 권한은 화면의 역할 정책에서 조정할 수 있습니다. 역할 정책 변경과 사용자
 활성화·비활성화는 감사 로그에 남고, 사용자·역할 관리 권한을 가진 마지막 활성
 계정은 제거할 수 없습니다.
 
 로그인 화면의 `LDAP 사용` 선택지는 향후 연동을 위한 UI이며 현재 선택하면
-`501 ldap_not_configured`로 실패합니다. 따라서 현재 Tracker 로그인은 관리자가
-미리 만든 로컬 계정만 지원합니다.
+`501 ldap_not_configured`로 실패합니다. 현재는 관리자 승인형 로컬 계정을 사용합니다.
 
 KODA Linux 통합본에서는 Tracker 로그인 세션을 gateway가 검증해 KODA에 신원만
-전달합니다. KODA에 처음 접근한 사용자는 KODA에서 `pending` 상태가 되며 KODA
-관리자가 별도로 승인하고 프로젝트 권한을 부여해야 합니다. 이 공유 로그인은 통합
+전달합니다. Tracker에서 승인된 사용자는 KODA에도 자동 활성화되며 KODA 관리자는
+프로젝트 권한만 별도로 부여합니다. 이 공유 로그인은 통합
 suite의 동일 오리진 `/koda/` 경로에서만 적용되며, 이 저장소의 단독 Compose에는
 KODA가 포함되지 않습니다. Dependency-Track UI 로그인도 Tracker 세션과 공유하지
 않고 별도 계정·Team 권한을 사용합니다.

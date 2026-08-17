@@ -61,11 +61,13 @@ Dependency-Track 초기 관리자 로그인 후 포털 전용 팀을 만들고 �
 
 현재 인증 경계는 다음과 같습니다.
 
-- Tracker 로컬 계정은 관리자가 먼저 생성해야 하며 최초 로그인 자동 가입은 없습니다.
+- Tracker 로컬 계정은 로그인 화면에서 가입을 신청하면 `viewer`·`승인 대기` 상태로
+  생성됩니다. 관리자가 사용자 설정에서 역할을 확인하고 `승인`한 뒤에만
+  로그인할 수 있습니다.
 - `LDAP 사용`은 아직 구현되지 않아 선택 시 `501 ldap_not_configured`를 반환합니다.
 - 통합 KODA suite는 Tracker의 HttpOnly 세션을 gateway에서 검증한 뒤 KODA에 UUID,
-  표시 이름, 만료 시각만 전달합니다. KODA 최초 접근자는 `pending`으로 등록되며
-  KODA 관리자가 별도로 활성화하고 프로젝트 권한을 부여해야 합니다.
+  표시 이름, 만료 시각만 전달합니다. Tracker 승인 계정은 KODA에도 자동 활성화되고
+  KODA 관리자는 프로젝트 권한만 별도로 부여합니다.
 - Dependency-Track UI는 별도 사용자·Team 권한을 사용합니다. 포털 backend 연동용
   API 키를 사용자 로그인이나 브라우저 SSO에 사용하지 않습니다.
 

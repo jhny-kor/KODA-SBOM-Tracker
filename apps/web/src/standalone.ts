@@ -191,7 +191,7 @@ export async function parseStandaloneSbom(raw: string, filename: string, release
 }
 
 export async function importStandaloneSbom(file: File, releaseVersion?: string): Promise<{ runId: string; jobId: string }> {
-  if (file.size > 25 * 1024 * 1024) throw new Error("SBOM 파일은 25 MiB 이하만 업로드할 수 있습니다.");
+  if (file.size > 100 * 1024 * 1024) throw new Error("SBOM 파일은 100 MiB 이하만 업로드할 수 있습니다.");
   const detail = await parseStandaloneSbom(await file.text(), file.name, releaseVersion);
   storedRuns.set(detail.id, detail);
   return { runId: detail.id, jobId: `${detail.id}-job` };

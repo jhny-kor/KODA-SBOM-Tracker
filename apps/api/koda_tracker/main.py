@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from .config import get_settings, session_cookie_name
 from .comparison import compare_components, compare_records
-from .db import Base, SessionLocal, engine, get_db, ensure_postgres_manager_enum
+from .db import Base, SessionLocal, engine, ensure_postgres_manager_enum, ensure_user_approval_state_column, get_db
 from .dtrack import DependencyTrackClient
 from .models import (
     AnalysisRevision,
@@ -35,6 +35,7 @@ from .models import (
     Release,
     Role,
     RolePolicy,
+    RunComponent,
     SbomRun,
     Service,
     User,
@@ -63,6 +64,12 @@ class LoginRequest(BaseModel):
     username: str
     password: str
     useLdap: bool = False
+
+
+class RegistrationRequest(BaseModel):
+    username: str
+    password: str
+    passwordConfirm: str
 
 
 class ServiceRequest(BaseModel):
@@ -138,6 +145,7 @@ async def lifespan(_: FastAPI):
         raise RuntimeError("production Tracker requires HTTPS public_origin and secure cookies")
     ensure_postgres_manager_enum(engine)
     Base.metadata.create_all(engine)
+    ensure_user_approval_state_column(engine)
     # v1 uses create_all for a fresh install, but keep the one additive field
     # introduced by the vulnerability-data lifecycle backward compatible with
     # an already initialized portal database.
@@ -170,7 +178,24 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title="KODA SBOM Tracker API", version="0.1.0", lifespan=lifespan)
 _login_attempts: dict[str, deque[datetime]] = defaultdict(deque)
+_registration_attempts: dict[str, deque[datetime]] = defaultdict(deque)
 _round_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+
+
+def _user_status(user: User) -> str:
+    if user.approval_state == "pending":
+        return "pending"
+    return "active" if user.active else "inactive"
+
+
+def _user_payload(user: User) -> dict:
+    return {
+        "id": user.id,
+        "username": user.username,
+        "role": user.role,
+        "active": user.active,
+        "status": _user_status(user),
+    }
 
 
 async def _read_upload_stream(upload: UploadFile, max_bytes: int) -> tuple[bytes, str]:
@@ -229,9 +254,15 @@ def login(body: LoginRequest, request: Request, response: Response, db: Session 
     if len(attempts) >= 10:
         raise HTTPException(429, "로그인 시도가 너무 많습니다. 잠시 후 다시 시도하세요")
     user = db.scalar(select(User).where(User.username == body.username))
-    if not user or not user.active or not verify_password(user.password_hash, body.password):
+    if not user or not verify_password(user.password_hash, body.password):
         attempts.append(current)
         raise HTTPException(401, "사용자 이름 또는 비밀번호가 올바르지 않습니다")
+    if user.approval_state == "pending":
+        attempts.clear()
+        raise HTTPException(403, "계정이 관리자 승인 대기 중입니다")
+    if not user.active:
+        attempts.clear()
+        raise HTTPException(403, "비활성화된 계정입니다")
     attempts.clear()
     raw, csrf = issue_session(db, user)
     cookie_name = session_cookie_name()
@@ -247,7 +278,48 @@ def login(body: LoginRequest, request: Request, response: Response, db: Session 
     if cookie_name != "koda_session":
         response.delete_cookie("koda_session", path="/", samesite="strict", secure=get_settings().secure_cookies)
     policy = db.get(RolePolicy, user.role)
-    return {"user": {"id": user.id, "username": user.username, "role": user.role, "active": user.active, "permissions": sorted(policy.permissions if policy else DEFAULT_ROLE_PERMISSIONS.get(user.role, ()))}, "csrfToken": csrf}
+    return {"user": {**_user_payload(user), "permissions": sorted(policy.permissions if policy else DEFAULT_ROLE_PERMISSIONS.get(user.role, ()))}, "csrfToken": csrf}
+
+
+@app.post("/api/v1/auth/register", status_code=202)
+def register(body: RegistrationRequest, request: Request, db: Session = Depends(get_db)) -> dict:
+    username = body.username.strip().lower()
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{2,63}", username):
+        raise HTTPException(422, "사용자 이름은 영문, 숫자, 점, 밑줄, 하이픈으로 3~64자여야 합니다")
+    if len(body.password) < 12:
+        raise HTTPException(422, "비밀번호는 12자 이상이어야 합니다")
+    if body.password != body.passwordConfirm:
+        raise HTTPException(422, "비밀번호 확인이 일치하지 않습니다")
+
+    forwarded = request.headers.get("x-forwarded-for", "").split(",", 1)[0].strip()
+    client = forwarded or (request.client.host if request.client else "unknown")
+    current = datetime.now(UTC)
+    attempts = _registration_attempts[client]
+    while attempts and (current - attempts[0]).total_seconds() > 3600:
+        attempts.popleft()
+    if len(attempts) >= 5:
+        raise HTTPException(429, "가입 신청이 너무 많습니다. 잠시 후 다시 시도하세요")
+    attempts.append(current)
+
+    detail = "가입 신청이 접수되었습니다. 관리자 승인 후 로그인할 수 있습니다."
+    if db.scalar(select(User.id).where(func.lower(User.username) == username)):
+        return {"status": "pending", "detail": detail}
+    user = User(
+        username=username,
+        password_hash=hash_password(body.password),
+        role=Role.VIEWER,
+        active=False,
+        approval_state="pending",
+    )
+    try:
+        db.add(user)
+        db.flush()
+    except IntegrityError:
+        db.rollback()
+        return {"status": "pending", "detail": detail}
+    audit(db, "self-service", "user.register", "user", user.id, {"username": username, "role": Role.VIEWER})
+    db.commit()
+    return {"status": "pending", "detail": detail}
 
 
 def _identity_display(username: str) -> str:
@@ -356,7 +428,7 @@ def me(request: Request, db: Session = Depends(get_db), principal=Depends(curren
         return {"token": {"id": principal.id, "name": principal.name}}
     csrf = rotate_csrf(db, request.state.session)
     policy = db.get(RolePolicy, principal.role)
-    return {"user": {"id": principal.id, "username": principal.username, "role": principal.role, "active": principal.active, "permissions": sorted(policy.permissions if policy else DEFAULT_ROLE_PERMISSIONS.get(principal.role, ()))}, "csrfToken": csrf}
+    return {"user": {**_user_payload(principal), "permissions": sorted(policy.permissions if policy else DEFAULT_ROLE_PERMISSIONS.get(principal.role, ()))}, "csrfToken": csrf}
 
 
 @app.post("/api/v1/auth/logout", status_code=204)
@@ -437,7 +509,7 @@ def list_users(db: Session = Depends(get_db), _=Depends(require_permission("user
     policy = db.get(RolePolicy, principal.role)
     can_roles = "roles.manage" in set(policy.permissions if policy else DEFAULT_ROLE_PERMISSIONS.get(principal.role, ()))
     return [
-        {"id": item.id, "username": item.username, "role": item.role, "active": item.active}
+        _user_payload(item)
         for item in db.scalars(select(User).order_by(User.username))
         if can_roles or item.role not in {Role.ADMIN, Role.MANAGER}
     ]
@@ -465,7 +537,7 @@ def create_user(
         db.commit()
     except IntegrityError as exc:
         raise HTTPException(409, "이미 존재하는 사용자입니다") from exc
-    return {"id": user.id, "username": user.username, "role": user.role}
+    return _user_payload(user)
 
 
 @app.patch("/api/v1/users/{user_id}")
@@ -488,12 +560,35 @@ def patch_user(
     if body.role is not None:
         user.role = body.role
     if body.active is not None:
+        if body.active and user.approval_state == "pending":
+            raise HTTPException(422, "가입 대기 계정은 승인 작업으로 활성화해야 합니다")
         user.active = body.active
     db.flush()
     _policy_invariant(db)
-    audit(db, principal.username, "user.update", "user", user.id, {"role": user.role, "active": user.active})
+    audit(db, principal.username, "user.update", "user", user.id, {"role": user.role, "active": user.active, "status": _user_status(user)})
     db.commit()
-    return {"id": user.id, "username": user.username, "role": user.role, "active": user.active}
+    return _user_payload(user)
+
+
+@app.post("/api/v1/users/{user_id}/approve")
+def approve_user(
+    user_id: str,
+    db: Session = Depends(get_db),
+    principal=Depends(require_permission("users.manage")),
+    _csrf=Depends(require_csrf),
+) -> dict:
+    user = db.get(User, user_id)
+    if not user:
+        raise HTTPException(404, "사용자를 찾을 수 없습니다")
+    if user.approval_state != "pending":
+        raise HTTPException(409, "가입 승인 대기 계정이 아닙니다")
+    user.approval_state = "approved"
+    user.active = True
+    db.flush()
+    _policy_invariant(db)
+    audit(db, principal.username, "user.approve", "user", user.id, {"role": user.role, "status": "active"})
+    db.commit()
+    return _user_payload(user)
 
 
 @app.post("/api/v1/api-tokens", status_code=201)
@@ -835,6 +930,15 @@ def list_runs(
                 SbomRun.original_filename.ilike(pattern),
                 SbomRun.release.has(Release.version.ilike(pattern)),
                 SbomRun.release.has(Release.service.has(Service.name.ilike(pattern))),
+                SbomRun.components.any(
+                    or_(
+                        RunComponent.name.ilike(pattern),
+                        RunComponent.group_name.ilike(pattern),
+                        RunComponent.version.ilike(pattern),
+                        RunComponent.purl.ilike(pattern),
+                        RunComponent.bom_ref.ilike(pattern),
+                    )
+                ),
             )
         )
     total = db.scalar(select(func.count()).select_from(query.subquery())) or 0

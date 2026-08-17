@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
 
-from koda_tracker.db import Base, SessionLocal, ensure_postgres_manager_enum
+from koda_tracker.db import Base, SessionLocal, ensure_postgres_manager_enum, ensure_user_approval_state_column
 from koda_tracker.main import app
 from koda_tracker.models import Job, Role, RolePolicy, User
 from koda_tracker.security import DEFAULT_ROLE_PERMISSIONS, PERMISSION_CATALOG
@@ -290,10 +290,13 @@ def test_sqlite_legacy_user_table_accepts_manager_without_rebuild() -> None:
         connection.execute(text("CREATE TABLE users (id VARCHAR(36) PRIMARY KEY, username VARCHAR(128) UNIQUE, password_hash TEXT, role VARCHAR(8), active BOOLEAN, created_at DATETIME)"))
         connection.execute(text("INSERT INTO users VALUES ('legacy', 'legacy-admin', 'x', 'ADMIN', 1, CURRENT_TIMESTAMP)"))
     Base.metadata.create_all(legacy)
+    ensure_user_approval_state_column(legacy)
+    ensure_user_approval_state_column(legacy)
     with Session(legacy) as db:
         db.add(User(username="sqlite-manager", password_hash="not-used", role=Role.MANAGER))
         db.commit()
         assert db.scalar(text("SELECT role FROM users WHERE username = 'sqlite-manager'")) == "MANAGER"
+        assert db.scalar(text("SELECT approval_state FROM users WHERE username = 'legacy-admin'")) == "approved"
 
 
 def test_postgres_manager_enum_migration_is_fresh_db_safe_and_idempotent() -> None:

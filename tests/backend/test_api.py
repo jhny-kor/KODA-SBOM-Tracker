@@ -84,6 +84,9 @@ def test_authenticated_upload_idempotency_and_artifact_round_trip() -> None:
         searched = client.get("/api/v1/sbom-runs", params={"q": "payment"})
         assert searched.status_code == 200
         assert searched.json()["total"] == 2
+        component_searched = client.get("/api/v1/sbom-runs", params={"q": "pkg:pypi/demo"})
+        assert component_searched.status_code == 200
+        assert component_searched.json()["total"] == 2
         comparison = client.get(
             "/api/v1/comparisons",
             params={"baseRunId": first.json()["runId"], "targetRunId": second.json()["runId"]},

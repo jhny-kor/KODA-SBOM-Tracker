@@ -14,7 +14,6 @@ const paths: Record<string, React.ReactNode> = {
   search: <><circle cx="11" cy="11" r="6" /><path d="m16 16 4 4" /></>,
   upload: <><path d="M12 16V4m0 0L7 9m5-5 5 5M5 15v5h14v-5" /></>,
   user: <><circle cx="12" cy="8" r="4" /><path d="M4 21c.8-4 3.5-6 8-6s7.2 2 8 6" /></>,
-  bell: <><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 8h18c0-1-3-1-3-8M10 21h4" /></>,
   chevron: <><path d="m8 10 4 4 4-4" /></>,
   reset: <><path d="M20 6v6h-6M19 12a7 7 0 1 1-2-5" /></>,
   close: <><path d="m5 5 14 14M19 5 5 19" /></>,

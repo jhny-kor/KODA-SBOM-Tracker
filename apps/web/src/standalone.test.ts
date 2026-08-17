@@ -53,4 +53,10 @@ describe("standalone CycloneDX preview", () => {
     expect(getStandaloneRun(result.runId)).toMatchObject({ filename: "demo.cdx.xml", releaseVersion: "2.0.0", specVersion: "1.5" });
     expect(getStandaloneRun(result.runId)?.analyses[0].findings?.[0]).toMatchObject({ canonicalId: "CVE-2026-0002", component: "pkg:npm/demo@2.0.0", severity: "medium" });
   });
+
+  it("rejects standalone uploads larger than 100 MiB", async () => {
+    const file = new File(["{}"], "large.cdx.json", { type: "application/json" });
+    Object.defineProperty(file, "size", { value: 100 * 1024 * 1024 + 1 });
+    await expect(importStandaloneSbom(file)).rejects.toThrow("100 MiB 이하");
+  });
 });

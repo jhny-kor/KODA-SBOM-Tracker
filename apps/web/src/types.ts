@@ -135,6 +135,7 @@ export interface UserSummary {
   department?: string;
   role: string;
   active: boolean;
+  status?: "pending" | "active" | "inactive";
   permissions?: string[];
 }
 
