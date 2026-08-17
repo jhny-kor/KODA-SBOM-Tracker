@@ -1,8 +1,42 @@
 # KODA SBOM Tracker
 
-이 저장소는 KODA용 한국어 SBOM 운영 포털입니다. React 포털, FastAPI API/worker, 공식 Dependency-Track `5.0.3` backend/frontend, PostgreSQL 분리 DB, gateway와 폐쇄망 번들·백업·복원·취약점 데이터 반입 도구를 포함합니다.
+**폐쇄망에서 운영하는 한국어 SBOM 관리 포털입니다.** 서비스별로 CycloneDX SBOM을
+회차 단위로 업로드하면 구성요소와 취약점, 정책 위반을 분석해 보관하고, 회차 간
+변경점을 비교합니다. 인터넷이 없는 서버에서 Docker Compose 한 벌로 동작하도록
+이미지·취약점 데이터·백업 도구까지 함께 제공합니다.
 
-빠른 시작:
+![KODA SBOM Tracker 주요 화면 예시](docs/diagrams/koda-sbom-tracker-screens.svg)
+
+## 무엇을 할 수 있나
+
+- **SBOM 회차 관리** — 서비스·환경·릴리스별로 CycloneDX JSON/XML을 업로드하고 분석 상태를 추적합니다.
+- **취약점·정책 분석** — Grype와 공식 Dependency-Track `5.0.3`으로 구성요소·취약점·정책 위반을 산출합니다.
+- **회차 비교** — 두 회차를 골라 구성요소·취약점·정책 위반 변경점을 탭으로 확인합니다.
+- **승인형 계정과 역할 정책** — `admin`·`manager`·`analyst`·`uploader`·`viewer` 역할과 감사 로그를 제공합니다.
+- **폐쇄망 운영** — 오프라인 번들, 취약점 데이터 반입·롤백, 백업·복원 스크립트를 포함합니다.
+
+기능과 화면을 더 자세히 보려면 [화면·기능 한눈에 보기](docs/koda-sbom-tracker-overview-ko.md)를 먼저 읽습니다.
+
+## 구성
+
+| 구성요소 | 역할 | 기술 |
+| --- | --- | --- |
+| `gateway` | 외부 진입점. 경로별 프록시 | nginx |
+| `portal-web` | 포털 화면 | React 19 + Vite (`apps/web`) |
+| `portal-api` | 업로드·조회·인증 API | FastAPI / Python 3.12+ (`apps/api`) |
+| `portal-worker` | SBOM 분석 백그라운드 처리 | 동일 이미지의 worker 모드 |
+| `postgres` | `sbom_tracker`, `dtrack` 분리 DB | PostgreSQL |
+| `dtrack-apiserver`, `dtrack-frontend` | 취약점·정책 분석 엔진 | 공식 Dependency-Track `5.0.3` |
+
+기본 공개 포트는 `8088`(`PUBLIC_HTTP_PORT`) 하나이며, 경로는 다음과 같습니다.
+
+| 경로 | 화면 |
+| --- | --- |
+| `/` | 포털 |
+| `/dependency-track/` | 공식 Dependency-Track UI |
+| `/api` | 포털 API (명세는 gateway에 공개하지 않고 `portal-api` 내부 `/docs`에서 확인) |
+
+## 빠른 시작
 
 ```bash
 cp .env.example .env
@@ -10,33 +44,8 @@ docker compose build portal-web portal-api portal-worker
 docker compose up -d
 ```
 
-Windows x64에서 설치파일로 실행하려면 Docker Desktop(Linux containers)과 Inno Setup 6을
-준비한 뒤 `.\scripts\build-windows-installer.ps1`를 실행합니다. 생성된
-`dist\windows\KODA-SBOM-Tracker-Setup.exe`는 전체 Compose 스택을 설치하고 시작 메뉴에서
-대시보드를 열 수 있게 합니다. 상세 절차는 [Windows 설치파일 가이드](docs/windows-installer-ko.md)를
-참고합니다.
-
-Docker 없이 Windows에 설치해 SBOM 업로드와 화면을 확인하려면 빌드 PC에서
-`.\scripts\build-windows-preview-installer.ps1`를 실행합니다. 생성되는
-`dist\windows\KODA-SBOM-Tracker-Preview-Setup.exe`는 대상 PC에서 Docker·Node.js 없이
-PowerShell 정적 서버와 웹 대시보드를 실행합니다. CycloneDX JSON/XML의 구성요소와 파일에
-내장된 취약점 레코드만 브라우저 메모리에서 표시하며, Grype·Dependency-Track 분석과 영구
-저장은 수행하지 않습니다. 소스에서 바로 실행하는 개발용 경로는
-`.\scripts\start-windows-preview.ps1 -OpenBrowser`이며, 상세 절차는
-[Windows 설치파일 가이드](docs/windows-installer-ko.md)의 Docker 없는 Windows 설치파일 절을
-참고합니다.
-
-폐쇄망 Linux `x86_64` 서버에 반입할 때는 인터넷 연결 `linux/amd64` 빌드 PC에서
-`./scripts/build-airgap-release.sh ./dist/koda-sbom-airgap.tar.gz`를 실행합니다.
-이 단일 압축파일에는 현재 포털 소스, compose/deploy/운영 스크립트, 고정 이미지 tar와
-SHA-256 manifest가 들어가며 실제 `.env`는 포함되지 않습니다. 상세 설치·기동은
-[오프라인 번들 가이드](docs/offline-bundle-ko.md)를 따릅니다.
-
-취약점 데이터만 Windows에서 별도 생성하려면
-`.\scripts\build-vuln-bundle.ps1`로 Grype DB·NVD·CISA KEV bundle ZIP을 만들 수
-있습니다. ZIP은 서버에서 압축 해제·manifest 검증 후 `vuln-data` Docker named
-volume에 반입하며, 상세 명령은 [오프라인 bundle 가이드](docs/offline-bundle-ko.md)의
-Windows 절을 따릅니다.
+기동 후 `http://127.0.0.1:8088/`을 엽니다. `make help`로 기동·번들·백업·검증
+타깃을 확인할 수 있습니다.
 
 처음 기동하기 전에 `.env`의 모든 `change-me-*` 값과 공개 URL을 교체합니다.
 Dependency-Track에서 전용 팀/API 키를 만든 뒤 BOM 업로드·프로젝트 생성·조회
@@ -44,6 +53,35 @@ Dependency-Track에서 전용 팀/API 키를 만든 뒤 BOM 업로드·프로젝
 전달되지 않습니다. team 사용자 멤버가 0명이어도 API 키 인증에는 문제가 없으며,
 현재 연결 검사는 `v1/team/self`가 반환한 team 권한을 확인합니다. 공개
 `DTRACK_API_BASE_URL`에는 `/api`를 붙이지 않고 관리자 자동화 주소에만 붙입니다.
+
+키 설정 후에는 `./scripts/verify-dtrack-connection.sh`로 v5 API와 최소 권한을
+확인할 수 있습니다. 관리자 API 키를 별도로 가진 초기 설치는
+`scripts/configure-dtrack-key.sh`로 전용 팀과 키를 자동 발급할 수 있습니다.
+
+## 배포 방식
+
+| 방식 | 대상 | 시작 명령 | 가이드 |
+| --- | --- | --- | --- |
+| Docker Compose | 개발·일반 서버 | `docker compose up -d` | 위 빠른 시작 |
+| 폐쇄망 압축파일 | 인터넷 없는 Linux `x86_64` | 빌드 PC에서 `./scripts/build-airgap-release.sh ./dist/koda-sbom-airgap.tar.gz` | [오프라인 번들 가이드](docs/offline-bundle-ko.md) |
+| Windows 전체 설치파일 | Docker Desktop(Linux containers) + Inno Setup 6 | `.\scripts\build-windows-installer.ps1` | [Windows 설치파일 가이드](docs/windows-installer-ko.md) |
+| Windows Preview 설치파일 | Docker·Node.js 없는 PC (화면 확인용) | `.\scripts\build-windows-preview-installer.ps1` | [Windows 설치파일 가이드](docs/windows-installer-ko.md) |
+
+- 폐쇄망 압축파일에는 포털 소스, compose/deploy/운영 스크립트, 고정 이미지 tar와
+  SHA-256 manifest가 들어가며 실제 `.env`는 포함되지 않습니다.
+- Windows 전체 설치파일(`dist\windows\KODA-SBOM-Tracker-Setup.exe`)은 Compose 스택
+  전체를 설치하고 시작 메뉴에서 대시보드를 엽니다.
+- Windows Preview(`dist\windows\KODA-SBOM-Tracker-Preview-Setup.exe`)는 PowerShell
+  정적 서버와 웹 대시보드만 실행합니다. CycloneDX 파일에 내장된 구성요소·취약점
+  레코드만 브라우저 메모리에서 표시하며 Grype·Dependency-Track 분석과 영구 저장은
+  하지 않습니다. 소스에서 바로 실행하는 개발용 경로는
+  `.\scripts\start-windows-preview.ps1 -OpenBrowser`입니다.
+- 취약점 데이터만 따로 만들려면 `.\scripts\build-vuln-bundle.ps1`로 Grype DB·NVD·CISA
+  KEV bundle ZIP을 만듭니다. ZIP은 서버에서 압축 해제·manifest 검증 후 `vuln-data`
+  Docker named volume에 반입하며, 상세 명령은
+  [오프라인 번들 가이드](docs/offline-bundle-ko.md)의 Windows 절을 따릅니다.
+- 반입·롤백 후에는 포털의 `취약점 데이터` 화면에서 `반입 상태 동기화`를 실행해야
+  DB 감사 이력과 활성 기준일이 갱신됩니다.
 
 ## 로그인과 권한
 
@@ -59,6 +97,11 @@ Dependency-Track에서 전용 팀/API 키를 만든 뒤 BOM 업로드·프로젝
 로그인 화면의 `LDAP 사용` 선택지는 향후 연동을 위한 UI이며 현재 선택하면
 `501 ldap_not_configured`로 실패합니다. 현재는 관리자 승인형 로컬 계정을 사용합니다.
 
+설정 화면에서는 관리자만 서비스 범위 API 토큰을 발급하고 폐기할 수 있으며 원문은
+발급 시 한 번만 표시됩니다.
+
+## KODA 통합
+
 KODA Linux 통합본에서는 Tracker 로그인 세션을 gateway가 검증해 KODA에 신원만
 전달합니다. Tracker에서 승인된 사용자는 KODA에도 자동 활성화되며 KODA 관리자는
 프로젝트 권한만 별도로 부여합니다. 이 공유 로그인은 통합
@@ -71,11 +114,13 @@ KODA와 Tracker에서 실행하는 로그아웃은 모두 현재 브라우저의
 필요합니다. 계정은 공유하지만 권한 정책은 공유하지 않습니다. Tracker 역할 정책과
 KODA 프로젝트 역할은 각각의 관리 화면에서 별도로 설정합니다.
 
-키 설정 후에는 `./scripts/verify-dtrack-connection.sh`로 v5 API와 최소 권한을
-확인할 수 있습니다. 관리자 API 키를 별도로 가진 초기 설치는
-`scripts/configure-dtrack-key.sh`로 전용 팀과 키를 자동 발급할 수 있습니다.
+KODA Linux 대시보드에서 결과 화면에 포털 링크를 넣을 때는
+`KODA_SSBOM_TRACKER_URL=http://<tracker-host>:8088/?page=runs`를 사용합니다.
+포털 회차 ID를 알고 있으면 `?page=runs&runId=<uuid>`를 붙여 해당 회차 상세가
+자동으로 열립니다. 이 링크는 브라우저 세션을 우회하지 않으며, 로그인 후에만
+회차가 조회됩니다.
 
-KODA 또는 CI에서 업로드:
+## KODA 또는 CI에서 업로드
 
 ```bash
 export KODA_TRACKER_URL=http://tracker.internal
@@ -83,31 +128,19 @@ export KODA_TRACKER_TOKEN='관리자가 발급한 서비스 범위 토큰'
 ./scripts/upload-sbom.sh <service-id> <environment-id> 1.4.2 ./bom.cdx.json build-20260723-42
 ```
 
-API 명세는 외부 gateway에 공개하지 않으며 `portal-api` 내부의 `/docs`에서
-확인할 수 있습니다. 원본 SBOM은 SHA-256 콘텐츠 주소 저장소에 보존됩니다.
-포털은 `/`, 공식 Dependency-Track UI는
-`/dependency-track/`입니다.
+원본 SBOM은 SHA-256 콘텐츠 주소 저장소에 보존됩니다.
 
-KODA Linux 대시보드에서 결과 화면에 포털 링크를 넣을 때는
-`KODA_SSBOM_TRACKER_URL=http://<tracker-host>:8088/?page=runs`를 사용합니다.
-포털 회차 ID를 알고 있으면 `?page=runs&runId=<uuid>`를 붙여 해당 회차 상세가
-자동으로 열립니다. 이 링크는 브라우저 세션을 우회하지 않으며, 로그인 후에만
-회차가 조회됩니다.
+## 문서
 
-취약점 데이터 bundle을 호스트에서 반입·롤백한 뒤 포털의 `취약점 데이터` 화면에서
-`반입 상태 동기화`를 실행해야 DB 감사 이력과 활성 기준일이 갱신됩니다. 설정 화면에서는
-관리자만 서비스 범위 API 토큰을 발급하고 폐기할 수 있으며 원문은 발급 시 한 번만
-표시됩니다.
-
-운영 문서:
-
-- [화면·기능 한눈에 보기](docs/koda-sbom-tracker-overview-ko.md)
-- [운영 가이드](docs/operations-ko.md)
-- [오프라인 번들 가이드](docs/offline-bundle-ko.md)
-- [KODA 통합 인증·운영 계약](docs/koda-integration-ko.md)
-- [폐쇄망 장애 대응](docs/troubleshooting-ko.md)
-- [Windows 설치파일 가이드](docs/windows-installer-ko.md)
-- [오픈소스 라이선스 정책](docs/open-source-compliance-ko.md)
+| 문서 | 언제 읽나 |
+| --- | --- |
+| [화면·기능 한눈에 보기](docs/koda-sbom-tracker-overview-ko.md) | 처음 접할 때. 화면 구성과 데이터 흐름 |
+| [운영 가이드](docs/operations-ko.md) | 기동·설정·백업 등 일상 운영 |
+| [오프라인 번들 가이드](docs/offline-bundle-ko.md) | 폐쇄망 반입과 취약점 데이터 bundle |
+| [KODA 통합 인증·운영 계약](docs/koda-integration-ko.md) | KODA suite와 세션·신원을 공유할 때 |
+| [폐쇄망 장애 대응](docs/troubleshooting-ko.md) | 로그인·API 키·업로드 오류가 났을 때 |
+| [Windows 설치파일 가이드](docs/windows-installer-ko.md) | Windows 설치파일을 만들거나 설치할 때 |
+| [오픈소스 라이선스 정책](docs/open-source-compliance-ko.md) | 산출물을 배포하기 전 |
 
 ## 라이선스와 배포 범위
 
@@ -120,7 +153,7 @@ KODA SBOM Tracker 자체 코드는 Apache License 2.0으로 배포합니다. 라
 고객·협력사·계열사·공개 저장소 등 외부 배포는 대응 소스 제공 절차와 법무 검토가 승인되기
 전까지 지원하지 않으며 빌드 스크립트가 외부 배포 범위를 거부합니다.
 
-주의:
+## 주의
 
 - `.env`에는 실제 비밀번호와 키를 넣고 Git에 커밋하지 않습니다.
 - `portal-web`, `portal-api`, `portal-worker`는 모두 `apps/`의 실제 구현을 빌드합니다.

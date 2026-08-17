@@ -7,15 +7,43 @@ KODA 화면·계정 승인·압축파일·Docker 교체 문제는 KODA 저장소
 
 비밀번호와 API 키 원문은 명령 출력, 캡처와 로그에 남기지 않습니다.
 
+## 증상별 찾아보기
+
+| 증상 | 절 |
+| --- | --- |
+| 어디부터 볼지 모르겠다 | [1. 공통 상태 확인](#1-공통-상태-확인) |
+| Dependency-Track이 흰 화면이다 | [2. Dependency-Track 화면은 뜨지만 흰 화면](#2-dependency-track-화면은-뜨지만-흰-화면) |
+| Tracker 계정으로 Dependency-Track에 로그인되지 않는다 | [3. Dependency-Track 로그인 계정](#3-dependency-track-로그인-계정) |
+| 어떤 키를 어디에 넣는지 모르겠다 | [4. Tracker 연동 API 키](#4-tracker-연동-api-키) |
+| `HTTP 401 Unauthorized` | [5. `HTTP 401 Unauthorized`](#5-http-401-unauthorized) |
+| `PUT v1/permission/team (HTTP 304)` | [6. `PUT v1/permission/team (HTTP 304)`](#6-put-v1permissionteam-http-304) |
+| 분석은 됐는데 Dependency-Track이 `HTTP 400` | [7. 분석은 일부 성공했지만 Dependency-Track가 HTTP 400](#7-분석은-일부-성공했지만-dependency-track가-http-400) |
+| 작은 파일인데 `413` | [8. 작은 파일인데 `413 Request Entity Too Large`](#8-작은-파일인데-413-request-entity-too-large) |
+| 고친 UI가 화면에 안 나온다 | [9. 수정한 UI가 아니라 이전 화면](#9-수정한-ui가-아니라-이전-화면) |
+| 다 고쳤는데 정상인지 판단이 안 선다 | [10. 정상 완료 기준](#10-정상-완료-기준) |
+
+## 0. 설치 형태에 맞는 compose 인자
+
+이 문서의 `docker compose` 명령은 설치 형태에 따라 파일 인자가 다릅니다. 아래 값을
+현재 셸에 먼저 설정하고, 이어지는 명령의 `$TRACKER_ROOT`와 `$COMPOSE_FILES`를 그대로
+사용합니다.
+
+```bash
+# 단독 설치
+TRACKER_ROOT=/opt/koda-sbom
+COMPOSE_FILES=(-f compose.yaml -f compose.airgap.yaml)
+
+# KODA 통합 Suite. compose.integration.yaml은 Suite 압축파일에만 들어 있습니다.
+TRACKER_ROOT=/home/user0/koda-suite/tracker
+COMPOSE_FILES=(-f compose.yaml -f compose.airgap.yaml -f compose.integration.yaml)
+```
+
 ## 1. 공통 상태 확인
 
 ```bash
-# 통합 번들 기본값. 독립 설치는 /opt/koda-sbom으로 바꿉니다.
-TRACKER_ROOT=/home/user0/koda-suite/tracker
 cd "$TRACKER_ROOT"
 
-docker compose --env-file .env \
-  -f compose.yaml -f compose.airgap.yaml -f compose.integration.yaml ps
+docker compose --env-file .env "${COMPOSE_FILES[@]}" ps
 
 curl -fsS http://127.0.0.1:8088/healthz
 curl -fsS http://127.0.0.1:8088/api/v1/healthz
@@ -43,8 +71,7 @@ curl -I http://127.0.0.1:8088/dependency-track/static/config.json
 frontend와 gateway만 오프라인 모드로 재생성합니다.
 
 ```bash
-docker compose --env-file .env \
-  -f compose.yaml -f compose.airgap.yaml -f compose.integration.yaml \
+docker compose --env-file .env "${COMPOSE_FILES[@]}" \
   up -d --no-build --pull never --force-recreate dtrack-frontend gateway
 ```
 
@@ -95,8 +122,7 @@ API/worker가 이전 환경값으로 실행 중인 경우입니다. 키 원문�
 검사 후 두 서비스만 재생성합니다.
 
 ```bash
-docker compose --env-file .env \
-  -f compose.yaml -f compose.airgap.yaml -f compose.integration.yaml \
+docker compose --env-file .env "${COMPOSE_FILES[@]}" \
   up -d --no-build --pull never --force-recreate portal-api portal-worker
 
 ./scripts/verify-dtrack-connection.sh
@@ -145,8 +171,7 @@ unset DTRACK_ADMIN_API_KEY
 
 ```bash
 grep '^UPLOAD_MAX_BYTES=' .env
-docker compose --env-file .env \
-  -f compose.yaml -f compose.airgap.yaml -f compose.integration.yaml \
+docker compose --env-file .env "${COMPOSE_FILES[@]}" \
   exec gateway nginx -T 2>/dev/null | grep client_max_body_size
 ```
 

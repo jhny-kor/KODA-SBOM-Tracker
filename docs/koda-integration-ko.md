@@ -1,5 +1,9 @@
 # KODA 통합 인증·운영 계약
 
+KODA와 Tracker를 한 서버에서 함께 운영할 때 두 제품이 계정·세션·권한을 어떻게
+나누는지 정의합니다. Tracker 단독 Compose에는 KODA가 포함되지 않으므로 이 문서는
+통합 Suite에서만 적용됩니다.
+
 KODA Linux 통합본은 KODA SBOM Tracker를 계정·세션의 단일 원본으로 사용합니다.
 두 제품은 같은 HTTPS 오리진에서 서비스되며 KODA의 내부 8765 포트는 호스트에
 공개하지 않습니다.
@@ -51,10 +55,12 @@ Tracker 인증 확인이 실패하거나 시간 초과되면 gateway는 KODA 보
 
 상태 확인 경로만 인증 예외입니다.
 
-- `/healthz`
-- `/api/v1/healthz`
-- `/koda/live`
-- `/koda/ready`는 KODA 저장소·worker와 Tracker health를 함께 확인합니다.
+| 경로 | 확인 대상 |
+| --- | --- |
+| `/healthz` | gateway |
+| `/api/v1/healthz` | 포털 API |
+| `/koda/live` | KODA 프로세스 |
+| `/koda/ready` | KODA 저장소·worker와 Tracker health를 함께 확인 |
 
 통합 압축파일 생성과 설치는 KODA 저장소의
 `platforms/linux/suite/README.ko.md`를 따릅니다.

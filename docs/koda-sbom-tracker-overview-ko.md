@@ -56,7 +56,7 @@
 
 - 메뉴나 권한 이름을 바꾸면 이 문서의 화면 예시와 권한 표를 함께 수정합니다.
 - 회차 결과에 SHA-256 원문이나 운영 비밀값을 예시 데이터로 넣지 않습니다.
-- 화면 변경 후에는 `npm test -- --run`, `npm run typecheck`, `npm run lint`,
+- 화면 변경 후에는 `apps/web`에서 `npm test`, `npm run typecheck`, `npm run lint`,
   `npm run build`를 실행해 문서에 설명한 기본 흐름이 깨지지 않았는지 확인합니다.
 
 표현 방식은 [diagram-design](https://github.com/cathrynlavery/diagram-design)의

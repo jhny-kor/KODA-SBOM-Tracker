@@ -1,24 +1,41 @@
 # Windows 설치파일 가이드
 
-## 범위
+Windows에서 KODA SBOM Tracker를 실행하는 방법은 셋이며, **기능 범위와 요구사항이 서로 다른
+별개의 산출물**입니다. 목적에 맞는 하나를 고른 뒤 해당 절만 읽습니다.
 
-Windows x64에서 Docker Desktop의 Linux 컨테이너로 KODA SBOM Tracker 전체 스택을 실행합니다.
-설치파일은 React 포털만 담은 단일 EXE가 아니라 다음 실행에 필요한 이미지와 Compose 파일을
-함께 담습니다.
+## 어느 것을 쓸까
 
-이 전체 설치파일은 컨테이너 이미지 재배포를 포함하므로 **KODA 내부 반입 전용**입니다.
-고객·협력사·계열사·공개 배포용으로 만들 수 없으며 `-DistributionScope External`은 빌드에서
-거부됩니다. 외부 배포에는 별도의 대응 소스 제공 절차와 법무 승인이 필요합니다.
+| | 전체 설치파일 | Preview 설치파일 | 개발용 미리보기 |
+| --- | --- | --- | --- |
+| 용도 | 실제 운영·검증 | 화면과 업로드만 확인 | 소스에서 화면 확인 |
+| 산출물 | `KODA-SBOM-Tracker-Setup.exe` | `KODA-SBOM-Tracker-Preview-Setup.exe` | 없음(소스 실행) |
+| 빌드 PC | Docker Desktop(Linux containers) + Inno Setup 6 | Node.js LTS + Inno Setup 6 | — |
+| 대상 PC | Docker Desktop | 없음(Windows 10/11 기본 PowerShell) | Node.js LTS |
+| 접속 주소 | `http://127.0.0.1:8088/?page=dashboard` | `http://127.0.0.1:5173/?page=dashboard` | `http://127.0.0.1:5173/?page=dashboard` |
+| 취약점 분석 | Grype + Dependency-Track 전체 | 없음. SBOM 내장 레코드만 표시 | 없음. SBOM 내장 레코드만 표시 |
+| 로그인·저장 | 로그인 있음, PostgreSQL 영구 저장 | 없음. 브라우저 메모리 | 없음. 브라우저 메모리 |
+| 배포 범위 | **내부 반입 전용** | `legal` 포함 시 배포 가능 | — |
+| 절 | [전체 설치파일](#전체-설치파일) | [Docker 없는 Windows 설치파일](#docker-없는-windows-설치파일) | [Docker 없는 개발용 UI 미리보기](#docker-없는-개발용-ui-미리보기) |
+
+Docker Desktop 없이 전체 분석까지 수행하는 네이티브 단일 EXE는 지원 범위가 아닙니다.
+
+## 전체 설치파일
+
+Windows x64에서 Docker Desktop의 Linux 컨테이너로 전체 스택을 실행합니다. 설치파일은 React
+포털만 담은 단일 EXE가 아니라 실행에 필요한 다음 이미지와 Compose 파일을 함께 담습니다.
 
 - gateway, portal-web, portal-api, portal-worker
 - PostgreSQL
 - Dependency-Track backend/frontend
 - Grype, CycloneDX CLI, Alpine 운영 이미지
 
-설치 후에는 `http://127.0.0.1:8088/?page=dashboard`를 브라우저로 엽니다. Docker Desktop 없이
-실행하는 네이티브 단일 EXE 방식은 지원 범위가 아닙니다.
+이 전체 설치파일은 컨테이너 이미지 재배포를 포함하므로 **KODA 내부 반입 전용**입니다.
+고객·협력사·계열사·공개 배포용으로 만들 수 없으며 `-DistributionScope External`은 빌드에서
+거부됩니다. 외부 배포에는 별도의 대응 소스 제공 절차와 법무 승인이 필요합니다.
 
-## 빌드 PC 준비
+설치 후에는 `http://127.0.0.1:8088/?page=dashboard`를 브라우저로 엽니다.
+
+### 빌드 PC 준비
 
 Windows x64 빌드 PC에 다음을 설치합니다.
 
@@ -36,7 +53,7 @@ docker info
 
 Inno Setup이 기본 경로가 아닌 곳에 있으면 `ISCC.exe` 경로를 직접 지정합니다.
 
-## 설치파일 빌드
+### 설치파일 빌드
 
 PowerShell에서 저장소 루트로 이동해 실행합니다.
 
@@ -75,6 +92,71 @@ dist\windows\KODA-SBOM-Tracker-Setup.exe
 실제 `.exe` 생성은 Windows의 Docker Desktop과 Inno Setup이 필요합니다. macOS에서 할 수 있는
 검증은 PowerShell 문법·파일 구성 확인까지이며, 최종 설치·기동 smoke test는 Windows에서
 수행해야 합니다.
+
+### 설치 및 최초 설정
+
+1. 대상 Windows x64 PC에 Docker Desktop을 설치하고 실행합니다.
+2. `KODA-SBOM-Tracker-Setup.exe`를 관리자 권한으로 실행합니다.
+3. 설치 디렉터리의 `.env`를 관리자 권한 편집기로 실제 운영값으로 수정합니다.
+4. 시작 메뉴의 `KODA SBOM Tracker`를 실행합니다.
+
+`.env`에는 다음 값을 반드시 실제 값으로 바꿉니다.
+
+- `POSTGRES_PASSWORD`
+- `DTRACK_DB_PASSWORD`
+- `TRACKER_DB_PASSWORD`
+- `TRACKER_BOOTSTRAP_ADMIN_PASSWORD`
+- `TRACKER_DEPENDENCY_TRACK_API_KEY`
+- `TRACKER_DATABASE_URL`의 사용자·DB·비밀번호
+
+Windows 로컬 실행에서는 다음 기본값을 유지할 수 있습니다.
+
+```dotenv
+PUBLIC_HTTP_PORT=8088
+DTRACK_API_BASE_URL=http://localhost:8088/dependency-track
+```
+
+실제 비밀번호와 API 키는 설치파일이나 Git에 넣지 않습니다. 설치파일에는 `.env.example`만
+포함되며, 설치 과정에서 그 파일을 `.env`로 복사합니다. 예시값이 남아 있으면 시작 스크립트가
+실행을 거부합니다.
+
+### 수동 기동·중지·상태 확인
+
+설치 디렉터리에서 실행합니다.
+
+```powershell
+.\scripts\start-windows.ps1 -OpenDashboard
+.\scripts\start-windows.ps1 -Action Status
+.\scripts\start-windows.ps1 -Action Stop
+```
+
+`Start`는 다음을 확인한 뒤 Compose를 기동합니다.
+
+- 첫 기동 시 설치파일에 포함된 Docker image tar를 `docker load`합니다. 이후에는 manifest
+  marker가 같으면 재로드하지 않습니다.
+- Docker Desktop daemon 연결
+- Compose 설정
+- gateway `/healthz`
+- 포털 API `/api/v1/healthz`
+- Dependency-Track `/dependency-track/`
+
+`Stop`은 `docker compose down`만 실행하므로 PostgreSQL·Dependency-Track·SBOM artifact
+named volume 데이터는 삭제하지 않습니다. 볼륨을 삭제하는 명령은 설치 스크립트에 포함하지
+않습니다.
+
+### 문제 해결
+
+| 증상 | 조치 |
+| --- | --- |
+| `Docker CLI를 찾을 수 없습니다` | Docker Desktop을 설치·실행한 뒤 PowerShell을 새로 열고 `docker --version`을 확인합니다. 스크립트는 Docker Desktop의 표준 설치 경로도 자동으로 확인합니다. |
+| `Docker Desktop이 실행 중이 아닙니다` | Docker Desktop을 시작하고 다시 실행합니다. |
+| `예시 값입니다` | 설치 디렉터리 `.env`의 `change-me-*`와 API 키를 수정합니다. |
+| 포트 충돌 | `.env`의 `PUBLIC_HTTP_PORT`를 사용하지 않는 포트로 바꾸고 다시 시작합니다. |
+| 준비 시간 초과 | `docker compose ps`와 Docker Desktop의 컨테이너 로그를 확인합니다. |
+| 재빌드가 필요 없는 반복 패키징 | `-SkipDockerBuild`를 사용합니다. 소스나 Dockerfile을 바꿨다면 기본 빌드로 다시 실행합니다. |
+
+기동 후 발생하는 Dependency-Track 흰 화면·401·400·413 오류는
+[폐쇄망 장애 대응](troubleshooting-ko.md)을 따릅니다.
 
 ## Docker 없는 Windows 설치파일
 
@@ -185,66 +267,3 @@ npm run preview -- --host 127.0.0.1 --port 4173
 이 경로와 Preview 설치파일은 현재 `KODA-SBOM-Tracker-Setup.exe`에 포함된 Docker Compose
 설치파일과 별개입니다. Docker 없는 실제 취약점 분석 서버나 완전한 네이티브 EXE가 필요해지는
 시점에는 Grype 실행 파일·DB·로컬 저장소를 포함한 별도 런타임을 추가해야 합니다.
-
-## 설치 및 최초 설정
-
-1. 대상 Windows x64 PC에 Docker Desktop을 설치하고 실행합니다.
-2. `KODA-SBOM-Tracker-Setup.exe`를 관리자 권한으로 실행합니다.
-3. 설치 디렉터리의 `.env`를 관리자 권한 편집기로 실제 운영값으로 수정합니다.
-4. 시작 메뉴의 `KODA SBOM Tracker`를 실행합니다.
-
-`.env`에는 다음 값을 반드시 실제 값으로 바꿉니다.
-
-- `POSTGRES_PASSWORD`
-- `DTRACK_DB_PASSWORD`
-- `TRACKER_DB_PASSWORD`
-- `TRACKER_BOOTSTRAP_ADMIN_PASSWORD`
-- `TRACKER_DEPENDENCY_TRACK_API_KEY`
-- `TRACKER_DATABASE_URL`의 사용자·DB·비밀번호
-
-Windows 로컬 실행에서는 다음 기본값을 유지할 수 있습니다.
-
-```dotenv
-PUBLIC_HTTP_PORT=8088
-DTRACK_API_BASE_URL=http://localhost:8088/dependency-track
-```
-
-실제 비밀번호와 API 키는 설치파일이나 Git에 넣지 않습니다. 설치파일에는 `.env.example`만
-포함되며, 설치 과정에서 그 파일을 `.env`로 복사합니다. 예시값이 남아 있으면 시작 스크립트가
-실행을 거부합니다.
-
-## 수동 기동·중지·상태 확인
-
-설치 디렉터리에서 실행합니다.
-
-```powershell
-.\scripts\start-windows.ps1 -OpenDashboard
-.\scripts\start-windows.ps1 -Action Status
-.\scripts\start-windows.ps1 -Action Stop
-```
-
-`Start`는 다음을 확인한 뒤 Compose를 기동합니다.
-
-- 첫 기동 시 설치파일에 포함된 Docker image tar를 `docker load`합니다. 이후에는 manifest
-  marker가 같으면 재로드하지 않습니다.
-- Docker Desktop daemon 연결
-- Compose 설정
-- gateway `/healthz`
-- 포털 API `/api/v1/healthz`
-- Dependency-Track `/dependency-track/`
-
-`Stop`은 `docker compose down`만 실행하므로 PostgreSQL·Dependency-Track·SBOM artifact
-named volume 데이터는 삭제하지 않습니다. 볼륨을 삭제하는 명령은 설치 스크립트에 포함하지
-않습니다.
-
-## 문제 해결
-
-- `Docker CLI를 찾을 수 없습니다`: Docker Desktop을 설치·실행한 뒤 PowerShell을 새로 열고
-  `docker --version`을 확인합니다. 스크립트는 Docker Desktop의 표준 설치 경로도 자동으로
-  확인합니다.
-- `Docker Desktop이 실행 중이 아닙니다`: Docker Desktop을 시작하고 다시 실행합니다.
-- `예시 값입니다`: 설치 디렉터리 `.env`의 `change-me-*`와 API 키를 수정합니다.
-- 포트 충돌: `.env`의 `PUBLIC_HTTP_PORT`를 사용하지 않는 포트로 바꾸고 다시 시작합니다.
-- 준비 시간 초과: `docker compose ps`와 Docker Desktop의 컨테이너 로그를 확인합니다.
-- 재빌드가 필요 없는 반복 패키징: `-SkipDockerBuild`를 사용합니다. 소스나 Dockerfile을
-  바꿨다면 기본 빌드로 다시 실행합니다.

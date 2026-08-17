@@ -1,12 +1,18 @@
 # 운영 가이드
 
+기동·계정 초기화·백업·부분 교체 등 일상 운영 절차입니다. 오류 증상별 대응은
+[폐쇄망 장애 대응](troubleshooting-ko.md), 폐쇄망 반입 절차는
+[오프라인 번들 가이드](offline-bundle-ko.md)를 따릅니다.
+
 ## 1. 구성
 
-- `gateway`: 외부 진입점. `/` 는 포털, `/api` 는 포털 API, `/dependency-track` 는 공식 Dependency-Track UI/API로 프록시합니다.
-- `portal-api`, `portal-worker`: `apps/api` 실제 이미지입니다.
-- `portal-web`: React/Vite 포털을 정적 빌드하여 8080 포트에서 제공합니다.
-- `postgres`: `dtrack`, `sbom_tracker` DB와 각 전용 계정을 초기화합니다.
-- `dtrack-apiserver`, `dtrack-frontend`: 공식 Dependency-Track `5.0.3` 이미지입니다.
+| 서비스 | 역할 |
+| --- | --- |
+| `gateway` | 외부 진입점. `/`는 포털, `/api`는 포털 API, `/dependency-track`는 공식 Dependency-Track UI/API로 프록시 |
+| `portal-web` | React/Vite 포털을 정적 빌드하여 8080 포트에서 제공 |
+| `portal-api`, `portal-worker` | `apps/api` 실제 이미지 |
+| `postgres` | `dtrack`, `sbom_tracker` DB와 각 전용 계정을 초기화 |
+| `dtrack-apiserver`, `dtrack-frontend` | 공식 Dependency-Track `5.0.3` 이미지 |
 
 ## 2. 초기 기동
 
@@ -18,27 +24,32 @@ docker compose up -d
 docker compose ps
 ```
 
-필수 수정 항목:
+`.env` 필수 수정 항목:
 
-- `POSTGRES_PASSWORD`
-- `DTRACK_DB_PASSWORD`
-- `TRACKER_DB_PASSWORD`
-- `TRACKER_BOOTSTRAP_ADMIN_PASSWORD`
-- `TRACKER_DEPENDENCY_TRACK_API_KEY`
-- `DTRACK_API_BASE_URL`
-- 필요 시 볼륨 이름과 외부 공개 포트
-- 운영은 `TRACKER_ENVIRONMENT=production`, `TRACKER_SECURE_COOKIES=true`,
-  `TRACKER_PUBLIC_ORIGIN=https://<동일-오리진-호스트>`
+| 항목 | 내용 |
+| --- | --- |
+| `POSTGRES_PASSWORD` | PostgreSQL superuser 비밀번호 |
+| `DTRACK_DB_PASSWORD` | `dtrack` DB 계정 비밀번호 |
+| `TRACKER_DB_PASSWORD` | `sbom_tracker` DB 계정 비밀번호 |
+| `TRACKER_BOOTSTRAP_ADMIN_PASSWORD` | 최초 Tracker 관리자 비밀번호 |
+| `TRACKER_DEPENDENCY_TRACK_API_KEY` | Dependency-Track 전용 team API 키 |
+| `DTRACK_API_BASE_URL` | 브라우저가 접근할 수 있는 공개 base 주소. `/api`를 붙이지 않음 |
+| 볼륨 이름, 외부 공개 포트 | 필요할 때만 변경 |
+
+운영 환경에서는 `TRACKER_ENVIRONMENT=production`, `TRACKER_SECURE_COOKIES=true`,
+`TRACKER_PUBLIC_ORIGIN=https://<동일-오리진-호스트>`를 함께 설정합니다.
 
 Dependency-Track 초기 관리자 로그인 후 포털 전용 팀을 만들고 다음 최소 권한을
 부여합니다.
 
-- `BOM_UPLOAD`
-- `PROJECT_CREATION_UPLOAD`
-- `PORTFOLIO_MANAGEMENT_UPDATE` (정상 완료 회차의 latest 승격에만 사용)
-- `VIEW_PORTFOLIO`
-- `VIEW_VULNERABILITY`
-- `VIEW_POLICY_VIOLATION`
+| 권한 | 용도 |
+| --- | --- |
+| `BOM_UPLOAD` | BOM 업로드 |
+| `PROJECT_CREATION_UPLOAD` | 업로드 시 프로젝트 생성 |
+| `PORTFOLIO_MANAGEMENT_UPDATE` | 정상 완료 회차의 latest 승격에만 사용 |
+| `VIEW_PORTFOLIO` | 프로젝트·구성요소 조회 |
+| `VIEW_VULNERABILITY` | 취약점 조회 |
+| `VIEW_POLICY_VIOLATION` | 정책 위반 조회 |
 
 발급 키는 `TRACKER_DEPENDENCY_TRACK_API_KEY`에만 저장하며 frontend나 브라우저
 환경변수로 전달하지 않습니다.
@@ -184,20 +195,15 @@ ENV_FILE="$ENV_FILE" \
 ./scripts/start-airgap.sh "$ENV_FILE"
 ```
 
-백업 세트에는 다음이 포함됩니다.
+백업 세트의 범위는 다음과 같습니다.
 
-- PostgreSQL globals SQL
-- `dtrack`, `sbom_tracker` 논리 덤프
-- `tracker-artifacts`, `dtrack-data`, `vuln-data` volume tarball
-- compose/deploy 기준 설정
-- SHA-256 manifest
-
-다음 항목은 포함되지 않습니다.
-
-- 운영 `.env` (위의 명시적 옵션을 사용한 경우만 포함)
-- 통합 Suite의 KODA 포털 SQLite·입력 파일
-- 호스트에 별도로 둔 원본 SBOM, 스캔 대상, KODA 보고서, TLS 인증서
-- Docker 이미지 tar와 릴리스 압축파일
+| 포함 | 포함되지 않음 |
+| --- | --- |
+| PostgreSQL globals SQL | 운영 `.env` (위의 명시적 옵션을 사용한 경우만 포함) |
+| `dtrack`, `sbom_tracker` 논리 덤프 | 통합 Suite의 KODA 포털 SQLite·입력 파일 |
+| `tracker-artifacts`, `dtrack-data`, `vuln-data` volume tarball | 호스트에 별도로 둔 원본 SBOM, 스캔 대상, KODA 보고서, TLS 인증서 |
+| compose/deploy 기준 설정 | Docker 이미지 tar와 릴리스 압축파일 |
+| SHA-256 manifest | |
 
 복원은 현재 데이터를 교체하므로 검증된 백업과 그 백업을 만든 당시의 `.env` 및
 호환 릴리스가 모두 준비된 경우에만 수행합니다. 현재 상태도 먼저 새 백업으로

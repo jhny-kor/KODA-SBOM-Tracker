@@ -1,5 +1,17 @@
 # 오픈소스 라이선스 정책
 
+산출물을 누구에게 전달할 수 있는지 판단할 때 읽습니다.
+
+## 산출물별 배포 범위
+
+| 산출물 | 만드는 스크립트 | 배포 범위 |
+| --- | --- | --- |
+| 소스 저장소 | — | Apache-2.0 |
+| Windows Preview 설치파일 | `build-windows-preview-installer.ps1` | 설치 폴더 `legal` 포함 시 배포 가능 |
+| 폐쇄망 압축파일 | `build-airgap-release.sh` | **내부 반입 전용** |
+| 이미지 번들 | `build-offline-bundle.sh` | **내부 반입 전용** |
+| 전체 Windows 설치파일 | `build-windows-installer.ps1` | **내부 반입 전용** |
+
 ## 기본 정책
 
 - KODA SBOM Tracker 자체 코드는 Apache License 2.0으로 배포합니다.
