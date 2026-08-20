@@ -94,7 +94,7 @@ EOF
   cd "$stage_dir"
   while IFS= read -r -d '' file; do sha256_file "$file"; done < <(find . -type f ! -name manifest.sha256 -print0 | sort -z)
 ) > "$stage_dir/manifest.sha256"
-tar -czf "$output" -C "$stage_dir" .
+tar --no-xattrs -czf "$output" -C "$stage_dir" .
 (cd "$(dirname "$output")" && sha256_file "$(basename "$output")") > "${output}.sha256"
 echo "Created air-gap release: $output"
 echo "SHA-256: ${output}.sha256"

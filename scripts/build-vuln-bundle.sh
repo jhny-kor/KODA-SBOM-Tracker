@@ -86,7 +86,11 @@ grype_schema="$(basename "$schema_dir")"
 
 parent_dir="$(dirname "$output_abs")"
 stage_dir="$(mktemp -d "$parent_dir/.vuln-bundle.XXXXXX")"
-cleanup() { [[ -n "${stage_dir:-}" && -d "$stage_dir" ]] && rm -rf "$stage_dir"; }
+cleanup() {
+  if [[ -n "${stage_dir:-}" && -d "$stage_dir" ]]; then
+    rm -rf "$stage_dir"
+  fi
+}
 trap cleanup EXIT
 mkdir -p "$stage_dir/grype-db"
 cp -a "$grype_root/." "$stage_dir/grype-db/"
