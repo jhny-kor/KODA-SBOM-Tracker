@@ -914,7 +914,12 @@ async def upload_sbom(
     try:
         try:
             payload, media_type = parse_sbom_file(staged_path)
-            validate_file_with_cyclonedx_cli(staged_path, get_settings().cyclonedx_cli_binary)
+            input_format = "json" if media_type.endswith("+json") else "xml"
+            validate_file_with_cyclonedx_cli(
+                staged_path,
+                get_settings().cyclonedx_cli_binary,
+                input_format=input_format,
+            )
         except SbomValidationError as exc:
             raise HTTPException(422, str(exc)) from exc
         service = db.get(Service, service_id)

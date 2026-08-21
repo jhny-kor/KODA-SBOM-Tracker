@@ -13,6 +13,7 @@ from koda_tracker.sbom import (
     parse_sbom_file,
     store_artifact,
     store_artifact_file,
+    validate_file_with_cyclonedx_cli,
     validate_with_cyclonedx_cli,
 )
 
@@ -65,6 +66,18 @@ def test_cli_validation_failure_is_reported(tmp_path) -> None:
     validator.chmod(0o755)
     with pytest.raises(SbomValidationError, match="invalid schema"):
         validate_with_cyclonedx_cli(b'{"bomFormat":"CycloneDX"}', str(validator))
+
+
+def test_cli_validation_specifies_format_for_extensionless_upload(tmp_path) -> None:
+    validator = tmp_path / "validator"
+    validator.write_text(
+        '#!/bin/sh\ncase "$*" in *"--input-format json"*) exit 0;; *) exit 1;; esac\n'
+    )
+    validator.chmod(0o755)
+    source = tmp_path / "koda-sbom-upload"
+    source.write_text('{"bomFormat":"CycloneDX"}')
+
+    validate_file_with_cyclonedx_cli(source, str(validator), input_format="json")
 
 
 def test_content_addressed_store_is_safe_for_concurrent_duplicates(tmp_path) -> None:

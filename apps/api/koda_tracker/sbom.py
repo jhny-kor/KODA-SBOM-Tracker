@@ -85,22 +85,27 @@ def validate_with_cyclonedx_cli(raw: bytes, binary: str) -> None:
     """Run the pinned CycloneDX CLI schema validator when it is configured."""
     if not binary:
         return
-    suffix = ".json" if raw.lstrip().startswith((b"{", b"[")) else ".xml"
+    is_json = raw.lstrip().startswith((b"{", b"["))
+    suffix = ".json" if is_json else ".xml"
+    input_format = "json" if is_json else "xml"
     try:
         with tempfile.NamedTemporaryFile(suffix=suffix) as candidate:
             candidate.write(raw)
             candidate.flush()
-            validate_file_with_cyclonedx_cli(Path(candidate.name), binary)
+            validate_file_with_cyclonedx_cli(Path(candidate.name), binary, input_format=input_format)
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
         raise SbomValidationError(f"CycloneDX CLI 검증기를 실행할 수 없습니다: {exc}") from exc
 
 
-def validate_file_with_cyclonedx_cli(path: Path, binary: str) -> None:
+def validate_file_with_cyclonedx_cli(path: Path, binary: str, *, input_format: str | None = None) -> None:
     if not binary:
         return
+    command = [binary, "validate", "--input-file", str(path)]
+    if input_format:
+        command.extend(["--input-format", input_format])
     try:
         process = subprocess.run(
-            [binary, "validate", "--input-file", str(path)],
+            command,
             capture_output=True,
             text=True,
             timeout=30,
