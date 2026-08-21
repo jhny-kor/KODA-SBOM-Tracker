@@ -83,6 +83,10 @@ DTRACK_ADMIN_API_BASE_URL=http://<서버IP>:8088/dependency-track/api
 ```
 
 frontend 공개 base에는 `/api`를 붙이지 않고 관리자 자동화 base에만 붙입니다.
+`DTRACK_BASE_PATH`는 `/dependency-track`처럼 끝 `/` 없이 유지합니다. compose가
+Dependency-Track frontend에만 끝 `/`를 추가해 상대 JS/CSS가
+`/dependency-track/...`에서 로드되도록 합니다. 이 값이 빠지면 HTML은 200이어도
+브라우저가 JS를 `/js/...`에서 받아 흰 화면이 될 수 있습니다.
 `<base href="/dependency-track/">`가 정상이어도 로그인 XHR이 `localhost`로 가면
 원격 PC에서 `ERR_CONNECTION_REFUSED`가 발생합니다.
 

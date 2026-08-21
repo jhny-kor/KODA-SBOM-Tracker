@@ -194,7 +194,10 @@ services:
       # Dependency-Track's frontend appends /api to this value. Keep the
       # public frontend/API base path here, without the trailing /api.
       API_BASE_URL: ${DTRACK_API_BASE_URL:-http://localhost:8088/dependency-track}
-      BASE_PATH: ${DTRACK_BASE_PATH:-/dependency-track}
+      # The frontend's relative JS/CSS URLs require a directory base. Keep
+      # DTRACK_BASE_PATH itself slashless for gateway/API routing, and add the
+      # trailing slash only for Dependency-Track frontend URL resolution.
+      BASE_PATH: ${DTRACK_BASE_PATH:-/dependency-track}/
       TITLE: ${DTRACK_FRONTEND_TITLE:-KODA Dependency-Track}
     expose:
       - "8080"
