@@ -159,7 +159,7 @@ def test_ldap_login_fails_closed_until_configured() -> None:
                 "useLdap": True,
             },
         )
-        assert response.status_code == 501
+        assert response.status_code == 503
         assert response.json()["code"] == "ldap_not_configured"
 
 
@@ -261,12 +261,12 @@ def test_api_token_requires_service_scope_and_admin_catalog_patches() -> None:
         environment = client.get("/api/v1/environments").json()[0]
         patched_environment = client.patch(
             f"/api/v1/environments/{environment['id']}",
-            json={"name": "검증 환경", "slug": f"{environment['slug']}-renamed", "sortOrder": 99},
+            json={"name": "검증 환경", "slug": "운영 환경 / A", "sortOrder": 99},
             headers=headers,
         )
         assert patched_environment.status_code == 200
         assert patched_environment.json()["name"] == "검증 환경"
-        assert patched_environment.json()["slug"] == f"{environment['slug']}-renamed"
+        assert patched_environment.json()["slug"] == "운영 환경 / A"
         assert patched_environment.json()["sortOrder"] == 99
 
 

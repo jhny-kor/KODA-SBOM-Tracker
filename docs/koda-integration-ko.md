@@ -15,8 +15,9 @@ https://<서버>/koda/     KODA
 
 ## 로그인과 로그아웃
 
-사용자는 Tracker 로그인 화면에서 로그인합니다. 로그인 화면의 LDAP 선택지는 향후
-연동용이며 현재 선택하면 `501 ldap_not_configured`로 실패합니다.
+사용자는 Tracker 로그인 화면에서 로컬 또는 LDAP으로 로그인합니다. LDAP 설정은
+Tracker의 관리자 설정에서 저장하고, 통합 gateway는 LDAP 자체를 다시 인증하지 않고
+Tracker의 검증된 세션만 KODA에 전달합니다.
 
 gateway는 보호된 KODA 요청마다 Tracker의 `GET /api/v1/auth/session`으로 쿠키
 세션을 확인합니다. 이 endpoint는 Bearer 토큰을 받지 않으며 성공할 때만 UUID,

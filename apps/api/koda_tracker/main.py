@@ -12,18 +12,20 @@ from collections import defaultdict
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Literal
 
+from cryptography.fernet import Fernet, InvalidToken
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, Response, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import Text, cast, delete, func, inspect, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from .config import get_settings, session_cookie_name
 from .comparison import compare_components, compare_records
-from .db import Base, SessionLocal, engine, ensure_component_search_support, ensure_postgres_manager_enum, ensure_user_approval_state_column, get_db
+from .db import Base, SessionLocal, engine, ensure_component_search_support, ensure_ldap_subject_attribute_column, ensure_postgres_manager_enum, ensure_user_approval_state_column, ensure_user_identity_columns, get_db
 from .dtrack import DependencyTrackClient
 from .models import (
     AnalysisRevision,
@@ -33,6 +35,7 @@ from .models import (
     Environment,
     Job,
     JobState,
+    LdapSettings,
     ProcessingState,
     Release,
     Role,
@@ -60,12 +63,33 @@ from .security import (
 )
 from .services import audit, create_components, enqueue
 from .vulnerability import active_bundle, scan_bundle_releases
+from .ldap_auth import LdapConfig, LdapConfigurationError, LdapInvalidCredentials, LdapUnavailable, authenticate_user
 
 
 class LoginRequest(BaseModel):
     username: str
     password: str
     useLdap: bool = False
+
+
+class LdapSettingsRequest(BaseModel):
+    enabled: bool = False
+    host: str = ""
+    port: int = Field(default=389, ge=1, le=65535)
+    tlsMode: Literal["ldaps", "starttls", "plain"] = "starttls"
+    verifyCertificate: bool = True
+    caCertPath: str = ""
+    bindDn: str = ""
+    bindPassword: str | None = None
+    baseDn: str = ""
+    loginAttribute: str = "sAMAccountName"
+    usernameAttribute: str = "sAMAccountName"
+    subjectAttribute: str = "objectGUID"
+    userFilter: str = "(sAMAccountName={username})"
+    groupAttribute: str = "memberOf"
+    groupMappings: dict[str, Role] = Field(default_factory=dict)
+    autoProvision: bool = False
+    defaultRole: Role = Role.VIEWER
 
 
 class RegistrationRequest(BaseModel):
@@ -148,6 +172,8 @@ async def lifespan(_: FastAPI):
     ensure_postgres_manager_enum(engine)
     Base.metadata.create_all(engine)
     ensure_user_approval_state_column(engine)
+    ensure_user_identity_columns(engine)
+    ensure_ldap_subject_attribute_column(engine)
     ensure_component_search_support(engine)
     # v1 uses create_all for a fresh install, but keep the one additive field
     # introduced by the vulnerability-data lifecycle backward compatible with
@@ -195,6 +221,8 @@ _round_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
 
 def _user_status(user: User) -> str:
+    if user.approval_state == "deleted":
+        return "deleted"
     if user.approval_state == "pending":
         return "pending"
     return "active" if user.active else "inactive"
@@ -207,7 +235,107 @@ def _user_payload(user: User) -> dict:
         "role": user.role,
         "active": user.active,
         "status": _user_status(user),
+        "authSource": user.auth_source,
     }
+
+
+def _ldap_public(row: LdapSettings | None) -> dict:
+    return {
+        "enabled": bool(row and row.enabled),
+        "host": row.host if row else "",
+        "port": row.port if row else 389,
+        "tlsMode": row.tls_mode if row else "starttls",
+        "verifyCertificate": row.verify_certificate if row else True,
+        "caCertPath": row.ca_cert_path if row else "",
+        "bindDn": row.bind_dn if row else "",
+        "baseDn": row.base_dn if row else "",
+        "loginAttribute": row.login_attribute if row else "sAMAccountName",
+        "usernameAttribute": row.username_attribute if row else "sAMAccountName",
+        "subjectAttribute": row.subject_attribute if row else "objectGUID",
+        "userFilter": row.user_filter if row else "(sAMAccountName={username})",
+        "groupAttribute": row.group_attribute if row else "memberOf",
+        "groupMappings": row.group_mappings if row else {},
+        "autoProvision": bool(row and row.auto_provision),
+        "defaultRole": (row.default_role.value if row else Role.VIEWER.value),
+        "hasBindPassword": bool(row and row.bind_password_ciphertext),
+        "encryptionReady": _ldap_fernet() is not None,
+    }
+
+
+def _ldap_fernet() -> Fernet | None:
+    key = get_settings().ldap_encryption_key.strip()
+    if not key:
+        return None
+    try:
+        return Fernet(key.encode("ascii"))
+    except (ValueError, TypeError):
+        return None
+
+
+def _ldap_row_config(row: LdapSettings) -> LdapConfig:
+    fernet = _ldap_fernet()
+    if fernet is None:
+        raise LdapConfigurationError("TRACKER_LDAP_ENCRYPTION_KEY가 올바르게 설정되지 않았습니다")
+    if not row.bind_password_ciphertext:
+        raise LdapConfigurationError("LDAP bind 비밀번호가 설정되지 않았습니다")
+    try:
+        password = fernet.decrypt(row.bind_password_ciphertext.encode("ascii")).decode("utf-8")
+    except (InvalidToken, UnicodeDecodeError, ValueError) as exc:
+        raise LdapConfigurationError("LDAP bind 비밀번호를 복호화할 수 없습니다") from exc
+    return LdapConfig(
+        host=row.host,
+        port=row.port,
+        tls_mode=row.tls_mode,
+        verify_certificate=row.verify_certificate,
+        ca_cert_path=row.ca_cert_path,
+        bind_dn=row.bind_dn,
+        bind_password=password,
+        base_dn=row.base_dn,
+        login_attribute=row.login_attribute,
+        username_attribute=row.username_attribute,
+        subject_attribute=row.subject_attribute,
+        user_filter=row.user_filter,
+        group_attribute=row.group_attribute,
+    )
+
+
+def _ldap_role(groups: tuple[str, ...], mappings: dict, default_role: Role) -> Role:
+    normalized = {str(group).strip().casefold(): value for group, value in (mappings or {}).items()}
+    priority = [Role.ADMIN, Role.MANAGER, Role.ANALYST, Role.UPLOADER, Role.VIEWER]
+    matched = {normalized[group.strip().casefold()] for group in groups if group.strip().casefold() in normalized}
+    role_values = {item.value if isinstance(item, Role) else str(item).casefold() for item in matched}
+    for role in priority:
+        if role.value in role_values:
+            return role
+    return default_role
+
+
+def _validate_ldap_attribute(name: str) -> None:
+    if not re.fullmatch(r"(?:[A-Za-z][A-Za-z0-9-]*|[0-9]+(?:\.[0-9]+)+)(?:;[A-Za-z0-9-]+)*", name):
+        raise HTTPException(422, "LDAP 속성 이름이 올바르지 않습니다")
+
+
+def _validate_ldap_request(body: LdapSettingsRequest) -> None:
+    if body.host and (len(body.host) > 253 or any(char.isspace() for char in body.host) or "://" in body.host or "/" in body.host):
+        raise HTTPException(422, "LDAP 서버 호스트가 올바르지 않습니다")
+    if not body.userFilter or body.userFilter.count("{username}") != 1:
+        raise HTTPException(422, "LDAP 사용자 검색 필터에 {username}이 정확히 한 번 필요합니다")
+    if body.enabled and (not body.host.strip() or not body.bindDn.strip() or not body.baseDn.strip()):
+        raise HTTPException(422, "LDAP 서버, bind DN, 검색 기준 DN은 필수입니다")
+    if len(body.bindDn) > 512 or len(body.baseDn) > 512 or len(body.caCertPath) > 4096:
+        raise HTTPException(422, "LDAP DN 또는 인증서 경로가 너무 깁니다")
+    if any(len(value) > 128 for value in (body.loginAttribute, body.usernameAttribute, body.subjectAttribute, body.groupAttribute)):
+        raise HTTPException(422, "LDAP 속성 이름이 너무 깁니다")
+    for attribute in (body.loginAttribute, body.usernameAttribute, body.subjectAttribute, body.groupAttribute):
+        _validate_ldap_attribute(attribute.strip())
+    if len(body.userFilter) > 512 or any(len(group) > 1024 for group in body.groupMappings):
+        raise HTTPException(422, "LDAP 검색 또는 그룹 설정값이 너무 깁니다")
+    if body.enabled and body.tlsMode != "plain" and not body.verifyCertificate:
+        raise HTTPException(422, "LDAP 인증서 검증은 필수입니다")
+
+
+def _ldap_error(code: str, detail: str, status: int = 503) -> JSONResponse:
+    return JSONResponse(status_code=status, content={"code": code, "detail": detail})
 
 
 def _normalize_username(value: str) -> str:
@@ -319,10 +447,172 @@ async def dependency_track_status(
     return await DependencyTrackClient().status()
 
 
+@app.get("/api/v1/settings/ldap")
+def get_ldap_settings(
+    db: Session = Depends(get_db),
+    _=Depends(require_admin),
+) -> dict:
+    return _ldap_public(db.get(LdapSettings, "default"))
+
+
+@app.put("/api/v1/settings/ldap")
+def update_ldap_settings(
+    body: LdapSettingsRequest,
+    db: Session = Depends(get_db),
+    principal=Depends(require_admin),
+    _csrf=Depends(require_csrf),
+) -> dict:
+    _validate_ldap_request(body)
+    row = db.get(LdapSettings, "default")
+    if row is None:
+        row = LdapSettings(id="default")
+        db.add(row)
+    password = body.bindPassword
+    if password is not None and password != "":
+        fernet = _ldap_fernet()
+        if fernet is None:
+            raise HTTPException(503, "LDAP 암호화 키가 서버에 설정되지 않았습니다")
+        row.bind_password_ciphertext = fernet.encrypt(password.encode("utf-8")).decode("ascii")
+    row.enabled = body.enabled
+    row.host = body.host.strip()
+    row.port = body.port
+    row.tls_mode = body.tlsMode
+    row.verify_certificate = body.verifyCertificate if body.tlsMode != "plain" else False
+    row.ca_cert_path = body.caCertPath.strip()
+    row.bind_dn = body.bindDn.strip()
+    row.base_dn = body.baseDn.strip()
+    row.login_attribute = body.loginAttribute.strip()
+    row.username_attribute = body.usernameAttribute.strip()
+    row.subject_attribute = body.subjectAttribute.strip()
+    row.user_filter = body.userFilter.strip()
+    row.group_attribute = body.groupAttribute.strip()
+    row.group_mappings = {key.strip(): role.value for key, role in body.groupMappings.items() if key.strip()}
+    row.auto_provision = body.autoProvision
+    row.default_role = body.defaultRole
+    if row.enabled and not row.bind_password_ciphertext:
+        raise HTTPException(422, "LDAP bind 비밀번호를 입력하세요")
+    try:
+        db.flush()
+        audit(
+            db,
+            principal.username,
+            "ldap.settings.update",
+            "ldap_settings",
+            "default",
+            {
+                "enabled": row.enabled,
+                "host": row.host,
+                "port": row.port,
+                "tlsMode": row.tls_mode,
+                "verifyCertificate": row.verify_certificate,
+                "baseDn": row.base_dn,
+                "loginAttribute": row.login_attribute,
+                "usernameAttribute": row.username_attribute,
+                "subjectAttribute": row.subject_attribute,
+                "groupAttribute": row.group_attribute,
+                "autoProvision": row.auto_provision,
+                "defaultRole": row.default_role.value,
+            },
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    return _ldap_public(row)
+
+
+def _complete_login(db: Session, response: Response, user: User) -> dict:
+    raw, csrf = issue_session(db, user)
+    cookie_name = session_cookie_name()
+    response.set_cookie(
+        cookie_name,
+        raw,
+        httponly=True,
+        secure=get_settings().secure_cookies,
+        samesite="strict",
+        max_age=get_settings().session_ttl_seconds,
+        path="/",
+    )
+    if cookie_name != "koda_session":
+        response.delete_cookie("koda_session", path="/", samesite="strict", secure=get_settings().secure_cookies)
+    policy = db.get(RolePolicy, user.role)
+    return {
+        "user": {**_user_payload(user), "permissions": sorted(policy.permissions if policy else DEFAULT_ROLE_PERMISSIONS.get(user.role, ()))},
+        "csrfToken": csrf,
+    }
+
+
 @app.post("/api/v1/auth/login")
 def login(body: LoginRequest, request: Request, response: Response, db: Session = Depends(get_db)) -> dict:
     if body.useLdap:
-        return JSONResponse(status_code=501, content={"code": "ldap_not_configured", "detail": "LDAP 로그인은 아직 지원되지 않습니다"})
+        username = body.username.strip()
+        if not username or len(username) > 256:
+            raise HTTPException(401, "사용자 이름 또는 비밀번호가 올바르지 않습니다")
+        bucket = f"{_client_address(request)}:{username.casefold()}"
+        _consume_rate_limit(db, "login", bucket, 10, 300)
+        row = db.get(LdapSettings, "default")
+        if row is None or not row.enabled:
+            return _ldap_error("ldap_not_configured", "LDAP 로그인이 구성되지 않았습니다")
+        try:
+            config = _ldap_row_config(row)
+            identity = authenticate_user(config, username, body.password)
+        except LdapInvalidCredentials:
+            raise HTTPException(401, "사용자 이름 또는 비밀번호가 올바르지 않습니다")
+        except (LdapConfigurationError, LdapUnavailable) as exc:
+            return _ldap_error("ldap_unavailable", str(exc))
+        try:
+            local_username = _normalize_username(identity.username)
+        except HTTPException:
+            return _ldap_error("ldap_identity_invalid", "LDAP 사용자 식별자를 Tracker 계정으로 사용할 수 없습니다", 422)
+        user = db.scalar(select(User).where(User.ldap_subject == identity.subject))
+        username_user = db.scalar(select(User).where(func.lower(User.username) == local_username))
+        if user is not None and username_user is not None and user.id != username_user.id:
+            raise HTTPException(403, "LDAP 사용자 이름이 기존 Tracker 계정과 충돌합니다")
+        if user is None and username_user is not None:
+            user = username_user
+            if user.approval_state == "deleted":
+                raise HTTPException(403, "삭제된 Tracker 계정은 LDAP으로 로그인할 수 없습니다")
+            if user.auth_source != "ldap":
+                if not row.auto_provision:
+                    raise HTTPException(403, "기존 로컬 계정은 LDAP 계정으로 연결되지 않았습니다")
+                user.auth_source = "ldap"
+                user.ldap_subject = identity.subject
+                user.password_hash = hash_password(secrets.token_urlsafe(32))
+                user.role = _ldap_role(identity.groups, row.group_mappings, row.default_role)
+                audit(db, "ldap", "user.link", "user", user.id, {"username": user.username, "role": user.role.value})
+            elif user.ldap_subject and user.ldap_subject != identity.subject:
+                raise HTTPException(403, "LDAP 사용자 식별자가 기존 계정과 일치하지 않습니다")
+            else:
+                user.ldap_subject = identity.subject
+        if user is None:
+            if not row.auto_provision:
+                raise HTTPException(403, "LDAP 인증은 성공했지만 Tracker 사용자 승인이 필요합니다")
+            user = User(
+                username=local_username,
+                password_hash=hash_password(secrets.token_urlsafe(32)),
+                role=_ldap_role(identity.groups, row.group_mappings, row.default_role),
+                active=True,
+                approval_state="approved",
+                auth_source="ldap",
+                ldap_subject=identity.subject,
+            )
+            db.add(user)
+            try:
+                db.flush()
+            except IntegrityError as exc:
+                db.rollback()
+                raise HTTPException(409, "LDAP 사용자 계정을 생성하는 중 충돌이 발생했습니다") from exc
+            audit(db, "ldap", "user.provision", "user", user.id, {"username": user.username, "role": user.role.value})
+        if user.approval_state == "pending":
+            _clear_rate_limit(db, "login", bucket)
+            db.commit()
+            raise HTTPException(403, "계정이 관리자 승인 대기 중입니다")
+        if not user.active or user.approval_state == "deleted":
+            _clear_rate_limit(db, "login", bucket)
+            db.commit()
+            raise HTTPException(403, "비활성화된 계정입니다")
+        _clear_rate_limit(db, "login", bucket)
+        return _complete_login(db, response, user)
     try:
         username = _normalize_username(body.username)
     except HTTPException:
@@ -341,21 +631,7 @@ def login(body: LoginRequest, request: Request, response: Response, db: Session 
         db.commit()
         raise HTTPException(403, "비활성화된 계정입니다")
     _clear_rate_limit(db, "login", bucket)
-    raw, csrf = issue_session(db, user)
-    cookie_name = session_cookie_name()
-    response.set_cookie(
-        cookie_name,
-        raw,
-        httponly=True,
-        secure=get_settings().secure_cookies,
-        samesite="strict",
-        max_age=get_settings().session_ttl_seconds,
-        path="/",
-    )
-    if cookie_name != "koda_session":
-        response.delete_cookie("koda_session", path="/", samesite="strict", secure=get_settings().secure_cookies)
-    policy = db.get(RolePolicy, user.role)
-    return {"user": {**_user_payload(user), "permissions": sorted(policy.permissions if policy else DEFAULT_ROLE_PERMISSIONS.get(user.role, ()))}, "csrfToken": csrf}
+    return _complete_login(db, response, user)
 
 
 @app.post("/api/v1/auth/register", status_code=202)
@@ -522,7 +798,8 @@ def _policy_invariant(db: Session, overrides: dict[Role, set[str]] | None = None
     policies = {item.role: set(item.permissions or []) for item in db.scalars(select(RolePolicy))}
     if overrides:
         policies.update(overrides)
-    if not any(user.active and policies.get(user.role, set()) >= {"roles.manage", "users.manage"} for user in db.scalars(select(User))):
+    users = db.scalars(select(User).with_for_update())
+    if not any(user.active and policies.get(user.role, set()) >= {"roles.manage", "users.manage"} for user in users):
         raise HTTPException(422, "roles.manage 및 users.manage 권한을 가진 활성 사용자가 최소 한 명 필요합니다")
 
 
@@ -592,8 +869,8 @@ def create_user(
     _csrf=Depends(require_csrf),
 ) -> dict:
     username = _normalize_username(body.username)
-    if len(body.password) < 12:
-        raise HTTPException(422, "비밀번호는 12자 이상이어야 합니다")
+    if not body.password:
+        raise HTTPException(422, "비밀번호를 입력하세요")
     user = User(username=username, password_hash=hash_password(body.password), role=body.role)
     if body.role in {Role.ADMIN, Role.MANAGER}:
         policy = db.get(RolePolicy, principal.role)
@@ -626,6 +903,8 @@ def patch_user(
         raise HTTPException(404, "사용자를 찾을 수 없습니다")
     if user.id == principal.id and body.active is False:
         raise HTTPException(422, "현재 로그인한 관리자 계정은 비활성화할 수 없습니다")
+    if user.approval_state == "deleted" and body.active is True:
+        raise HTTPException(422, "삭제된 사용자 계정은 다시 활성화할 수 없습니다")
     if user.role in {Role.ADMIN, Role.MANAGER} or body.role in {Role.ADMIN, Role.MANAGER}:
         policy = db.get(RolePolicy, principal.role)
         if "roles.manage" not in set(policy.permissions if policy else DEFAULT_ROLE_PERMISSIONS.get(principal.role, ())):
@@ -640,6 +919,37 @@ def patch_user(
     _policy_invariant(db)
     audit(db, principal.username, "user.update", "user", user.id, {"role": user.role, "active": user.active, "status": _user_status(user)})
     db.commit()
+    return _user_payload(user)
+
+
+@app.delete("/api/v1/users/{user_id}")
+def delete_user(
+    user_id: str,
+    db: Session = Depends(get_db),
+    principal=Depends(require_permission("users.manage")),
+    _csrf=Depends(require_csrf),
+) -> dict:
+    user = db.get(User, user_id)
+    if not user:
+        raise HTTPException(404, "사용자를 찾을 수 없습니다")
+    if user.id == principal.id:
+        raise HTTPException(422, "현재 로그인한 계정은 삭제할 수 없습니다")
+    if user.role in {Role.ADMIN, Role.MANAGER}:
+        policy = db.get(RolePolicy, principal.role)
+        granted = set(policy.permissions if policy else DEFAULT_ROLE_PERMISSIONS.get(principal.role, ()))
+        if "roles.manage" not in granted:
+            raise HTTPException(403, "관리자 계정 삭제에는 roles.manage 권한이 필요합니다")
+    try:
+        user.active = False
+        user.approval_state = "deleted"
+        db.execute(delete(UserSession).where(UserSession.user_id == user.id))
+        db.flush()
+        _policy_invariant(db)
+        audit(db, principal.username, "user.delete", "user", user.id, {"username": user.username, "role": user.role.value})
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     return _user_payload(user)
 
 
@@ -802,12 +1112,13 @@ def patch_environment(
     if body.name is not None:
         item.name = body.name.strip()
     if body.slug is not None:
-        if not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,126}[a-z0-9]", body.slug):
-            raise HTTPException(422, "식별자 형식이 올바르지 않습니다")
-        duplicate = db.scalar(select(Environment).where(Environment.slug == body.slug, Environment.id != item.id))
+        next_slug = body.slug.strip()
+        if not next_slug or len(next_slug) > 64:
+            raise HTTPException(422, "환경 식별자는 비어 있지 않은 64자 이하여야 합니다")
+        duplicate = db.scalar(select(Environment).where(Environment.slug == next_slug, Environment.id != item.id))
         if duplicate:
             raise HTTPException(409, "이미 존재하는 환경 식별자입니다")
-        item.slug = body.slug
+        item.slug = next_slug
     if body.sortOrder is not None:
         item.sort_order = body.sortOrder
     audit(db, principal.username, "environment.update", "environment", item.id, {"name": item.name, "slug": item.slug, "sortOrder": item.sort_order})

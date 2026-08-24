@@ -60,7 +60,32 @@ class User(Base):
     role: Mapped[Role] = mapped_column(Enum(Role), default=Role.VIEWER)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     approval_state: Mapped[str] = mapped_column(String(16), default="approved")
+    auth_source: Mapped[str] = mapped_column(String(16), default="local")
+    ldap_subject: Mapped[str | None] = mapped_column(String(512), nullable=True, unique=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class LdapSettings(Base):
+    __tablename__ = "ldap_settings"
+    id: Mapped[str] = mapped_column(String(16), primary_key=True, default="default")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    host: Mapped[str] = mapped_column(String(253), default="")
+    port: Mapped[int] = mapped_column(Integer, default=389)
+    tls_mode: Mapped[str] = mapped_column(String(16), default="starttls")
+    verify_certificate: Mapped[bool] = mapped_column(Boolean, default=True)
+    ca_cert_path: Mapped[str] = mapped_column(Text, default="")
+    bind_dn: Mapped[str] = mapped_column(String(512), default="")
+    bind_password_ciphertext: Mapped[str | None] = mapped_column(Text, nullable=True)
+    base_dn: Mapped[str] = mapped_column(String(512), default="")
+    login_attribute: Mapped[str] = mapped_column(String(128), default="sAMAccountName")
+    username_attribute: Mapped[str] = mapped_column(String(128), default="sAMAccountName")
+    subject_attribute: Mapped[str] = mapped_column(String(128), default="objectGUID")
+    user_filter: Mapped[str] = mapped_column(String(512), default="(sAMAccountName={username})")
+    group_attribute: Mapped[str] = mapped_column(String(128), default="memberOf")
+    group_mappings: Mapped[dict] = mapped_column(JSON, default=dict)
+    auto_provision: Mapped[bool] = mapped_column(Boolean, default=False)
+    default_role: Mapped[Role] = mapped_column(Enum(Role), default=Role.VIEWER)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
 
 class RolePolicy(Base):

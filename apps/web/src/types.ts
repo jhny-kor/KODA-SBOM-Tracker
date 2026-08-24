@@ -147,7 +147,8 @@ export interface UserSummary {
   department?: string;
   role: string;
   active: boolean;
-  status?: "pending" | "active" | "inactive";
+  status?: "pending" | "active" | "inactive" | "deleted";
+  authSource?: "local" | "ldap";
   permissions?: string[];
 }
 
@@ -172,4 +173,25 @@ export interface DependencyTrackStatus {
   permissions: string[];
   missingPermissions: string[];
   error?: string;
+}
+
+export interface LdapSettings {
+  enabled: boolean;
+  host: string;
+  port: number;
+  tlsMode: "ldaps" | "starttls" | "plain";
+  verifyCertificate: boolean;
+  caCertPath: string;
+  bindDn: string;
+  baseDn: string;
+  loginAttribute: string;
+  usernameAttribute: string;
+  subjectAttribute: string;
+  userFilter: string;
+  groupAttribute: string;
+  groupMappings: Record<string, string>;
+  autoProvision: boolean;
+  defaultRole: string;
+  hasBindPassword: boolean;
+  encryptionReady: boolean;
 }

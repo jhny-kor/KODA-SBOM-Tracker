@@ -4,6 +4,8 @@ import os
 import tempfile
 from pathlib import Path
 
+from cryptography.fernet import Fernet
+
 
 TEST_ROOT = Path(tempfile.mkdtemp(prefix="koda-tracker-tests-"))
 os.environ["TRACKER_DATABASE_URL"] = f"sqlite:///{TEST_ROOT / 'tracker.db'}"
@@ -13,3 +15,4 @@ os.environ["TRACKER_BOOTSTRAP_ADMIN_PASSWORD"] = "correct-horse-battery-staple"
 os.environ["TRACKER_SECURE_COOKIES"] = "false"
 os.environ["TRACKER_DEPENDENCY_TRACK_URL"] = "http://dependency-track.test"
 os.environ["TRACKER_DEPENDENCY_TRACK_API_KEY"] = "test-api-key"
+os.environ["TRACKER_LDAP_ENCRYPTION_KEY"] = Fernet.generate_key().decode("ascii")

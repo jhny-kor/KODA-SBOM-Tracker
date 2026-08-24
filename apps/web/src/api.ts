@@ -1,6 +1,6 @@
 import { demoChanges, demoRuns } from "./demo";
 import { compareStandaloneRuns, getStandaloneCatalogs, getStandaloneRun, getStandaloneRuns, importStandaloneSbom } from "./standalone";
-import type { AuditEvent, AuthUser, CatalogItem, Comparison, ComponentSnapshot, DependencyTrackStatus, JobState, PageResult, RolePolicy, RolePolicyCatalog, SbomRun, SbomRunDetail, UserSummary, VulnerabilityBundle } from "./types";
+import type { AuditEvent, AuthUser, CatalogItem, Comparison, ComponentSnapshot, DependencyTrackStatus, JobState, LdapSettings, PageResult, RolePolicy, RolePolicyCatalog, SbomRun, SbomRunDetail, UserSummary, VulnerabilityBundle } from "./types";
 
 export const standaloneMode = import.meta.env.VITE_STANDALONE_MODE === "true";
 export const demoMode = !standaloneMode && import.meta.env.VITE_DEMO_MODE !== "false";
@@ -255,12 +255,28 @@ export async function fetchDependencyTrackStatus(): Promise<DependencyTrackStatu
   return request<DependencyTrackStatus>("/api/v1/dependency-track/status");
 }
 
+export async function fetchLdapSettings(): Promise<LdapSettings> {
+  return request<LdapSettings>("/api/v1/settings/ldap");
+}
+
+export async function updateLdapSettings(body: Record<string, unknown>): Promise<LdapSettings> {
+  return request<LdapSettings>("/api/v1/settings/ldap", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
 export async function revokeApiToken(id: string) {
   return request<{ id: string; active: boolean }>(`/api/v1/api-tokens/${encodeURIComponent(id)}/revoke`, { method: "POST" });
 }
 
 export async function patchUser(id: string, body: { role?: string; active?: boolean }) {
   return request<UserSummary>(`/api/v1/users/${encodeURIComponent(id)}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+}
+
+export async function deleteUser(id: string) {
+  return request<UserSummary>(`/api/v1/users/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
 export async function approveUser(id: string) {

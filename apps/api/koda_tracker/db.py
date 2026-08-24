@@ -43,6 +43,29 @@ def ensure_user_approval_state_column(bind=engine) -> None:
         )
 
 
+def ensure_user_identity_columns(bind=engine) -> None:
+    """Add the auth-source boundary used to prevent local/LDAP identity collisions."""
+    if "users" not in inspect(bind).get_table_names():
+        return
+    columns = {column["name"] for column in inspect(bind).get_columns("users")}
+    with bind.begin() as connection:
+        if "auth_source" not in columns:
+            connection.execute(text("ALTER TABLE users ADD COLUMN auth_source VARCHAR(16) NOT NULL DEFAULT 'local'"))
+        if "ldap_subject" not in columns:
+            connection.execute(text("ALTER TABLE users ADD COLUMN ldap_subject VARCHAR(512)"))
+        connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ux_users_ldap_subject ON users (ldap_subject)"))
+
+
+def ensure_ldap_subject_attribute_column(bind=engine) -> None:
+    """Keep the LDAP identity selector additive for databases created mid-release."""
+    if "ldap_settings" not in inspect(bind).get_table_names():
+        return
+    if "subject_attribute" in {column["name"] for column in inspect(bind).get_columns("ldap_settings")}:
+        return
+    with bind.begin() as connection:
+        connection.execute(text("ALTER TABLE ldap_settings ADD COLUMN subject_attribute VARCHAR(128) NOT NULL DEFAULT 'objectGUID'"))
+
+
 def ensure_component_search_support(bind=engine) -> None:
     """Backfill the component search field and enable trigram indexes."""
     if "run_components" not in inspect(bind).get_table_names():

@@ -45,8 +45,8 @@ def test_invalid_new_cookie_never_falls_back_to_valid_legacy_cookie() -> None:
 def test_ldap_returns_explicit_not_configured_before_password_check() -> None:
     with TestClient(app) as client:
         response = client.post("/api/v1/auth/login", json={"username": "missing", "password": "wrong", "useLdap": True})
-        assert response.status_code == 501
-        assert response.json() == {"code": "ldap_not_configured", "detail": "LDAP 로그인은 아직 지원되지 않습니다"}
+        assert response.status_code == 503
+        assert response.json() == {"code": "ldap_not_configured", "detail": "LDAP 로그인이 구성되지 않았습니다"}
 
 
 def test_registration_requires_admin_approval_before_login() -> None:

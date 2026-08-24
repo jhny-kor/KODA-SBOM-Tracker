@@ -41,13 +41,13 @@ describe("KODA SBOM Tracker", () => {
   it("shows a users-only manager settings surface", () => {
     render(<SettingsPage
       users={[{ id: "u2", username: "analyst", role: "analyst", active: true }]}
-      services={[]} tokens={[]} dtrackStatus={null}
+      services={[]} tokens={[]} dtrackStatus={null} ldapSettings={null}
       policies={[{ role: "admin", permissions: ["roles.manage"] }]}
       roleCatalog={["roles.manage"]} bundles={[]} auditEvents={[]}
       isAdmin={false} canVulnerability={false} canVulnerabilityManage={false} canAudit={false}
       canUsers canTokens={false} canDtrack={false}
       canPolicyEdit={false} canRoles={false} onSync={async () => {}} onActivate={async () => {}}
-      onPolicyChanged={async () => {}} onChanged={() => {}}
+      onPolicyChanged={async () => {}} onLdapChanged={() => {}} onChanged={() => {}}
     />);
     expect(screen.getByRole("heading", { name: "사용자 1명" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: /API 토큰/ })).not.toBeInTheDocument();
@@ -63,13 +63,13 @@ describe("KODA SBOM Tracker", () => {
         { id: "pending", username: "new-user", role: "viewer", active: false, status: "pending" },
         { id: "inactive", username: "stopped-user", role: "viewer", active: false, status: "inactive" },
       ]}
-      services={[]} tokens={[]} dtrackStatus={null}
+      services={[]} tokens={[]} dtrackStatus={null} ldapSettings={null}
       policies={[{ role: "admin", permissions: ["roles.manage"] }]}
       roleCatalog={["roles.manage"]} bundles={[]} auditEvents={[]}
       isAdmin canVulnerability={false} canVulnerabilityManage={false} canAudit={false}
       canUsers canTokens={false} canDtrack={false}
       canPolicyEdit canRoles onSync={async () => {}} onActivate={async () => {}}
-      onPolicyChanged={async () => {}} onChanged={() => {}}
+      onPolicyChanged={async () => {}} onLdapChanged={() => {}} onChanged={() => {}}
     />);
     expect(screen.getByText("승인 대기")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "승인" })).toBeInTheDocument();
@@ -79,7 +79,7 @@ describe("KODA SBOM Tracker", () => {
 
   it("groups administrator security data under Korean settings tabs", () => {
     render(<SettingsPage
-      users={[]} services={[]} tokens={[]} dtrackStatus={null}
+      users={[]} services={[]} tokens={[]} dtrackStatus={null} ldapSettings={null}
       policies={[{ role: "admin", permissions: ["audit.view", "vulnerability.view"] }]}
       roleCatalog={["audit.view", "vulnerability.view"]}
       bundles={[{ id: "bundle-1", version: "2026.08", dataAsOf: "2026-08-01", nvdDataAsOf: "2026-08-01", kevDataAsOf: "2026-08-01", grypeDbSchema: "6", aliasCount: 1, kevCount: 1, manifestSha256: "secret-sha", active: true, importedAt: "2026-08-01T00:00:00Z" }]}
@@ -87,7 +87,7 @@ describe("KODA SBOM Tracker", () => {
       isAdmin canVulnerability canVulnerabilityManage canAudit
       canUsers={false} canTokens={false} canDtrack={false} canPolicyEdit canRoles
       onSync={async () => {}} onActivate={async () => {}}
-      onPolicyChanged={async () => {}} onChanged={() => {}}
+      onPolicyChanged={async () => {}} onLdapChanged={() => {}} onChanged={() => {}}
     />);
     expect(screen.getByRole("tab", { name: "권한 관리" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "취약점 데이터" })).toBeInTheDocument();
@@ -156,7 +156,7 @@ describe("KODA SBOM Tracker", () => {
 
   it("logs out from the account accordion", async () => {
     render(<App />);
-    const accountButton = screen.getByRole("button", { name: "보안운영팀" });
+    const accountButton = screen.getByRole("button", { name: "preview" });
     expect(accountButton).toHaveAttribute("aria-expanded", "false");
     fireEvent.click(accountButton);
     expect(accountButton).toHaveAttribute("aria-expanded", "true");

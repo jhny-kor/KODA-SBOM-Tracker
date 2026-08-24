@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
 
-from koda_tracker.db import Base, SessionLocal, ensure_postgres_manager_enum, ensure_user_approval_state_column
+from koda_tracker.db import Base, SessionLocal, ensure_postgres_manager_enum, ensure_user_approval_state_column, ensure_user_identity_columns
 from koda_tracker.main import app
 from koda_tracker.models import Job, Role, RolePolicy, User
 from koda_tracker.security import DEFAULT_ROLE_PERMISSIONS, PERMISSION_CATALOG
@@ -292,6 +292,8 @@ def test_sqlite_legacy_user_table_accepts_manager_without_rebuild() -> None:
     Base.metadata.create_all(legacy)
     ensure_user_approval_state_column(legacy)
     ensure_user_approval_state_column(legacy)
+    ensure_user_identity_columns(legacy)
+    ensure_user_identity_columns(legacy)
     with Session(legacy) as db:
         db.add(User(username="sqlite-manager", password_hash="not-used", role=Role.MANAGER))
         db.commit()
