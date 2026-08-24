@@ -32,6 +32,7 @@ docker compose ps
 | `DTRACK_DB_PASSWORD` | `dtrack` DB 계정 비밀번호 |
 | `TRACKER_DB_PASSWORD` | `sbom_tracker` DB 계정 비밀번호 |
 | `TRACKER_BOOTSTRAP_ADMIN_PASSWORD` | 최초 Tracker 관리자 비밀번호 |
+| `TRACKER_LDAP_ENCRYPTION_KEY` | LDAP bind 비밀번호를 DB에 저장할 때 사용하는 Fernet 키 |
 | `TRACKER_DEPENDENCY_TRACK_API_KEY` | Dependency-Track 전용 team API 키 |
 | `DTRACK_API_BASE_URL` | 브라우저가 접근할 수 있는 공개 base 주소. `/api`를 붙이지 않음 |
 | 볼륨 이름, 외부 공개 포트 | 필요할 때만 변경 |
@@ -75,12 +76,17 @@ Dependency-Track 초기 관리자 로그인 후 포털 전용 팀을 만들고 �
 - Tracker 로컬 계정은 로그인 화면에서 가입을 신청하면 `viewer`·`승인 대기` 상태로
   생성됩니다. 관리자가 사용자 설정에서 역할을 확인하고 `승인`한 뒤에만
   로그인할 수 있습니다.
-- `LDAP 사용`은 아직 구현되지 않아 선택 시 `501 ldap_not_configured`를 반환합니다.
+- 관리자는 설정의 `LDAP 로그인` 탭에서 LDAP 연결과 그룹-역할 매핑을 저장합니다. bind
+  비밀번호는 `TRACKER_LDAP_ENCRYPTION_KEY`가 없으면 저장할 수 없고, 실제 연결은
+  기본적으로 StartTLS/LDAPS와 인증서 검증을 사용합니다. 현재 AI 서버와 호환해야 할 때만
+  설정 화면의 `LDAP 평문 (389)`을 선택할 수 있으며, 자격증명이 평문으로 전달될 수 있으므로
+  내부망 한정으로 사용하고 가능한 한 StartTLS/LDAPS로 전환합니다.
 - 통합 KODA suite는 Tracker의 HttpOnly 세션을 gateway에서 검증한 뒤 KODA에 UUID,
   표시 이름, 만료 시각만 전달합니다. Tracker 승인 계정은 KODA에도 자동 활성화되고
   KODA 관리자는 프로젝트 권한만 별도로 부여합니다.
 - Dependency-Track UI는 별도 사용자·Team 권한을 사용합니다. 포털 backend 연동용
-  API 키를 사용자 로그인이나 브라우저 SSO에 사용하지 않습니다.
+  API 키를 사용자 로그인이나 브라우저 SSO에 사용하지 않습니다. Dependency-Track
+  자체 LDAP/OIDC가 필요한 경우에는 설치한 upstream 버전의 공식 설정으로 별도 구성합니다.
 
 운영 세션은 HTTPS 동일 오리진을 전제로 합니다. `TRACKER_ENVIRONMENT=production`은
 HTTPS `TRACKER_PUBLIC_ORIGIN`과 `TRACKER_SECURE_COOKIES=true`가 아니면 기동을
@@ -117,6 +123,113 @@ export DTRACK_ADMIN_API_BASE_URL='http://127.0.0.1:8088/dependency-track/api'
 docker compose up -d --force-recreate portal-api portal-worker
 ./scripts/verify-dtrack-connection.sh
 ```
+
+### 2-2. KODA Suite 외부 TLS reverse proxy
+
+통합 Suite의 gateway는 HTTP `8088`만 제공하고, 인증서 종료는 별도 OpenResty/Nginx
+컨테이너 `nginx`가 담당합니다. 현재 운영 서버의 영속 설정은 다음 bind mount를
+기준으로 합니다.
+
+| 호스트 | 컨테이너 | 용도 |
+| --- | --- | --- |
+| `/data/docker_data/volumes/nginx/conf/nginx.conf` | `/usr/local/openresty/nginx/conf/nginx.conf` | Nginx main config |
+| `/data/docker_data/volumes/nginx/conf.d` | `/etc/nginx/conf.d` | 선택적 fragment |
+| `/data/docker_data/volumes/nginx/ssl` | `/etc/nginx/ssl` | 인증서·개인키 |
+
+KODA vhost는 현재 main config의 `http {}` 안에 직접 두며, `server_name`은
+`koda.ssis.or.kr`, backend는 `http://10.95.58.147:8088`로 지정합니다. 인증서와
+개인키 원문은 문서·로그에 남기지 않습니다. `conf.d` 방식을 사용할 때는 main
+config의 `http {}` 안에만 다음 include를 한 번 넣고, 같은 vhost를 main config와
+중복해서 두지 않습니다.
+
+```nginx
+include /etc/nginx/conf.d/*.conf;
+```
+
+Suite 환경 파일(`~/koda-suite/tracker/.env`)에는 외부 origin을 맞춥니다.
+
+```dotenv
+GATEWAY_SERVER_NAME=koda.ssis.or.kr
+GATEWAY_PUBLIC_SCHEME=https
+TRACKER_PUBLIC_ORIGIN=https://koda.ssis.or.kr
+TRACKER_SECURE_COOKIES=true
+DTRACK_API_BASE_URL=https://koda.ssis.or.kr/dependency-track
+DTRACK_ADMIN_API_BASE_URL=https://koda.ssis.or.kr/dependency-track/api
+KODA_SSBOM_TRACKER_URL=https://koda.ssis.or.kr/
+```
+
+내부 gateway는 HTTP `:8080`에서 동작하므로 인증되지 않은 `/koda/` 요청의
+`Location`을 `http://koda.ssis.or.kr:8080/koda/login`으로 만들 수 있습니다. 외부
+TLS vhost에서 `/koda`의 슬래시와 이 redirect를 보정합니다.
+
+```nginx
+location = /koda {
+    return 308 /koda/;
+}
+
+location / {
+    proxy_pass http://10.95.58.147:8088;
+    proxy_redirect http://koda.ssis.or.kr:8080/ https://koda.ssis.or.kr/;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header X-Forwarded-Host $host;
+    proxy_set_header X-Forwarded-Port 443;
+}
+```
+
+`location = /koda`는 HTTPS `server` 블록의 기존 `location /`보다 앞에 두며,
+기존 proxy 헤더·timeout 설정은 유지합니다. `nginx -t`와 reload 후 다음 응답의
+`Location`에 `http://` 또는 `:8080`이 남지 않아야 합니다.
+
+Tracker의 CSRF 토큰은 브라우저가 `X-CSRF-Token` 요청 헤더로 전송하며 쿠키가
+아닙니다. 따라서 `proxy_set_header X-CSRF-Token $cookie_csrf_token;`를 추가하면
+안 됩니다. 이 지시어는 브라우저의 토큰을 빈 쿠키 값으로 덮어써 SBOM 업로드를
+403으로 만듭니다. 해당 지시어를 생략하면 Nginx가 원래 요청 헤더를 전달합니다.
+
+```bash
+docker exec nginx nginx -t && docker exec nginx nginx -s reload
+curl --resolve koda.ssis.or.kr:443:10.95.58.147 -sSI \
+  https://koda.ssis.or.kr/koda/
+curl --resolve koda.ssis.or.kr:443:10.95.58.147 -fsS \
+  https://koda.ssis.or.kr/koda/live
+```
+
+변경·컨테이너 교체 전후에는 마운트와 active config를 먼저 확인합니다. 상위
+`~/koda-suite`에서 raw `docker compose`를 실행하지 말고 Suite wrapper를 사용합니다.
+
+```bash
+cd ~/koda-suite
+./koda-suite status
+./koda-suite start
+
+docker inspect -f '{{range .Mounts}}{{println .Type .Source "->" .Destination "rw=" .RW}}{{end}}' nginx
+docker exec nginx nginx -T 2>&1 | \
+  grep -nE 'server_name koda\.ssis\.or\.kr|configuration file /etc/nginx/conf\.d/koda\.conf'
+docker exec nginx nginx -t
+docker exec nginx nginx -s reload
+
+curl -fsS http://127.0.0.1:8088/healthz
+curl --resolve koda.ssis.or.kr:443:10.95.58.147 \
+  -fsS https://koda.ssis.or.kr/healthz
+```
+
+개별 파일을 `vi`로 저장하면 단일 파일 bind mount의 inode가 교체되어 컨테이너가
+이전 파일을 계속 볼 수 있습니다. 저장 후 호스트·컨테이너 해시가 다르면 백업을
+남기고 현재 mount inode에 내용을 동기화한 뒤 검사·reload합니다.
+
+```bash
+MAIN=/data/docker_data/volumes/nginx/conf/nginx.conf
+sudo cp -a "$MAIN" "$MAIN.bak.$(date +%Y%m%d%H%M%S)"
+docker exec -u 0 -i nginx sh -c \
+  'cat > /usr/local/openresty/nginx/conf/nginx.conf' < "$MAIN"
+sha256sum "$MAIN"
+docker exec nginx sha256sum /usr/local/openresty/nginx/conf/nginx.conf
+docker exec nginx nginx -t && docker exec nginx nginx -s reload
+```
+
+컨테이너를 재생성할 때도 위 세 bind mount를 같은 source/destination으로 보존합니다.
+컨테이너 내부에만 복사한 인증서·설정은 교체 시 사라집니다. `docker compose down -v`
+나 named volume 삭제는 이 절차에 필요하지 않습니다.
 
 ## 3. 폐쇄망 기본 원칙
 

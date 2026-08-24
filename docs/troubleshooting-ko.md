@@ -20,6 +20,8 @@ KODA 화면·계정 승인·압축파일·Docker 교체 문제는 KODA 저장소
 | 분석은 됐는데 Dependency-Track이 `HTTP 400` | [7. 분석은 일부 성공했지만 Dependency-Track가 HTTP 400](#7-분석은-일부-성공했지만-dependency-track가-http-400) |
 | 작은 파일인데 `413` | [8. 작은 파일인데 `413 Request Entity Too Large`](#8-작은-파일인데-413-request-entity-too-large) |
 | 고친 UI가 화면에 안 나온다 | [9. 수정한 UI가 아니라 이전 화면](#9-수정한-ui가-아니라-이전-화면) |
+| 브라우저가 `DNS_PROBE_FINISHED_NXDOMAIN` | [9-1. 외부 TLS 주소가 DNS에서 해석되지 않음](#9-1-외부-tls-주소가-dns에서-해석되지-않음) |
+| Nginx 설정을 저장했는데 컨테이너에서 이전 파일을 읽는다 | [9-2. 단일 파일 bind mount가 이전 inode를 가리킴](#9-2-단일-파일-bind-mount가-이전-inode를-가리킴) |
 | 다 고쳤는데 정상인지 판단이 안 선다 | [10. 정상 완료 기준](#10-정상-완료-기준) |
 
 ## 0. 설치 형태에 맞는 compose 인자
@@ -182,6 +184,127 @@ docker compose --env-file .env "${COMPOSE_FILES[@]}" \
 정상값은 `UPLOAD_MAX_BYTES=104857600`, `client_max_body_size 101m;`입니다. API는
 파일 자체를 100MiB로 제한하고 gateway의 추가 1MiB는 multipart 요청 정보를 수용합니다.
 외부 Nginx·Apache·L7 장비가 있으면 그 제한도 101MiB 이상이어야 합니다.
+
+## 9-1. 외부 TLS 주소가 DNS에서 해석되지 않음
+
+`DNS_PROBE_FINISHED_NXDOMAIN`은 Docker·Nginx에 도달하기 전에 DNS가
+`koda.ssis.or.kr` 레코드를 찾지 못했다는 뜻입니다. 서버에서 다음 명령으로
+확인합니다.
+
+```bash
+nslookup koda.ssis.or.kr
+```
+
+사내 DNS의 `ssis.or.kr` zone에 다음 A 레코드를 추가합니다. 사설 IP이므로 외부
+공개 DNS에 넣을지 여부는 네트워크 정책에 따릅니다.
+
+```text
+koda.ssis.or.kr.  A  10.95.58.147
+```
+
+DNS 반영 전 Windows 브라우저에서만 임시 확인할 때는 관리자 권한으로
+`C:\Windows\System32\drivers\etc\hosts`에 다음 줄을 넣고 DNS 캐시를 비웁니다.
+
+```text
+10.95.58.147  koda.ssis.or.kr
+```
+
+```cmd
+ipconfig /flushdns
+```
+
+`curl --resolve koda.ssis.or.kr:443:10.95.58.147 ...`는 DNS를 우회하는 테스트라서,
+이 명령이 성공해도 브라우저의 DNS 레코드가 자동으로 만들어지는 것은 아닙니다.
+
+## 9-2. 단일 파일 bind mount가 이전 inode를 가리킴
+
+`nginx.conf`를 호스트에서 `vi`로 저장한 뒤에도 컨테이너에서 이전 내용이 보이면
+먼저 source와 destination의 hash를 비교합니다.
+
+```bash
+MAIN=/data/docker_data/volumes/nginx/conf/nginx.conf
+CONT=/usr/local/openresty/nginx/conf/nginx.conf
+
+sha256sum "$MAIN"
+docker exec nginx sha256sum "$CONT"
+docker inspect -f \
+  '{{range .Mounts}}{{println .Type .Source "->" .Destination "rw=" .RW}}{{end}}' nginx
+```
+
+단일 파일 bind mount에서 편집기가 inode를 교체하면 Docker가 이전 inode를 계속
+볼 수 있습니다. 해시가 다를 때는 호스트 파일을 현재 mount inode에 동기화하고
+검사·reload합니다.
+
+```bash
+sudo cp -a "$MAIN" "$MAIN.bak.$(date +%Y%m%d%H%M%S)"
+docker exec -u 0 -i nginx sh -c \
+  'cat > /usr/local/openresty/nginx/conf/nginx.conf' < "$MAIN"
+docker exec nginx nginx -t
+docker exec nginx nginx -T 2>&1 | grep -n 'server_name koda\.ssis\.or\.kr'
+docker exec nginx nginx -s reload
+```
+
+컨테이너를 교체할 때는 `/data/docker_data/volumes/nginx/conf/nginx.conf`와
+`conf.d`, `ssl`의 세 bind mount를 동일하게 유지합니다. 컨테이너 내부에만 복사한
+설정·인증서는 교체 시 사라집니다.
+
+## 9-3. `/koda/`가 `http://호스트:8080/koda/login`으로 redirect됨
+
+`/koda/live`가 `{"status":"live"}`를 반환하면 KODA 경로와 프로세스는 정상이고,
+내부 HTTP gateway가 자신의 `:8080` 기준으로 절대 redirect를 만든 상태입니다.
+외부 TLS vhost의 HTTPS `server` 블록에 다음 두 규칙을 추가합니다.
+
+```nginx
+location = /koda { return 308 /koda/; }
+location / {
+    proxy_pass http://10.95.58.147:8088;
+    proxy_redirect http://koda.ssis.or.kr:8080/ https://koda.ssis.or.kr/;
+}
+```
+
+기존 `proxy_set_header`와 timeout 설정은 삭제하지 않습니다. `nginx -t` 후 reload하고,
+`curl -sSI https://koda.ssis.or.kr/koda/`의 `Location`이 `https://koda.ssis.or.kr`
+또는 상대 경로 `/koda/login`인지 확인합니다. `http://...:8080`이 남으면 실제 active
+설정에 `proxy_redirect`가 포함됐는지 `nginx -T`로 확인합니다.
+
+## 9-4. SBOM 업로드에서 `CSRF 토큰이 유효하지 않습니다`
+
+외부 Nginx 설정에 다음 줄이 있으면 브라우저가 보낸 토큰이 사라집니다.
+
+```nginx
+proxy_set_header X-CSRF-Token $cookie_csrf_token;
+```
+
+Tracker는 CSRF 토큰을 쿠키가 아니라 `X-CSRF-Token` 요청 헤더로 받습니다. 위 줄을
+삭제하고, 다른 `X-CSRF-Token` 재설정도 두지 않은 채 원래 헤더를 그대로 전달합니다.
+
+```bash
+docker exec nginx nginx -t && docker exec nginx nginx -s reload
+docker exec nginx nginx -T 2>&1 | grep -n 'X-CSRF-Token'
+```
+
+마지막 명령에 결과가 없어야 합니다. 브라우저에서 강력 새로고침 후 다시 로그인하고
+업로드합니다. 계속 403이면 여러 탭을 닫고 새 탭에서 로그인해 토큰을 재발급합니다.
+
+## 9-5. CycloneDX 검증에서 `Unable to auto-detect input format`
+
+업로드 파일은 서버에서 `koda-sbom-*` 확장자 없는 임시 파일로 저장됩니다. 구버전
+Tracker API는 이 경로를 CycloneDX CLI에 그대로 넘겨 CLI가 형식을 자동 감지하지
+못했습니다. 현재 API는 파일 내용을 판별한 뒤 `--input-format json` 또는
+`--input-format xml`을 명시합니다.
+
+실행 중인 API 이미지에 이 수정이 들어갔는지 확인합니다.
+
+```bash
+docker exec koda-sbom-portal-api sh -c \
+  "grep -n 'input-format' /app/koda_tracker/main.py /app/koda_tracker/sbom.py"
+```
+
+출력이 없으면 `./koda-suite start`만 다시 실행해도 기존 이미지를 계속 사용하므로,
+수정이 포함된 새 Suite 이미지/압축파일로 `portal-api`를 교체해야 합니다. 출력이
+있는데도 실패하면 업로드 파일이 CycloneDX JSON/XML인지, 최상위 `bomFormat`이
+`CycloneDX`인지, `specVersion`이 1.4~1.7인지 확인합니다. `package-lock.json`,
+SPDX JSON, 일반 Syft JSON은 그대로 올리지 말고 CycloneDX JSON/XML로 변환합니다.
 
 ## 9. 수정한 UI가 아니라 이전 화면
 

@@ -94,8 +94,13 @@ Dependency-Track에서 전용 팀/API 키를 만든 뒤 BOM 업로드·프로젝
 활성화·비활성화는 감사 로그에 남고, 사용자·역할 관리 권한을 가진 마지막 활성
 계정은 제거할 수 없습니다.
 
-로그인 화면의 `LDAP 사용` 선택지는 향후 연동을 위한 UI이며 현재 선택하면
-`501 ldap_not_configured`로 실패합니다. 현재는 관리자 승인형 로컬 계정을 사용합니다.
+관리자는 설정의 `LDAP 로그인` 탭에서 서버·TLS·검색 기준 DN·속성·그룹 역할을
+입력할 수 있습니다. bind 비밀번호는 `TRACKER_LDAP_ENCRYPTION_KEY`로 암호화해
+Tracker DB에 저장하며, LDAP 인증 성공 후 발급된 Tracker 세션을 KODA gateway가
+검증하므로 통합 KODA에서도 같은 로그인으로 접근합니다. 실제 운영에서는 StartTLS/LDAPS와
+CA 검증을 사용하고, LDAP 사용자 자동 생성·기본 역할은 조직 정책에 맞게 선택합니다. 현재
+AI 서버와의 호환이 필요한 경우에만 설정 화면에서 `LDAP 평문 (389)`을 선택할 수 있으며,
+자격증명이 평문으로 전달될 수 있으므로 내부망 한정의 임시 호환 모드로 취급합니다.
 
 설정 화면에서는 관리자만 서비스 범위 API 토큰을 발급하고 폐기할 수 있으며 원문은
 발급 시 한 번만 표시됩니다.
@@ -136,6 +141,7 @@ export KODA_TRACKER_TOKEN='관리자가 발급한 서비스 범위 토큰'
 | --- | --- |
 | [화면·기능 한눈에 보기](docs/koda-sbom-tracker-overview-ko.md) | 처음 접할 때. 화면 구성과 데이터 흐름 |
 | [운영 가이드](docs/operations-ko.md) | 기동·설정·백업 등 일상 운영 |
+| [외부 TLS·DNS 운영 절차](docs/operations-ko.md#2-2-koda-suite-외부-tls-reverse-proxy) | 통합 Suite의 외부 Nginx, 인증서, DNS와 컨테이너 교체 |
 | [오프라인 번들 가이드](docs/offline-bundle-ko.md) | 폐쇄망 반입과 취약점 데이터 bundle |
 | [KODA 통합 인증·운영 계약](docs/koda-integration-ko.md) | KODA suite와 세션·신원을 공유할 때 |
 | [폐쇄망 장애 대응](docs/troubleshooting-ko.md) | 로그인·API 키·업로드 오류가 났을 때 |
