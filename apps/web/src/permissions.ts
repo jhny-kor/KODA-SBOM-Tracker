@@ -1,10 +1,9 @@
 import type { AuthUser } from "./types";
 
-export type Page = "dashboard" | "services" | "runs" | "compare" | "settings";
+export type Page = "dashboard" | "runs" | "compare" | "settings" | "guide";
 
-export const PAGE_PERMISSIONS: Record<Page, string> = {
+export const PAGE_PERMISSIONS: Record<Exclude<Page, "guide">, string> = {
   dashboard: "dashboard.view",
-  services: "services.view",
   runs: "runs.view",
   compare: "compare.view",
   settings: "settings.view",
@@ -19,16 +18,24 @@ export function canPermission(user: AuthUser | null, permission: string) {
   return permissions.has("*") || permissions.has(permission);
 }
 
+export function canPage(user: AuthUser | null, page: Page) {
+  if (page === "guide") return Boolean(user?.active);
+  return page === "settings"
+    ? canPermission(user, "settings.view") || canPermission(user, "services.view")
+    : canPermission(user, PAGE_PERMISSIONS[page]);
+}
+
 export function hasPermissions(user: AuthUser | null, ...permissions: string[]) {
   return permissions.every((permission) => canPermission(user, permission));
 }
 
 export function allowedPages(user: AuthUser | null) {
-  return (Object.keys(PAGE_PERMISSIONS) as Page[]).filter((page) => canPermission(user, PAGE_PERMISSIONS[page]));
+  return ([...Object.keys(PAGE_PERMISSIONS), "guide"] as Page[]).filter((page) => canPage(user, page));
 }
 
 export function pageForPermissions(user: AuthUser | null, requested: Page) {
-  return canPermission(user, PAGE_PERMISSIONS[requested]) ? requested : allowedPages(user)[0] || null;
+  if (canPage(user, requested)) return requested;
+  return allowedPages(user)[0] || null;
 }
 
 export function dataAccess(user: AuthUser | null) {

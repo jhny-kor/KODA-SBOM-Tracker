@@ -17,7 +17,7 @@ ph = PasswordHasher()
 
 PERMISSION_CATALOG = tuple(sorted({
     "dashboard.view", "services.view", "runs.view", "compare.view", "vulnerability.view", "audit.view", "settings.view",
-    "sbom.upload", "artifact.download", "analysis.create", "dtrack.retry", "sbom.archive", "catalog.manage", "vulnerability.manage", "users.manage", "tokens.manage", "dtrack.settings", "roles.manage",
+    "sbom.upload", "artifact.download", "analysis.create", "dtrack.retry", "sbom.archive", "sbom.delete", "catalog.manage", "vulnerability.manage", "users.manage", "tokens.manage", "dtrack.settings", "roles.manage",
 }))
 DEFAULT_ROLE_PERMISSIONS = {
     Role.ADMIN: set(PERMISSION_CATALOG),

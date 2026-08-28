@@ -21,16 +21,27 @@ describe("standalone CycloneDX preview", () => {
         id: "CVE-2026-0001",
         ratings: [{ severity: "high" }],
         affects: [{ ref: "pkg:maven/org.example/demo-lib@1.2.3" }],
+        nvdCvss: { cvssV40: [{ baseScore: 9.1 }], cvssV31: [{ baseScore: 8.8 }] },
         kev: true,
+      }, {
+        id: "GHSA-abcd-1234-efgh",
+        relatedVulnerabilities: [{ id: "CVE-2026-0002" }],
+        ratings: [{ severity: "medium" }],
+      }, {
+        id: "GHSA-only-1234-abcd",
+        ratings: [{ severity: "low" }],
       }],
     }), "demo.cdx.json", "1.2.3");
 
     expect(detail.service.name).toBe("로컬 미리보기");
     expect(detail.componentCount).toBe(1);
-    expect(detail.vulnerabilityCount).toBe(1);
+    expect(detail.vulnerabilityCount).toBe(2);
+    expect(detail.vulnerableComponentCount).toBe(1);
     expect(detail.dataAsOf).toBe("2026-08-05");
+    expect(detail.cveDataAsOf).toBe("2026-08-05");
     expect(detail.components[0].purl).toContain("demo-lib@1.2.3");
-    expect(detail.analyses[0].findings?.[0]).toMatchObject({ canonicalId: "CVE-2026-0001", severity: "high", kev: true });
+    expect(detail.analyses[0].findings?.[0]).toMatchObject({ canonicalId: "CVE-2026-0001", severity: "high", cvssScore: 9.1, kev: true });
+    expect(detail.analyses[0].findings?.[1]).toMatchObject({ canonicalId: "CVE-2026-0002", severity: "medium" });
   });
 
   it("parses XML and stores an uploaded preview run in memory", async () => {

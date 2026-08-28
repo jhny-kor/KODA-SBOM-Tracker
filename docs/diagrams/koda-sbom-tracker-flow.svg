@@ -50,23 +50,23 @@
 
   <rect x="546" y="248" width="194" height="82" class="node"/>
   <text x="643" y="278" text-anchor="middle" class="node-title">대시보드·회차</text>
-  <text x="643" y="300" text-anchor="middle" class="node-note">서비스 / 환경 / 릴리스</text>
-  <text x="643" y="316" text-anchor="middle" class="node-note">업로드·상태 확인</text>
+  <text x="643" y="300" text-anchor="middle" class="node-note">구성요소·취약 구성요소</text>
+  <text x="643" y="316" text-anchor="middle" class="node-note">업로드·CVE 기준일</text>
 
   <rect x="794" y="248" width="194" height="82" class="focus"/>
   <text x="891" y="278" text-anchor="middle" class="node-title">회차 상세</text>
-  <text x="891" y="300" text-anchor="middle" class="node-note">구성요소·취약점·정책</text>
+  <text x="891" y="300" text-anchor="middle" class="node-note">구성요소·CVE·정책</text>
   <text x="891" y="316" text-anchor="middle" class="node-note">큰 팝업에서 확인</text>
 
   <rect x="1042" y="248" width="194" height="82" class="focus"/>
   <text x="1139" y="278" text-anchor="middle" class="node-title">회차 비교</text>
-  <text x="1139" y="300" text-anchor="middle" class="node-note">구성요소 / 취약점 / 정책</text>
+  <text x="1139" y="300" text-anchor="middle" class="node-note">구성요소 / CVE / 정책</text>
   <text x="1139" y="316" text-anchor="middle" class="node-note">변경·심각도 시각화</text>
 
   <rect x="1290" y="248" width="194" height="82" class="admin"/>
   <text x="1387" y="278" text-anchor="middle" class="node-title">설정</text>
-  <text x="1387" y="300" text-anchor="middle" class="node-note">관리자·허용 역할만</text>
-  <text x="1387" y="316" text-anchor="middle" class="node-note">하위 메뉴로 관리</text>
+  <text x="1387" y="300" text-anchor="middle" class="node-note">서비스·환경·계정</text>
+  <text x="1387" y="316" text-anchor="middle" class="node-note">권한별 하위 메뉴</text>
 
   <path d="M248 289 H302" class="flow"/>
   <path d="M492 289 H546" class="flow"/>
@@ -101,13 +101,13 @@
 
   <rect x="1084" y="626" width="188" height="82" class="focus"/>
   <text x="1178" y="656" text-anchor="middle" class="node-title">SBOM 회차 결과</text>
-  <text x="1178" y="678" text-anchor="middle" class="node-note">구성요소·취약점·정책</text>
-  <text x="1178" y="694" text-anchor="middle" class="node-note">기준일·상태·변경</text>
+  <text x="1178" y="678" text-anchor="middle" class="node-note">구성요소·CVE·정책</text>
+  <text x="1178" y="694" text-anchor="middle" class="node-note">CVE 기준일·상태·변경</text>
 
   <rect x="1332" y="626" width="164" height="82" class="node"/>
   <text x="1414" y="656" text-anchor="middle" class="node-title">감사 로그</text>
   <text x="1414" y="678" text-anchor="middle" class="node-note">업로드·재분석·정책</text>
-  <text x="1414" y="694" text-anchor="middle" class="node-note">관리자 조회</text>
+  <text x="1414" y="694" text-anchor="middle" class="node-note">관리자 조회·CSV</text>
 
   <path d="M280 667 H340" class="flow"/>
   <path d="M528 667 H588" class="flow"/>
@@ -115,6 +115,6 @@
   <path d="M1024 667 H1084" class="flow"/>
   <path d="M1272 667 H1332" class="secondary-flow"/>
   <path d="M930 708 V754 H1178 V708" class="secondary-flow"/>
-  <text x="1054" y="749" text-anchor="middle" class="small">분석 기준 참조</text>
+  <text x="1054" y="749" text-anchor="middle" class="small">CVE 기준 참조</text>
 
 </svg>

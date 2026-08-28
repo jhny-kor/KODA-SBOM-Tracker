@@ -5,10 +5,10 @@ import json
 from contextlib import contextmanager
 
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, inspect as inspect_database, text
 from sqlalchemy.orm import Session
 
-from koda_tracker.db import Base, SessionLocal, ensure_postgres_manager_enum, ensure_user_approval_state_column, ensure_user_identity_columns
+from koda_tracker.db import Base, SessionLocal, ensure_environment_active_column, ensure_postgres_manager_enum, ensure_user_approval_state_column, ensure_user_identity_columns
 from koda_tracker.main import app
 from koda_tracker.models import Job, Role, RolePolicy, User
 from koda_tracker.security import DEFAULT_ROLE_PERMISSIONS, PERMISSION_CATALOG
@@ -202,6 +202,11 @@ def test_bulk_role_policy_put_is_csrf_protected_and_atomic() -> None:
         body = {"roles": {"analyst": ["runs.view"], "viewer": ["unknown.permission"]}}
         assert client.put("/api/v1/role-policies", json=body).status_code == 403
         assert client.put("/api/v1/role-policies", json=body, headers=headers).status_code == 422
+        assert client.put(
+            "/api/v1/role-policies",
+            json={"roles": {"viewer": ["runs.view", "sbom.delete"]}},
+            headers=headers,
+        ).status_code == 422
         after = client.get("/api/v1/role-policies").json()["roles"]
         assert {item["role"]: item["permissions"] for item in after} == original
         changed = {"roles": {"analyst": ["runs.view"], "viewer": ["runs.view"]}}
@@ -284,6 +289,28 @@ def test_startup_seeds_only_missing_policies_and_preserves_custom_permissions() 
             db.commit()
 
 
+def test_startup_backfills_admin_delete_permission_and_removes_it_from_other_roles() -> None:
+    with SessionLocal() as db:
+        admin = db.get(RolePolicy, Role.ADMIN)
+        manager = db.get(RolePolicy, Role.MANAGER)
+        admin_before = list(admin.permissions)
+        manager_before = list(manager.permissions)
+        admin.permissions = [permission for permission in admin.permissions if permission != "sbom.delete"]
+        manager.permissions = sorted(set(manager.permissions) | {"sbom.delete"})
+        db.commit()
+    try:
+        with TestClient(app):
+            pass
+        with SessionLocal() as db:
+            assert "sbom.delete" in db.get(RolePolicy, Role.ADMIN).permissions
+            assert "sbom.delete" not in db.get(RolePolicy, Role.MANAGER).permissions
+    finally:
+        with SessionLocal() as db:
+            db.get(RolePolicy, Role.ADMIN).permissions = admin_before
+            db.get(RolePolicy, Role.MANAGER).permissions = manager_before
+            db.commit()
+
+
 def test_sqlite_legacy_user_table_accepts_manager_without_rebuild() -> None:
     legacy = create_engine("sqlite://")
     with legacy.begin() as connection:
@@ -299,6 +326,20 @@ def test_sqlite_legacy_user_table_accepts_manager_without_rebuild() -> None:
         db.commit()
         assert db.scalar(text("SELECT role FROM users WHERE username = 'sqlite-manager'")) == "MANAGER"
         assert db.scalar(text("SELECT approval_state FROM users WHERE username = 'legacy-admin'")) == "approved"
+
+
+def test_environment_active_migration_is_additive_and_idempotent() -> None:
+    legacy = create_engine("sqlite://")
+    with legacy.begin() as connection:
+        connection.execute(text("CREATE TABLE environments (id VARCHAR(36) PRIMARY KEY, slug VARCHAR(64), name VARCHAR(128), sort_order INTEGER)"))
+        connection.execute(text("INSERT INTO environments VALUES ('prod', 'prod', '운영', 1)"))
+
+    ensure_environment_active_column(legacy)
+    ensure_environment_active_column(legacy)
+
+    assert "active" in {column["name"] for column in inspect_database(legacy).get_columns("environments")}
+    with legacy.connect() as connection:
+        assert bool(connection.scalar(text("SELECT active FROM environments WHERE id = 'prod'"))) is True
 
 
 def test_postgres_manager_enum_migration_is_fresh_db_safe_and_idempotent() -> None:

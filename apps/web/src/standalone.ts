@@ -3,7 +3,7 @@ import type { AnalysisRevisionSummary, CatalogItem, Comparison, ComponentChange,
 type JsonObject = Record<string, unknown>;
 
 export const standaloneService: CatalogItem = { id: "standalone-service", name: "로컬 미리보기", slug: "local-preview", active: true };
-export const standaloneEnvironment: CatalogItem = { id: "standalone-environment", name: "미리보기", slug: "preview", sortOrder: 0 };
+export const standaloneEnvironment: CatalogItem = { id: "standalone-environment", name: "미리보기", slug: "preview", sortOrder: 0, active: true };
 
 const storedRuns = new Map<string, SbomRunDetail>();
 let sequence = 0;
@@ -18,6 +18,47 @@ function list(value: unknown): unknown[] {
 
 function text(value: unknown): string {
   return typeof value === "string" || typeof value === "number" ? String(value) : "";
+}
+
+function cveId(value: unknown): string | undefined {
+  return typeof value === "string" ? value.match(/CVE-\d{4}-\d{4,}/i)?.[0].toUpperCase() : undefined;
+}
+
+function identifierValues(value: unknown): unknown[] {
+  if (Array.isArray(value)) return value.flatMap(identifierValues);
+  if (value && typeof value === "object") {
+    const item = object(value);
+    return ["canonicalId", "id", "cve", "cveId", "cveID", "ghsa", "ghsaId", "ghsaID", "aliases", "relatedVulnerabilities", "identifiers"].flatMap((key) => identifierValues(item[key]));
+  }
+  return [value];
+}
+
+function flattenCvss(value: unknown): number | string | undefined {
+  const finding = object(value);
+  const payload = object(finding.nvdCvss);
+  const score = (candidate: unknown): number | string | undefined => {
+    if (Array.isArray(candidate)) {
+      for (const item of candidate) {
+        const result = score(item);
+        if (result !== undefined) return result;
+      }
+      return undefined;
+    }
+    if (!candidate || typeof candidate !== "object") return undefined;
+    const item = object(candidate);
+    for (const key of ["baseScore", "base_score"]) {
+      const result = item[key];
+      if (typeof result === "number" || typeof result === "string") {
+        if (String(result).trim() && String(result).trim() !== "-") return result;
+      }
+    }
+    return score(item.cvssData);
+  };
+  for (const key of ["cvssV4", "cvssV4_0", "cvssV40", "cvssV4.0", "cvssMetricV40", "cvssMetricV4", "cvssV3", "cvssV31", "cvssV3_1", "cvssV3.1", "cvssMetricV31", "cvssMetricV30", "cvssV2", "cvssMetricV2"]) {
+    const result = score(payload[key]);
+    if (result !== undefined) return result;
+  }
+  return score(payload);
 }
 
 function child(element: Element, name: string): Element | undefined {
@@ -65,7 +106,9 @@ function vulnerabilityFromJson(value: unknown): Record<string, unknown> {
   const id = text(item.id) || text(source.id) || text(item["bom-ref"]);
   const severity = text(ratings[0]?.severity) || text(item.severity) || "UNKNOWN";
   const component = text(affects[0]?.ref) || text(item.component);
-  return { ...item, id, canonicalId: id, severity, component, kev: item.kev === true || item.knownExploited === true };
+  const canonicalId = identifierValues([item.canonicalId, item.id, item.cve, item.cveId, item.cveID, item.aliases, item.relatedVulnerabilities, item.identifiers, source.id]).map(cveId).find(Boolean) || id;
+  const score = flattenCvss(item);
+  return { ...item, id, canonicalId, severity, component, ...(score === undefined ? {} : { cvssScore: score }), kev: item.kev === true || item.knownExploited === true };
 }
 
 function componentFromXml(element: Element, index: number): ComponentSnapshot {
@@ -157,6 +200,7 @@ async function fingerprint(raw: string): Promise<string> {
 export async function parseStandaloneSbom(raw: string, filename: string, releaseVersion = "preview"): Promise<SbomRunDetail> {
   if (!raw.trim()) throw new Error("SBOM 파일이 비어 있습니다.");
   const parsed = parseBom(raw);
+  const findings = parsed.vulnerabilities.filter((finding) => cveId(finding.canonicalId));
   const createdAt = new Date().toISOString();
   const id = `standalone-${Date.now()}-${sequence += 1}`;
   const dataAsOf = parsed.dataAsOf || createdAt.slice(0, 10);
@@ -165,7 +209,7 @@ export async function parseStandaloneSbom(raw: string, filename: string, release
     counts[kind] = (counts[kind] || 0) + 1;
     return counts;
   }, {});
-  const severityCounts = parsed.vulnerabilities.reduce<Record<string, number>>((counts, finding) => {
+  const severityCounts = findings.reduce<Record<string, number>>((counts, finding) => {
     const severity = String(finding.severity || "unknown").toLowerCase();
     counts[severity] = (counts[severity] || 0) + 1;
     return counts;
@@ -180,11 +224,13 @@ export async function parseStandaloneSbom(raw: string, filename: string, release
     sha256: await fingerprint(raw),
     componentCount: parsed.components.length,
     componentTypeCounts,
-    vulnerabilityCount: parsed.vulnerabilities.length,
+    vulnerabilityCount: findings.length,
+    vulnerableComponentCount: new Set(findings.map((finding) => String(finding.component || "").trim()).filter(Boolean)).size,
     severityCounts,
-    kevCount: parsed.vulnerabilities.filter((finding) => finding.kev === true).length,
+    kevCount: findings.filter((finding) => finding.kev === true).length,
     policyViolationCount: 0,
     dataAsOf,
+    cveDataAsOf: dataAsOf,
     createdAt,
     filename,
     specVersion: parsed.specVersion,
@@ -196,9 +242,10 @@ export async function parseStandaloneSbom(raw: string, filename: string, release
     sequence: 1,
     state: "completed",
     dataAsOf,
+    cveDataAsOf: dataAsOf,
     toolVersion: "standalone-preview",
     dataSources: { mode: "standalone-preview", source: "CycloneDX embedded records" },
-    findings: parsed.vulnerabilities,
+    findings,
   };
   return { ...run, components: parsed.components, analyses: [analysis] };
 }
@@ -250,14 +297,14 @@ export function compareStandaloneRuns(baseId: string, targetId: string): Compari
   for (const [identityKey, component] of baseComponents) {
     if (!targetComponents.has(identityKey)) components.push({ change: "removed", fields: [], identityKey, name: component.name, purl: component.purl || "", baseVersion: component.version || undefined, baseSha256: component.sha256 || undefined, componentType: component.componentType, group: component.group, bomRef: component.bomRef });
   }
-  const baseFindings = new Map((base.analyses[0]?.findings || []).map((finding) => [String(finding.id || finding.canonicalId), finding]));
-  const targetFindings = new Map((target.analyses[0]?.findings || []).map((finding) => [String(finding.id || finding.canonicalId), finding]));
+  const baseFindings = new Map((base.analyses[0]?.findings || []).map((finding) => [String(finding.canonicalId || finding.id), finding]));
+  const targetFindings = new Map((target.analyses[0]?.findings || []).map((finding) => [String(finding.canonicalId || finding.id), finding]));
   const vulnerabilities: Comparison["vulnerabilities"] = [];
   for (const [id, finding] of targetFindings) if (!baseFindings.has(id)) vulnerabilities.push({ change: "added", record: finding });
   for (const [id, finding] of baseFindings) if (!targetFindings.has(id)) vulnerabilities.push({ change: "removed", record: finding });
   return {
-    base: { runId: base.id, sha256: base.sha256, dataAsOf: base.dataAsOf },
-    target: { runId: target.id, sha256: target.sha256, dataAsOf: target.dataAsOf },
+    base: { runId: base.id, sha256: base.sha256, dataAsOf: base.dataAsOf, cveDataAsOf: base.cveDataAsOf || base.dataAsOf },
+    target: { runId: target.id, sha256: target.sha256, dataAsOf: target.dataAsOf, cveDataAsOf: target.cveDataAsOf || target.dataAsOf },
     summary: {
       componentsAdded: components.filter((item) => item.change === "added").length,
       componentsRemoved: components.filter((item) => item.change === "removed").length,

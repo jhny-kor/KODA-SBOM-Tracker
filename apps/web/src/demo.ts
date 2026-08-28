@@ -1,4 +1,21 @@
-import type { ComponentChange, SbomRun } from "./types";
+import type { ComponentChange, RolePolicyCatalog, SbomRun } from "./types";
+
+const permissions = [
+  "dashboard.view", "services.view", "runs.view", "compare.view", "vulnerability.view", "audit.view", "settings.view",
+  "sbom.upload", "artifact.download", "analysis.create", "dtrack.retry", "sbom.archive", "sbom.delete",
+  "catalog.manage", "vulnerability.manage", "dtrack.settings", "users.manage", "tokens.manage", "roles.manage",
+];
+
+export const demoRolePolicyCatalog: RolePolicyCatalog = {
+  catalog: permissions,
+  roles: [
+    { role: "admin", permissions },
+    { role: "manager", permissions: ["dashboard.view", "services.view", "runs.view", "compare.view", "settings.view", "sbom.upload", "artifact.download", "analysis.create", "dtrack.retry", "sbom.archive", "catalog.manage", "users.manage"] },
+    { role: "analyst", permissions: ["dashboard.view", "services.view", "runs.view", "compare.view", "sbom.upload", "artifact.download", "analysis.create", "dtrack.retry"] },
+    { role: "uploader", permissions: ["dashboard.view", "services.view", "runs.view", "compare.view", "sbom.upload", "artifact.download"] },
+    { role: "viewer", permissions: ["dashboard.view", "services.view", "runs.view", "compare.view", "artifact.download"] },
+  ],
+};
 
 const names = [
   ["결제 API", "운영", "1.4.2", 3, 1248, 7, 2, "completed"],
@@ -29,6 +46,8 @@ export const demoRuns: SbomRun[] = names.map((value, index) => ({
   roundNumber: value[3],
   componentCount: value[4],
   vulnerabilityCount: value[5],
+  vulnerableComponentCount: Math.ceil(value[5] / 2),
+  componentTypeCounts: { library: value[4] },
   policyViolationCount: value[6],
   state: value[7],
   dataAsOf: index < 3 ? "2025-05-21" : `2025-05-${String(Math.max(13, 20 - Math.floor(index / 2))).padStart(2, "0")}`,

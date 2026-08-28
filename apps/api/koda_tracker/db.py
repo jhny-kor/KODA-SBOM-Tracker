@@ -93,6 +93,15 @@ def ensure_component_search_support(bind=engine) -> None:
                 connection.execute(text(statement))
 
 
+def ensure_environment_active_column(bind=engine) -> None:
+    """Add the catalog tombstone flag without changing historical releases."""
+    if "environments" not in inspect(bind).get_table_names():
+        return
+    if "active" not in {column["name"] for column in inspect(bind).get_columns("environments")}:
+        with bind.begin() as connection:
+            connection.execute(text("ALTER TABLE environments ADD COLUMN active BOOLEAN NOT NULL DEFAULT TRUE"))
+
+
 def get_db() -> Generator[Session, None, None]:
     with SessionLocal() as session:
         yield session

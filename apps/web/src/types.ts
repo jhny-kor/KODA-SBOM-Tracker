@@ -12,10 +12,12 @@ export interface SbomRun {
   componentCount: number;
   componentTypeCounts?: Record<string, number>;
   vulnerabilityCount: number;
+  vulnerableComponentCount?: number;
   severityCounts?: Record<string, number>;
   kevCount?: number;
   policyViolationCount: number;
   dataAsOf: string | null;
+  cveDataAsOf?: string | null;
   createdAt: string;
   filename?: string;
   specVersion?: string;
@@ -32,6 +34,7 @@ export interface AnalysisRevisionSummary {
   sequence: number;
   state: JobState;
   dataAsOf: string | null;
+  cveDataAsOf?: string | null;
   toolVersion?: string | null;
   dataSources?: Record<string, unknown>;
   error?: string | null;
@@ -86,8 +89,8 @@ export interface RecordChange {
 }
 
 export interface Comparison {
-  base: { runId: string; sha256: string; dataAsOf: string | null; artifactUrl?: string };
-  target: { runId: string; sha256: string; dataAsOf: string | null; artifactUrl?: string };
+  base: { runId: string; sha256: string; dataAsOf: string | null; cveDataAsOf?: string | null; artifactUrl?: string };
+  target: { runId: string; sha256: string; dataAsOf: string | null; cveDataAsOf?: string | null; artifactUrl?: string };
   summary: {
     componentsAdded: number;
     componentsRemoved: number;

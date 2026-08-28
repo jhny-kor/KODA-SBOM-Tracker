@@ -14,7 +14,7 @@ from koda_tracker.ldap_auth import (
     authenticate_user,
 )
 from koda_tracker.main import app
-from koda_tracker.models import LdapSettings, User, UserSession
+from koda_tracker.models import LdapSettings, SbomRun, User, UserSession
 from sqlalchemy import delete
 
 
@@ -80,6 +80,16 @@ def test_ldap_settings_encrypt_bind_password_and_provision_session(monkeypatch: 
                     groups=("CN=KODA-Admins,DC=example,DC=test",),
                 ),
             )
+            login = client.post(
+                "/api/v1/auth/login",
+                json={"username": "directory-input", "password": "directory-password", "useLdap": True},
+            )
+            assert login.status_code == 403
+            pending = next(item for item in client.get("/api/v1/users").json() if item["username"] == username)
+            assert pending["status"] == "pending"
+            approved = client.post(f"/api/v1/users/{pending['id']}/approve", headers=headers)
+            assert approved.status_code == 200
+            assert approved.json()["status"] == "active"
             login = client.post(
                 "/api/v1/auth/login",
                 json={"username": "directory-input", "password": "directory-password", "useLdap": True},
@@ -209,23 +219,49 @@ def test_plain_ldap_bind_does_not_create_tls_connection(monkeypatch: pytest.Monk
     assert server_options["tls"] is None
 
 
-def test_admin_can_soft_delete_user_with_short_password() -> None:
+def test_admin_can_hard_delete_user_and_reuse_username() -> None:
     username = "delete-me-user"
     try:
-        with TestClient(app) as client:
+        with TestClient(app) as client, TestClient(app) as user_client:
             headers = _admin(client)
             created = client.post(
+                "/api/v1/users",
+                json={"username": username, "password": "x", "role": "uploader"},
+                headers=headers,
+            )
+            assert created.status_code == 201
+            login = user_client.post("/api/v1/auth/login", json={"username": username, "password": "x"})
+            assert login.status_code == 200
+            user_headers = {"X-CSRF-Token": login.json()["csrfToken"]}
+            service = client.post("/api/v1/services", json={"slug": "deleted-user", "name": "삭제 사용자 서비스"}, headers=headers)
+            environment = client.post("/api/v1/environments", json={"slug": "deleted-user", "name": "삭제 사용자 환경", "sortOrder": 3000}, headers=headers)
+            assert service.status_code in {201, 409}
+            assert environment.status_code in {201, 409}
+            service_id = next(item["id"] for item in user_client.get("/api/v1/services").json() if item["slug"] == "deleted-user")
+            environment_id = next(item["id"] for item in user_client.get("/api/v1/environments").json() if item["slug"] == "deleted-user")
+            upload = user_client.post(
+                "/api/v1/sbom-runs",
+                data={"serviceId": service_id, "environmentId": environment_id, "releaseVersion": f"deleted-user-{base64.urlsafe_b64encode(username.encode()).decode()}"},
+                files={"sbom": ("deleted-user.cdx.json", '{"bomFormat":"CycloneDX","specVersion":"1.6","components":[]}', "application/json")},
+                headers=user_headers,
+            )
+            assert upload.status_code == 202
+            run_id = upload.json()["runId"]
+            deleted = client.delete(f"/api/v1/users/{created.json()['id']}", headers=headers)
+            assert deleted.status_code == 200
+            assert deleted.json()["status"] == "deleted"
+            assert user_client.get("/api/v1/auth/me").status_code == 401
+            with SessionLocal() as db:
+                assert db.get(SbomRun, run_id).uploaded_by is None
+            assert client.post("/api/v1/auth/login", json={"username": username, "password": "x"}).status_code == 401
+            assert all(item["username"] != username for item in client.get("/api/v1/users").json())
+            recreated = client.post(
                 "/api/v1/users",
                 json={"username": username, "password": "x", "role": "viewer"},
                 headers=headers,
             )
-            assert created.status_code == 201
-            deleted = client.delete(f"/api/v1/users/{created.json()['id']}", headers=headers)
-            assert deleted.status_code == 200
-            assert deleted.json()["status"] == "deleted"
-            assert client.post("/api/v1/auth/login", json={"username": username, "password": "x"}).status_code == 403
-            listed = next(item for item in client.get("/api/v1/users").json() if item["username"] == username)
-            assert listed["status"] == "deleted"
+            assert recreated.status_code == 201
+            assert recreated.json()["id"] != created.json()["id"]
     finally:
         _cleanup(username)
 

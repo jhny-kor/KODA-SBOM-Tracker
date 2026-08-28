@@ -19,6 +19,10 @@ https://<서버>/koda/     KODA
 Tracker의 관리자 설정에서 저장하고, 통합 gateway는 LDAP 자체를 다시 인증하지 않고
 Tracker의 검증된 세션만 KODA에 전달합니다.
 
+신규 로컬 가입과 LDAP 자동 프로비저닝 계정은 모두 Tracker에서 `승인 대기`로
+생성됩니다. LDAP 인증에 성공해도 승인 전에는 세션이 발급되지 않으며, 관리자가
+역할을 확인하고 승인한 뒤 다시 로그인해야 KODA에도 접근할 수 있습니다.
+
 gateway는 보호된 KODA 요청마다 Tracker의 `GET /api/v1/auth/session`으로 쿠키
 세션을 확인합니다. 이 endpoint는 Bearer 토큰을 받지 않으며 성공할 때만 UUID,
 세션 만료 시각, 표시 이름을 응답 헤더로 제공합니다. gateway는 브라우저가 임의로
@@ -42,6 +46,10 @@ KODA와 Tracker의 로그아웃은 모두 `POST /api/v1/auth/logout-current`를 
 
 Tracker의 관리자·매니저 정책과 KODA의 마지막 활성 시스템 관리자는 각각 제거
 방지 규칙을 적용합니다.
+
+Tracker에서 사용자를 삭제하면 현재 세션과 계정 행이 제거됩니다. 같은 로그인 ID로
+다시 가입해도 새 UUID가 발급되므로 이전 KODA 프로젝트 멤버십을 자동으로 승계하지
+않고 KODA 관리자가 새 계정의 권한을 다시 확인합니다.
 
 ## 운영과 장애 동작
 

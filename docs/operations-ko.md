@@ -61,15 +61,17 @@ Dependency-Track 초기 관리자 로그인 후 포털 전용 팀을 만들고 �
 `TRACKER_BOOTSTRAP_ADMIN_PASSWORD`가 설정되어 있으면 활성 `admin` 계정을 한 번
 생성합니다. 로그인 후 설정 화면에서 다음 작업을 수행합니다.
 
-1. 사용자 계정을 생성하고 활성 상태와 역할을 지정합니다.
-2. 역할 정책에서 기능별 권한을 검토합니다.
+1. 가입 또는 LDAP 로그인으로 생성된 승인 대기 계정의 역할을 확인하고 승인합니다.
+2. 역할 정책에서 화면 접근 권한과 기능 제어 권한을 검토합니다.
 3. 서비스 범위 API 토큰은 필요한 서비스에만 발급합니다. 원문 토큰은 발급 시 한
    번만 표시됩니다.
 
 기본 역할은 `admin`, `manager`, `analyst`, `uploader`, `viewer`입니다. 실제 접근은
 역할 이름을 직접 비교하지 않고 DB의 역할 정책 권한으로 판정합니다. 사용자 관리와
-역할 정책 관리는 별도 권한이며, 두 관리 권한을 가진 마지막 활성 사용자는
-비활성화하거나 권한을 제거할 수 없습니다.
+역할 정책 관리는 별도 권한이며, 관리자·매니저 계정 변경에는 `roles.manage`와
+마지막 관리 계정 보호 규칙이 적용됩니다. 사용자 삭제는 세션을 먼저 폐기하고 과거
+회차의 업로더 참조를 비운 뒤 계정 행을 제거합니다. 같은 로그인 ID로 다시 가입하면
+새 내부 UUID를 사용합니다.
 
 현재 인증 경계는 다음과 같습니다.
 
@@ -81,6 +83,9 @@ Dependency-Track 초기 관리자 로그인 후 포털 전용 팀을 만들고 �
   기본적으로 StartTLS/LDAPS와 인증서 검증을 사용합니다. 현재 AI 서버와 호환해야 할 때만
   설정 화면의 `LDAP 평문 (389)`을 선택할 수 있으며, 자격증명이 평문으로 전달될 수 있으므로
   내부망 한정으로 사용하고 가능한 한 StartTLS/LDAPS로 전환합니다.
+- LDAP 자동 프로비저닝을 켜도 신규 LDAP 사용자는 항상 비활성 `승인 대기`로만
+  생성됩니다. 인증 성공만으로 세션을 발급하지 않으며 관리자가 승인한 뒤 다시
+  로그인해야 합니다.
 - 통합 KODA suite는 Tracker의 HttpOnly 세션을 gateway에서 검증한 뒤 KODA에 UUID,
   표시 이름, 만료 시각만 전달합니다. Tracker 승인 계정은 KODA에도 자동 활성화되고
   KODA 관리자는 프로젝트 권한만 별도로 부여합니다.
@@ -123,6 +128,19 @@ export DTRACK_ADMIN_API_BASE_URL='http://127.0.0.1:8088/dependency-track/api'
 docker compose up -d --force-recreate portal-api portal-worker
 ./scripts/verify-dtrack-connection.sh
 ```
+
+### 계정·데이터 생명주기와 감사
+
+- 서비스·환경 `삭제`는 `active=false`로 전환하는 논리 삭제입니다. 일반 목록과 새
+  업로드 선택지에서는 숨기지만 과거 회차의 명칭은 보존합니다. 비활성 항목을 지정한
+  새 업로드는 API가 거부합니다.
+- 회차 `보관`은 `sbom.archive` 권한으로 상태를 바꿉니다. 회차 `영구 삭제`는 실제
+  관리자이면서 `sbom.delete` 권한이 있을 때만 가능하며 완료·실패·보관 회차의 Tracker
+  데이터와 로컬 원본만 제거합니다. 진행·대기 작업은 거부하고 Dependency-Track
+  프로젝트는 삭제하지 않습니다.
+- 감사 로그 조회와 CSV 다운로드는 실제 관리자이면서 `audit.view` 권한이 있어야
+  합니다. `Excel 다운로드`는 현재 검색어를 적용한 전체 결과를 UTF-8 BOM CSV로
+  내보내며 시각은 서울 시간, 위험한 셀 시작 문자는 수식으로 실행되지 않게 처리합니다.
 
 ### 2-2. KODA Suite 외부 TLS reverse proxy
 
@@ -252,7 +270,10 @@ gateway는 브라우저가 보낸 신원 헤더를 제거한 뒤 Tracker가 반�
 호스트에서 `scripts/import-vuln-bundle.sh` 또는 `scripts/rollback-vuln-bundle.sh`로
 수행한 뒤 다시 동기화합니다. 활성 bundle에는 선택적으로 `alias-index.json`과
 `kev.json`(또는 `ALIAS_INDEX`, `KEV_CATALOG`로 지정한 파일)을 포함할 수 있으며,
-분석 결과에는 CVE/GHSA canonical ID, alias, CISA KEV 여부와 기준일이 보존됩니다.
+원본 분석 결과에는 CVE/GHSA 식별자와 alias, CISA KEV 여부와 기준일이 보존됩니다.
+화면·집계·회차 비교에는 CVE로 직접 또는 alias를 통해 연결되는 결과만 사용하며,
+CVE에 연결되지 않는 결과는 원본 분석 기록에서 삭제하지 않습니다. CVE 기준일은
+NVD 기준일을 우선하고 없으면 분석 데이터 기준일을 사용합니다.
 
 Windows에서 만든 `koda-vuln-bundle-<version>.zip`은 서버에서 먼저 임시
 디렉터리에 압축 해제하고 `verify-vuln-bundle.sh`로 manifest를 확인한 뒤
@@ -350,6 +371,10 @@ PostgreSQL만 기동한 상태로 끝납니다. 따라서 마지막 `start-airga
   `verify-vuln-bundle.sh` → `import-vuln-bundle.sh` → 포털 동기화 순서로 반입합니다.
 - `.env`, TLS 인증서, 외부 reverse proxy 설정은 릴리스에 포함되지 않습니다. 변경
   전 별도 백업하고 `preflight-airgap.sh`를 통과시킨 뒤 서비스를 재기동합니다.
+
+업그레이드 기동 시 기존 DB에는 환경 활성 상태 컬럼과 관리자 역할의 `sbom.delete`
+권한이 보강됩니다. 취약점 원본, 감사 로그와 Dependency-Track 데이터는 변환하지
+않으므로 기동 전 `sbom_tracker` DB와 artifact volume을 함께 백업합니다.
 
 Tracker 단독 설치를 같은 디렉터리에서 갱신하는 예시는 다음과 같습니다.
 

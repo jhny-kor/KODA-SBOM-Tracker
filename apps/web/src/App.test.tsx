@@ -1,18 +1,23 @@
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import App, { ComponentInspector, KodaPortalLink, LoginPage, SettingsPage } from "./App";
+import { formatSeoulDateTime } from "./format";
 import { allowedPages, canPermission, dataAccess, hasPermissions, pageForPermissions } from "./permissions";
 
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
   window.history.replaceState(null, "", "/");
 });
 
 describe("KODA SBOM Tracker", () => {
   it("offers LDAP as an explicit login choice", () => {
     render(<LoginPage onAuthenticated={() => {}} />);
-    expect(screen.getByRole("checkbox", { name: "LDAP 사용" })).toBeInTheDocument();
+    expect(screen.getByLabelText("아이디")).toBeInTheDocument();
+    expect(screen.getByLabelText("비밀번호")).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "LDAP 사용" })).toBeChecked();
+    expect(screen.getByRole("img", { name: "KODA" })).toHaveAttribute("src", "/KODA.ico");
     fireEvent.click(screen.getByRole("button", { name: "회원가입" }));
     expect(screen.getByRole("button", { name: "가입 신청" })).toBeInTheDocument();
     expect(screen.getByLabelText("비밀번호 확인")).toBeInTheDocument();
@@ -22,7 +27,7 @@ describe("KODA SBOM Tracker", () => {
     const manager = { id: "u1", username: "manager", role: "manager", active: true, permissions: ["runs.view"] };
     expect(canPermission(manager, "runs.view")).toBe(true);
     expect(canPermission(manager, "users.manage")).toBe(false);
-    expect(allowedPages(manager)).toEqual(["runs"]);
+    expect(allowedPages(manager)).toEqual(["runs", "guide"]);
   });
 
   it("honors wildcard permissions", () => {
@@ -36,6 +41,50 @@ describe("KODA SBOM Tracker", () => {
     expect(pageForPermissions(user, "runs")).toBe("runs");
     expect(dataAccess({ ...user, permissions: ["dashboard.view"] })).toEqual({ runs: false, catalogs: false });
     expect(hasPermissions({ ...user, permissions: ["sbom.upload"] }, "sbom.upload", "services.view")).toBe(false);
+    expect(pageForPermissions({ ...user, permissions: ["services.view"] }, "settings")).toBe("settings");
+    expect(pageForPermissions({ ...user, permissions: [] }, "dashboard")).toBe("guide");
+    expect(formatSeoulDateTime("2026-08-28T00:00:00Z")).toBe("2026-08-28 09:00:00");
+    expect(formatSeoulDateTime("2026-08-28T00:00:00")).toBe("2026-08-28 09:00:00");
+  });
+
+  it("shows service settings to services.view without management actions", () => {
+    render(<SettingsPage
+      users={[]} services={[{ id: "svc", name: "결제 API", slug: "payment", active: true }]}
+      environments={[{ id: "prod", name: "운영", slug: "prod", active: true, sortOrder: 1 }]}
+      tokens={[]} dtrackStatus={null} ldapSettings={null} policies={[]} roleCatalog={[]}
+      bundles={[]} auditEvents={[]} isAdmin={false} canVulnerability={false}
+      canVulnerabilityManage={false} canAudit={false} canUsers={false} canTokens={false}
+      canDtrack={false} canPolicyEdit={false} canRoles={false} canServices
+      canCatalogManage={false} initialTab="services" onSync={async () => {}}
+      onActivate={async () => {}} onPolicyChanged={async () => {}} onLdapChanged={() => {}}
+      onChanged={() => {}}
+    />);
+    expect(screen.getByRole("tab", { name: "서비스·환경" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "서비스 1개" })).toBeInTheDocument();
+    expect(screen.getByText("운영")).toBeInTheDocument();
+    expect(screen.queryByRole("columnheader", { name: "상태" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "삭제" })).not.toBeInTheDocument();
+  });
+
+  it("orders catalog actions and hides deleted services and environments", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<SettingsPage
+      users={[]} services={[{ id: "svc", name: "결제 API", slug: "payment", active: true }]}
+      environments={[{ id: "prod", name: "운영", slug: "prod", active: true, sortOrder: 1 }]}
+      tokens={[]} dtrackStatus={null} ldapSettings={null} policies={[]} roleCatalog={[]}
+      bundles={[]} auditEvents={[]} isAdmin={false} canVulnerability={false}
+      canVulnerabilityManage={false} canAudit={false} canUsers={false} canTokens={false}
+      canDtrack={false} canPolicyEdit={false} canRoles={false} canServices
+      canCatalogManage initialTab="services" onSync={async () => {}}
+      onActivate={async () => {}} onPolicyChanged={async () => {}} onLdapChanged={() => {}}
+      onChanged={() => {}}
+    />);
+    const serviceAdd = screen.getByRole("button", { name: "서비스 추가" });
+    expect(within(serviceAdd.parentElement as HTMLElement).getAllByRole("button").map((button) => button.textContent)).toEqual(["서비스 추가", "환경 추가"]);
+    fireEvent.click(within(screen.getByRole("row", { name: /결제 API/ })).getByRole("button", { name: "삭제" }));
+    await waitFor(() => expect(screen.queryByRole("row", { name: /결제 API/ })).not.toBeInTheDocument());
+    fireEvent.click(within(screen.getByRole("row", { name: /운영/ })).getByRole("button", { name: "삭제" }));
+    await waitFor(() => expect(screen.queryByRole("row", { name: /운영/ })).not.toBeInTheDocument());
   });
 
   it("shows a users-only manager settings surface", () => {
@@ -99,8 +148,34 @@ describe("KODA SBOM Tracker", () => {
     expect(screen.getByRole("heading", { name: "감사 로그" })).toBeInTheDocument();
     expect(screen.queryByText("secret-sha")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("tab", { name: "권한 관리" }));
-    expect(screen.getByText("관리자")).toBeInTheDocument();
-    expect(screen.getByText("감사 로그 조회")).toBeInTheDocument();
+    expect(screen.getAllByText("관리자")).toHaveLength(2);
+    expect(screen.queryByText("감사 로그 조회")).not.toBeInTheDocument();
+  });
+
+  it("groups permissions and disables sbom.delete outside the admin role", () => {
+    const catalog = ["dashboard.view", "services.view", "runs.view", "compare.view", "vulnerability.view", "audit.view", "settings.view", "sbom.upload", "catalog.manage", "users.manage", "sbom.delete"];
+    render(<SettingsPage
+      users={[]} services={[]} tokens={[]} dtrackStatus={null} ldapSettings={null}
+      policies={[{ role: "admin", permissions: ["sbom.delete"] }, { role: "viewer", permissions: [] }]}
+      roleCatalog={catalog} bundles={[]} auditEvents={[]} isAdmin canVulnerability={false}
+      canVulnerabilityManage={false} canAudit={false} canUsers={false} canTokens={false}
+      canDtrack={false} canPolicyEdit canRoles onSync={async () => {}} onActivate={async () => {}}
+      onPolicyChanged={async () => {}} onLdapChanged={() => {}} onChanged={() => {}}
+    />);
+    fireEvent.click(screen.getByRole("tab", { name: "권한 관리" }));
+    for (const name of ["화면 접근 권한", "기능 제어", "SBOM·분석", "운영 관리", "계정·권한"]) {
+      expect(screen.getAllByRole("heading", { name }).length).toBeGreaterThan(0);
+    }
+    const screenAccess = screen.getByRole("group", { name: "관리자 화면 접근 권한" });
+    for (const name of ["대시보드", "SBOM 회차", "회차 비교", "설정"]) {
+      expect(within(screenAccess).getByRole("checkbox", { name })).toBeInTheDocument();
+    }
+    for (const name of ["서비스", "취약점 데이터", "감사 로그", "대시보드 조회"]) {
+      expect(within(screenAccess).queryByRole("checkbox", { name })).not.toBeInTheDocument();
+    }
+    const deletePermissions = screen.getAllByRole("checkbox", { name: "회차 영구 삭제" });
+    expect(deletePermissions[0]).toBeEnabled();
+    expect(deletePermissions[1]).toBeDisabled();
   });
 
   it("hides artifact and Dependency-Track links without action permissions", () => {
@@ -128,14 +203,39 @@ describe("KODA SBOM Tracker", () => {
   });
 
   it("renders dense run history and opens comparison", () => {
-    render(<App />);
+    const { container } = render(<App />);
+    expect(screen.getByRole("heading", { name: "대시보드" })).toBeInTheDocument();
+    expect(screen.getAllByText("구성요소 유형").length).toBeGreaterThan(0);
+    expect(container.querySelectorAll(".preview-sparkline circle title").length).toBeGreaterThan(1);
+    expect(screen.queryByText("연결 상태: 오프라인")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "SBOM 회차" }));
     expect(screen.getByRole("heading", { name: "SBOM 회차" })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "페이지당 행 수" })).toHaveValue("10");
     expect(screen.getByRole("option", { name: "완료" })).toHaveValue("completed");
     expect(screen.queryByRole("button", { name: "알림" })).not.toBeInTheDocument();
     expect(screen.getAllByText("결제 API").length).toBeGreaterThan(0);
     fireEvent.click(screen.getByRole("button", { name: "회차 비교" }));
     expect(screen.getByRole("heading", { name: "회차 비교" })).toBeInTheDocument();
     expect(screen.getByText("구성요소 추가")).toBeInTheDocument();
+  });
+
+  it("opens the common user guide from the bottom sidebar menu", () => {
+    const { container } = render(<App />);
+    const guide = screen.getByRole("button", { name: "사용 가이드" });
+    expect(guide.closest("nav")).toHaveAttribute("aria-label", "도움말 메뉴");
+    fireEvent.click(guide);
+    expect(screen.getByRole("heading", { name: "사용 가이드" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "주요 기능" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "용어 설명" })).toBeInTheDocument();
+    const guidePage = screen.getByRole("heading", { name: "사용 가이드" }).closest("section") as HTMLElement;
+    expect(container.querySelectorAll(".guide-lead > span")).toHaveLength(2);
+    expect(screen.getByText("SBOM (Software Bill of Materials)", { selector: "dt" })).toBeInTheDocument();
+    expect(screen.getByText("CVE (Common Vulnerabilities and Exposures)", { selector: "dt" })).toBeInTheDocument();
+    expect(screen.getByText("CVSS (Common Vulnerability Scoring System)", { selector: "dt" })).toBeInTheDocument();
+    expect(screen.getByText("NVD (National Vulnerability Database)", { selector: "dt" })).toBeInTheDocument();
+    expect(screen.getByText("KEV (Known Exploited Vulnerabilities)", { selector: "dt" })).toBeInTheDocument();
+    for (const removed of [/Dependency-Track/, /LDAP/, /RBAC/, /분석 리비전/]) expect(within(guidePage).queryByText(removed)).not.toBeInTheDocument();
+    expect(window.location.search).toContain("page=guide");
   });
 
   it("searches run history by component metadata", async () => {
@@ -162,6 +262,7 @@ describe("KODA SBOM Tracker", () => {
     expect(accountButton).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByText("미리보기 사용자")).toBeInTheDocument();
     expect(screen.getByText("관리자")).toBeInTheDocument();
+    expect(screen.queryByText("로컬 미리보기 모드에서는 서버 세션을 사용하지 않습니다.")).not.toBeInTheDocument();
     const logoutButton = screen.getByRole("button", { name: "로그아웃" });
     expect(logoutButton).toBeEnabled();
     fireEvent.click(logoutButton);
@@ -177,9 +278,21 @@ describe("KODA SBOM Tracker", () => {
   it("shows analysis charts on the server dashboard", async () => {
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: "대시보드" }));
-    expect(await screen.findByRole("img", { name: "업로드별 구성요소와 취약점 추이" })).toBeInTheDocument();
+    const chart = await screen.findByRole("img", { name: "업로드별 구성요소와 취약 구성요소 추이" });
+    expect(chart).toBeInTheDocument();
+    expect(chart.textContent).toContain("취약 구성요소 · #1 · 회원 서비스/검증 · 2");
     expect(screen.getByRole("heading", { name: "최신 SBOM 심각도" })).toBeInTheDocument();
     expect(screen.getByText("OPERATIONS SBOM PORTFOLIO")).toBeInTheDocument();
+  });
+
+  it("shows default role policies in preview mode", () => {
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "설정" }));
+    fireEvent.click(screen.getByRole("tab", { name: "권한 관리" }));
+    const admin = screen.getByRole("group", { name: "관리자 기능 제어" });
+    const viewer = screen.getByRole("group", { name: "조회자 기능 제어" });
+    expect(within(admin).getByRole("checkbox", { name: "회차 영구 삭제" })).toBeChecked();
+    expect(within(viewer).getByRole("checkbox", { name: "회차 영구 삭제" })).toBeDisabled();
   });
 
   it("opens a run from a KODA deep link", async () => {
@@ -192,6 +305,9 @@ describe("KODA SBOM Tracker", () => {
     expect(screen.getAllByRole("combobox", { name: "상세 페이지당 행 수" })).toHaveLength(2);
     await waitFor(() => expect(screen.getByText((_, element) => element?.tagName === "LI" && element.textContent?.includes("r1 · 완료 ·") === true)).toBeInTheDocument());
     expect(await screen.findByText("높음")).toHaveClass("severity-pill", "high");
+    expect(screen.getByRole("cell", { name: "9.8" })).toBeInTheDocument();
+    expect(screen.getByRole("cell", { name: "KEV" })).toBeInTheDocument();
+    expect(screen.getByRole("cell", { name: "4.5.14, 5.0.0" })).toBeInTheDocument();
     expect(screen.getAllByText("결제 API").length).toBeGreaterThan(0);
   });
 });

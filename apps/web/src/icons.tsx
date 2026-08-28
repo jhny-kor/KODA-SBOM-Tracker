@@ -10,6 +10,7 @@ const paths: Record<string, React.ReactNode> = {
   shield: <><path d="M12 3 4.5 6v5c0 4.8 3 8.2 7.5 10 4.5-1.8 7.5-5.2 7.5-10V6L12 3Z" /><path d="M12 8v5M12 16h.01" /></>,
   koda: <><path d="M5 4h3v16H5z" fill="currentColor" stroke="none" /><path d="m8 12 9-8h3l-9 8 9 8h-3l-9-8Z" fill="currentColor" stroke="none" /></>,
   audit: <><path d="M6 3h9l3 3v15H6z" /><path d="M15 3v4h4M9 11h6M9 15h4" /></>,
+  guide: <><circle cx="12" cy="12" r="9" /><path d="M9.5 9a2.7 2.7 0 1 1 4.6 2c-1.4 1-2.1 1.6-2.1 3M12 17h.01" /></>,
   settings: <><circle cx="12" cy="12" r="3" /><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.4-2.4 1A7 7 0 0 0 15 6l-.3-2.6h-4L10.4 6a7 7 0 0 0-1.5.9l-2.4-1-2 3.4 2 1.5a7 7 0 0 0 0 2.2l-2 1.5 2 3.4 2.4-1a7 7 0 0 0 1.5.9l.3 2.6h4l.3-2.6a7 7 0 0 0 1.5-.9l2.4 1 2-3.4-2-1.5c.1-.3.1-.7.1-1Z" /></>,
   search: <><circle cx="11" cy="11" r="6" /><path d="m16 16 4 4" /></>,
   upload: <><path d="M12 16V4m0 0L7 9m5-5 5 5M5 15v5h14v-5" /></>,

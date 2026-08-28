@@ -35,35 +35,32 @@
     <text x="17" y="47" font-size="9" fill="#8ad5dc">SBOM TRACKER</text>
     <rect x="8" y="73" width="90" height="34" fill="#087b82"/>
     <text x="23" y="95" class="nav-label">▦  대시보드</text>
-    <text x="23" y="132" class="nav-muted">▤  서비스</text>
-    <text x="23" y="169" class="nav-muted">◫  SBOM 회차</text>
-    <text x="23" y="206" class="nav-muted">⇄  회차 비교</text>
-    <text x="23" y="243" class="nav-muted">⚙  설정</text>
+    <text x="23" y="132" class="nav-muted">◫  SBOM 회차</text>
+    <text x="23" y="169" class="nav-muted">⇄  회차 비교</text>
+    <text x="23" y="206" class="nav-muted">⚙  설정</text>
     <line x1="0" y1="674" x2="106" y2="674" stroke="#294a5a"/>
-    <circle cx="22" cy="704" r="4" fill="#00a47a"/>
-    <text x="34" y="708" class="nav-label">연결 상태: 오프라인</text>
-    <text x="17" y="727" class="nav-muted">내부망 전용</text>
+    <text x="17" y="708" class="nav-label">?  사용 가이드</text>
 
     <rect x="106" width="370" height="52" fill="#fff"/>
     <line x1="106" y1="52" x2="476" y2="52" class="line"/>
     <rect x="126" y="14" width="178" height="25" fill="#fff" stroke="#bcc8cf"/>
     <text x="138" y="31" class="small">⌕  서비스, 릴리스 검색</text>
-    <text x="426" y="31" class="label">보안운영팀 ⌄</text>
+    <text x="426" y="31" class="label">사용자 ⌄</text>
 
     <text x="128" y="91" class="screen-title">대시보드</text>
     <text x="128" y="111" class="screen-note">등록된 SBOM의 구성요소와 취약점 흐름을 확인합니다.</text>
     <line x1="128" y1="131" x2="454" y2="131" class="line"/>
-    <text x="128" y="158" class="small">등록 서비스</text>
-    <text x="128" y="184" class="metric">12</text>
+    <text x="128" y="158" class="small">구성요소 유형</text>
+    <text x="128" y="184" class="metric">4</text>
     <line x1="236" y1="150" x2="236" y2="191" class="line"/>
-    <text x="254" y="158" class="small">SBOM 회차</text>
-    <text x="254" y="184" class="metric">48</text>
+    <text x="254" y="158" class="small">구성요소</text>
+    <text x="254" y="184" class="metric">842</text>
     <line x1="354" y1="150" x2="354" y2="191" class="line"/>
-    <text x="372" y="158" class="small">검토 필요</text>
-    <text x="372" y="184" class="metric" fill="#c86b00">03</text>
+    <text x="372" y="158" class="small">취약 구성요소</text>
+    <text x="372" y="184" class="metric" fill="#c86b00">3</text>
 
     <text x="128" y="224" class="label">업로드별 분석 추이</text>
-    <text x="454" y="224" text-anchor="end" class="small">기준일 2026-08-01</text>
+    <text x="454" y="224" text-anchor="end" class="small">CVE 기준일 2026-08-01</text>
     <rect x="128" y="239" width="326" height="138" fill="#fff" stroke="#d8e0e5"/>
     <line x1="150" y1="266" x2="438" y2="266" class="line"/>
     <line x1="150" y1="302" x2="438" y2="302" class="line"/>
@@ -71,7 +68,7 @@
     <polyline points="151,331 197,315 243,323 289,283 335,293 381,260 437,271" fill="none" stroke="#087b82" stroke-width="2"/>
     <polyline points="151,350 197,346 243,338 289,345 335,320 381,327 437,306" fill="none" stroke="#c86b00" stroke-width="2"/>
     <text x="152" y="367" class="small">구성요소</text>
-    <text x="208" y="367" class="small" fill="#c86b00">취약점</text>
+    <text x="208" y="367" class="small" fill="#c86b00">취약 구성요소</text>
 
     <text x="128" y="414" class="label">최신 SBOM 심각도</text>
     <text x="454" y="414" text-anchor="end" class="small">결제-api-1.4.2</text>
@@ -93,20 +90,17 @@
     <text x="17" y="31" font-size="12" font-weight="750" class="white">KODA</text>
     <text x="17" y="47" font-size="9" fill="#8ad5dc">SBOM TRACKER</text>
     <text x="23" y="95" class="nav-muted">▦  대시보드</text>
-    <text x="23" y="132" class="nav-muted">▤  서비스</text>
-    <rect x="8" y="147" width="90" height="34" fill="#087b82"/>
-    <text x="23" y="169" class="nav-label">◫  SBOM 회차</text>
-    <text x="23" y="206" class="nav-muted">⇄  회차 비교</text>
-    <text x="23" y="243" class="nav-muted">⚙  설정</text>
+    <rect x="8" y="110" width="90" height="34" fill="#087b82"/>
+    <text x="23" y="132" class="nav-label">◫  SBOM 회차</text>
+    <text x="23" y="169" class="nav-muted">⇄  회차 비교</text>
+    <text x="23" y="206" class="nav-muted">⚙  설정</text>
     <line x1="0" y1="674" x2="106" y2="674" stroke="#294a5a"/>
-    <circle cx="22" cy="704" r="4" fill="#00a47a"/>
-    <text x="34" y="708" class="nav-label">연결 상태: 오프라인</text>
-    <text x="17" y="727" class="nav-muted">내부망 전용</text>
+    <text x="17" y="708" class="nav-label">?  사용 가이드</text>
 
     <line x1="106" y1="52" x2="476" y2="52" class="line"/>
     <rect x="126" y="14" width="178" height="25" fill="#fff" stroke="#bcc8cf"/>
     <text x="138" y="31" class="small">⌕  서비스, 릴리스 검색</text>
-    <text x="426" y="31" class="label">보안운영팀 ⌄</text>
+    <text x="426" y="31" class="label">사용자 ⌄</text>
     <text x="128" y="91" class="screen-title">SBOM 회차</text>
     <rect x="360" y="69" width="94" height="28" fill="#087b82"/>
     <text x="407" y="87" text-anchor="middle" font-size="11" font-weight="700" fill="#fff">＋ SBOM 업로드</text>
@@ -128,11 +122,11 @@
     <line x1="128" y1="320" x2="454" y2="320" class="line"/>
     <text x="128" y="350" class="label">선택한 회차</text>
     <text x="128" y="375" class="screen-title">회원 API · 2.0.0 · 2차</text>
-    <text x="128" y="397" class="screen-note">회차를 클릭하면 큰 상세 팝업에서 구성요소·분석·취약점을 확인합니다.</text>
+    <text x="128" y="397" class="screen-note">회차를 클릭하면 큰 상세 팝업에서 구성요소·CVE·정책을 확인합니다.</text>
     <line x1="128" y1="423" x2="454" y2="423" class="line"/>
     <text x="128" y="450" class="small">상세 팝업에서 확인할 정보</text>
     <text x="128" y="475" class="label">구성요소 목록</text><text x="270" y="475" class="label">취약점 결과</text><text x="383" y="475" class="label">정책 위반</text>
-    <text x="128" y="501" class="small">분석 회차 · 기준일 · 처리 상태</text>
+    <text x="128" y="501" class="small">분석 이력 · CVE 기준일 · 처리 상태</text>
     <text x="128" y="733" class="eyebrow">02 · 회차 운영</text>
   </g>
 
@@ -143,47 +137,45 @@
     <text x="17" y="31" font-size="12" font-weight="750" class="white">KODA</text>
     <text x="17" y="47" font-size="9" fill="#8ad5dc">SBOM TRACKER</text>
     <text x="23" y="95" class="nav-muted">▦  대시보드</text>
-    <text x="23" y="132" class="nav-muted">▤  서비스</text>
-    <text x="23" y="169" class="nav-muted">◫  SBOM 회차</text>
-    <text x="23" y="206" class="nav-muted">⇄  회차 비교</text>
-    <rect x="8" y="221" width="90" height="34" fill="#087b82"/>
-    <text x="23" y="243" class="nav-label">⚙  설정</text>
+    <text x="23" y="132" class="nav-muted">◫  SBOM 회차</text>
+    <text x="23" y="169" class="nav-muted">⇄  회차 비교</text>
+    <rect x="8" y="184" width="90" height="34" fill="#087b82"/>
+    <text x="23" y="206" class="nav-label">⚙  설정</text>
     <line x1="0" y1="674" x2="106" y2="674" stroke="#294a5a"/>
-    <circle cx="22" cy="704" r="4" fill="#00a47a"/>
-    <text x="34" y="708" class="nav-label">연결 상태: 오프라인</text>
-    <text x="17" y="727" class="nav-muted">내부망 전용</text>
+    <text x="17" y="708" class="nav-label">?  사용 가이드</text>
 
     <line x1="106" y1="52" x2="476" y2="52" class="line"/>
     <rect x="126" y="14" width="178" height="25" fill="#fff" stroke="#bcc8cf"/>
     <text x="138" y="31" class="small">⌕  서비스, 릴리스 검색</text>
-    <text x="426" y="31" class="label">보안운영팀 ⌄</text>
+    <text x="426" y="31" class="label">사용자 ⌄</text>
     <text x="128" y="91" class="screen-title">설정</text>
-    <text x="128" y="112" class="screen-note">사용자·권한·취약점 데이터·감사 로그와 연동을 관리합니다.</text>
+    <text x="128" y="112" class="screen-note">서비스·환경·계정·권한·취약점 데이터와 연동을 관리합니다.</text>
     <line x1="128" y1="132" x2="454" y2="132" class="line"/>
-    <text x="128" y="158" class="label" fill="#087b82">사용자 관리</text>
-    <text x="224" y="158" class="small">권한 관리</text>
-    <text x="306" y="158" class="small">취약점 데이터</text>
-    <text x="420" y="158" class="small">감사 로그</text>
+    <text x="128" y="158" class="label" fill="#087b82">서비스·환경</text>
+    <text x="218" y="158" class="small">사용자</text>
+    <text x="278" y="158" class="small">권한</text>
+    <text x="330" y="158" class="small">취약점 데이터</text>
+    <text x="422" y="158" class="small">감사</text>
     <line x1="128" y1="169" x2="454" y2="169" class="line"/>
     <line x1="128" y1="168" x2="204" y2="168" class="accent-line"/>
-    <text x="128" y="196" class="label">사용자 5명</text>
+    <text x="128" y="196" class="label">서비스 12개 · 환경 3개</text>
     <rect x="362" y="178" width="92" height="28" fill="#087b82"/>
-    <text x="408" y="196" text-anchor="middle" font-size="11" font-weight="700" fill="#fff">＋ 사용자 추가</text>
+    <text x="408" y="196" text-anchor="middle" font-size="11" font-weight="700" fill="#fff">＋ 서비스 추가</text>
     <rect x="128" y="218" width="326" height="32" fill="#f7f9fa"/>
-    <text x="138" y="239" class="small">사용자</text><text x="270" y="239" class="small">역할</text><text x="350" y="239" class="small">상태</text><text x="411" y="239" class="small">작업</text>
+    <text x="138" y="239" class="small">서비스</text><text x="250" y="239" class="small">식별자</text><text x="350" y="239" class="small">환경</text><text x="411" y="239" class="small">작업</text>
     <line x1="128" y1="250" x2="454" y2="250" class="dark-line"/>
-    <text x="138" y="274" class="small">admin-portal</text><text x="270" y="274" class="small">관리자</text><text x="350" y="274" class="small" fill="#08705c">활성</text><text x="411" y="274" class="small">변경</text>
+    <text x="138" y="274" class="small">결제 API</text><text x="250" y="274" class="mono">payment-api</text><text x="350" y="274" class="small">운영</text><text x="411" y="274" class="small">삭제</text>
     <line x1="128" y1="289" x2="454" y2="289" class="line"/>
-    <text x="138" y="313" class="small">security-viewer</text><text x="270" y="313" class="small">조회자</text><text x="350" y="313" class="small" fill="#08705c">활성</text><text x="411" y="313" class="small">변경</text>
+    <text x="138" y="313" class="small">회원 서비스</text><text x="250" y="313" class="mono">member</text><text x="350" y="313" class="small">검증</text><text x="411" y="313" class="small">삭제</text>
     <line x1="128" y1="338" x2="454" y2="338" class="line"/>
     <text x="128" y="368" class="label">관리 경계</text>
-    <text x="128" y="392" class="small">관리자만 취약점 데이터·감사 로그를 조회하고</text>
-    <text x="128" y="411" class="small">역할 정책을 변경할 수 있습니다.</text>
+    <text x="128" y="392" class="small">삭제 항목은 신규 업로드에서 숨기고</text>
+    <text x="128" y="411" class="small">과거 회차의 서비스·환경 명칭은 보존합니다.</text>
     <line x1="128" y1="441" x2="454" y2="441" class="line"/>
-    <text x="128" y="469" class="label">역할 정책 예시</text>
-    <text x="128" y="496" class="small">관리자</text><text x="218" y="496" class="small">모든 화면 · 정책 변경</text>
-    <text x="128" y="520" class="small">매니저</text><text x="218" y="520" class="small">회차 · 서비스 관리</text>
-    <text x="128" y="544" class="small">조회자</text><text x="218" y="544" class="small">허용된 회차 조회</text>
+    <text x="128" y="469" class="label">권한 구성</text>
+    <text x="128" y="496" class="small">화면 접근</text><text x="218" y="496" class="small">대시보드 · 회차 · 비교 · 설정</text>
+    <text x="128" y="520" class="small">기능 제어</text><text x="218" y="520" class="small">업로드 · 분석 · 운영 · 계정</text>
+    <text x="128" y="544" class="small">사용 가이드</text><text x="218" y="544" class="small">모든 활성 사용자</text>
     <text x="128" y="733" class="eyebrow">03 · 권한 통제</text>
   </g>
 </svg>

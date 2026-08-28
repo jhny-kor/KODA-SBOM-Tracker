@@ -1,4 +1,4 @@
-import { demoChanges, demoRuns } from "./demo";
+import { demoChanges, demoRolePolicyCatalog, demoRuns } from "./demo";
 import { compareStandaloneRuns, getStandaloneCatalogs, getStandaloneRun, getStandaloneRuns, importStandaloneSbom } from "./standalone";
 import type { AuditEvent, AuthUser, CatalogItem, Comparison, ComponentSnapshot, DependencyTrackStatus, JobState, LdapSettings, PageResult, RolePolicy, RolePolicyCatalog, SbomRun, SbomRunDetail, UserSummary, VulnerabilityBundle } from "./types";
 
@@ -7,6 +7,7 @@ export const demoMode = !standaloneMode && import.meta.env.VITE_DEMO_MODE !== "f
 export const previewMode = demoMode || standaloneMode;
 let csrfToken = "";
 let onForbidden: (() => Promise<void> | void) | undefined;
+let previewRolePolicies = demoRolePolicyCatalog.roles.map((item) => ({ ...item, permissions: [...item.permissions] }));
 
 export function setForbiddenHandler(handler: (() => Promise<void> | void) | undefined) { onForbidden = handler; }
 
@@ -62,11 +63,15 @@ export async function resumeSession(): Promise<{ user: AuthUser; csrfToken: stri
 }
 
 export async function fetchRolePolicies(): Promise<RolePolicyCatalog> {
-  if (previewMode) return { catalog: [], roles: [] };
+  if (previewMode) return { catalog: [...demoRolePolicyCatalog.catalog], roles: previewRolePolicies.map((item) => ({ ...item, permissions: [...item.permissions] })) };
   return request<RolePolicyCatalog>("/api/v1/role-policies");
 }
 
 export async function updateRolePolicies(policies: RolePolicy[]): Promise<RolePolicy[]> {
+  if (previewMode) {
+    previewRolePolicies = policies.map((item) => ({ ...item, permissions: [...item.permissions] }));
+    return previewRolePolicies;
+  }
   const result = await request<{ roles: RolePolicy[] }>("/api/v1/role-policies", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
@@ -96,7 +101,7 @@ export type RunQuery = {
 
 export async function fetchRuns(options: RunQuery = {}): Promise<PageResult<SbomRun>> {
   const page = options.page || 1;
-  const size = options.size || 20;
+  const size = options.size || 10;
   if (previewMode) {
     const runs = standaloneMode ? [...demoRuns, ...getStandaloneRuns()] : demoRuns;
     const term = options.q?.trim().toLowerCase() || "";
@@ -129,12 +134,12 @@ export async function fetchRun(runId: string): Promise<SbomRunDetail> {
   if (standaloneRun) return standaloneRun;
   if (previewMode) {
     const run = demoRuns.find((item) => item.id === runId) || demoRuns[0];
-    return { ...run, components: [{ identityKey: "pkg:maven/org.apache.httpcomponents/httpclient@4.5.13", identityStatus: "stable", componentType: "library", group: "org.apache.httpcomponents", name: "httpclient", version: "4.5.13", purl: "pkg:maven/org.apache.httpcomponents/httpclient@4.5.13", bomRef: "pkg:maven/org.apache.httpcomponents/httpclient@4.5.13", sha256: "demo-sha256", licenses: [{ license: { id: "Apache-2.0" } }], properties: {} }], analyses: [{ id: `demo-analysis-${run.id}`, sequence: 1, state: "completed", dataAsOf: "2025-05-21", toolVersion: "grype-demo", dataSources: {}, findings: [{ canonicalId: "CVE-2025-DEMO", severity: "high", component: "httpclient@4.5.13", kev: false }] }] };
+    return { ...run, cveDataAsOf: run.cveDataAsOf || run.dataAsOf, components: [{ identityKey: "pkg:maven/org.apache.httpcomponents/httpclient@4.5.13", identityStatus: "stable", componentType: "library", group: "org.apache.httpcomponents", name: "httpclient", version: "4.5.13", purl: "pkg:maven/org.apache.httpcomponents/httpclient@4.5.13", bomRef: "pkg:maven/org.apache.httpcomponents/httpclient@4.5.13", sha256: "demo-sha256", licenses: [{ license: { id: "Apache-2.0" } }], properties: {} }], analyses: [{ id: `demo-analysis-${run.id}`, sequence: 1, state: "completed", dataAsOf: "2025-05-21", cveDataAsOf: "2025-05-21", toolVersion: "grype-demo", dataSources: {}, findings: [{ canonicalId: "CVE-2025-DEMO", severity: "high", component: "httpclient@4.5.13", cvssScore: 9.8, kev: true, fixedIn: ["4.5.14", "5.0.0"] }] }] };
   }
   return request<SbomRunDetail>(`/api/v1/sbom-runs/${encodeURIComponent(runId)}`);
 }
 
-export async function fetchRunComponents(runId: string, page = 1, size = 25, q = ""): Promise<PageResult<ComponentSnapshot>> {
+export async function fetchRunComponents(runId: string, page = 1, size = 10, q = ""): Promise<PageResult<ComponentSnapshot>> {
   if (previewMode) {
     const detail = await fetchRun(runId);
     const term = q.trim().toLowerCase();
@@ -149,7 +154,7 @@ export async function fetchRunComponents(runId: string, page = 1, size = 25, q =
   return request<PageResult<ComponentSnapshot>>(`/api/v1/sbom-runs/${encodeURIComponent(runId)}/components?${params}`);
 }
 
-export async function fetchRunFindings(runId: string, page = 1, size = 25, analysisId = ""): Promise<PageResult<Record<string, unknown>>> {
+export async function fetchRunFindings(runId: string, page = 1, size = 10, analysisId = ""): Promise<PageResult<Record<string, unknown>>> {
   if (previewMode) {
     const detail = await fetchRun(runId);
     const analysis = analysisId
@@ -178,7 +183,7 @@ export async function fetchJob(jobId: string): Promise<JobSummary> {
   return request<JobSummary>(`/api/v1/jobs/${encodeURIComponent(jobId)}`);
 }
 
-export async function fetchCatalogs(): Promise<{ services: CatalogItem[]; environments: CatalogItem[] }> {
+export async function fetchCatalogs(options: { includeInactive?: boolean } = {}): Promise<{ services: CatalogItem[]; environments: CatalogItem[] }> {
   if (standaloneMode) {
     const catalogs = getStandaloneCatalogs();
     return {
@@ -192,14 +197,15 @@ export async function fetchCatalogs(): Promise<{ services: CatalogItem[]; enviro
       environments: [...new Map(demoRuns.map((run) => [run.environment.id, run.environment])).values()],
     };
   }
+  const suffix = options.includeInactive ? "?includeInactive=true" : "";
   const [services, environments] = await Promise.all([
-    request<CatalogItem[]>("/api/v1/services"),
-    request<CatalogItem[]>("/api/v1/environments"),
+    request<CatalogItem[]>(`/api/v1/services${suffix}`),
+    request<CatalogItem[]>(`/api/v1/environments${suffix}`),
   ]);
   return { services, environments };
 }
 
-export async function fetchAuditEvents(page = 1, size = 25, q = ""): Promise<PageResult<AuditEvent>> {
+export async function fetchAuditEvents(page = 1, size = 10, q = ""): Promise<PageResult<AuditEvent>> {
   if (previewMode) return { items: [], page, size, total: 0 };
   const params = new URLSearchParams({ page: String(page), size: String(size) });
   if (q.trim()) params.set("q", q.trim());
@@ -276,7 +282,7 @@ export async function patchUser(id: string, body: { role?: string; active?: bool
 }
 
 export async function deleteUser(id: string) {
-  return request<UserSummary>(`/api/v1/users/${encodeURIComponent(id)}`, { method: "DELETE" });
+  return request<{ id: string; username: string; role: string; status: "deleted" }>(`/api/v1/users/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
 export async function approveUser(id: string) {
@@ -287,7 +293,7 @@ export async function patchService(id: string, body: { name?: string; active?: b
   return request<CatalogItem>(`/api/v1/services/${encodeURIComponent(id)}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 }
 
-export async function patchEnvironment(id: string, body: { name?: string; slug?: string; sortOrder?: number }) {
+export async function patchEnvironment(id: string, body: { name?: string; slug?: string; sortOrder?: number; active?: boolean }) {
   return request<CatalogItem>(`/api/v1/environments/${encodeURIComponent(id)}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 }
 
@@ -320,12 +326,16 @@ export async function archiveRun(runId: string, reason: string) {
   });
 }
 
+export async function deleteRun(runId: string) {
+  return request<{ runId: string; deleted: boolean; dependencyTrackProjectUuid?: string | null; artifactCleanupPending: boolean }>(`/api/v1/sbom-runs/${encodeURIComponent(runId)}`, { method: "DELETE" });
+}
+
 export async function fetchComparison(baseRunId: string, targetRunId: string, baseAnalysisId?: string, targetAnalysisId?: string): Promise<Comparison> {
   if (standaloneMode && (getStandaloneRun(baseRunId) || getStandaloneRun(targetRunId))) return compareStandaloneRuns(baseRunId, targetRunId);
   if (previewMode) {
     return {
-      base: { runId: baseRunId, sha256: demoRuns.find((run) => run.id === baseRunId)?.sha256 || "", dataAsOf: "2025-05-21", artifactUrl: `/api/v1/sbom-runs/${baseRunId}/artifact` },
-      target: { runId: targetRunId, sha256: demoRuns.find((run) => run.id === targetRunId)?.sha256 || "", dataAsOf: "2025-05-21", artifactUrl: `/api/v1/sbom-runs/${targetRunId}/artifact` },
+      base: { runId: baseRunId, sha256: demoRuns.find((run) => run.id === baseRunId)?.sha256 || "", dataAsOf: "2025-05-21", cveDataAsOf: "2025-05-21", artifactUrl: `/api/v1/sbom-runs/${baseRunId}/artifact` },
+      target: { runId: targetRunId, sha256: demoRuns.find((run) => run.id === targetRunId)?.sha256 || "", dataAsOf: "2025-05-21", cveDataAsOf: "2025-05-21", artifactUrl: `/api/v1/sbom-runs/${targetRunId}/artifact` },
       summary: {
         componentsAdded: demoChanges.filter((item) => item.change === "added").length,
         componentsRemoved: demoChanges.filter((item) => item.change === "removed").length,
@@ -336,7 +346,7 @@ export async function fetchComparison(baseRunId: string, targetRunId: string, ba
       },
       components: demoChanges,
       vulnerabilities: [
-        { change: "added", record: { id: "CVE-2024-30260", component: "httpclient", severity: "High" } },
+        { change: "added", record: { id: "CVE-2024-30260", component: "httpclient", severity: "High", cvssScore: 9.8, kev: true } },
         { change: "removed", record: { id: "CVE-2020-13956", component: "httpclient", severity: "Medium" } },
       ],
       policies: [{ change: "added", record: { rule: "금지 라이선스", component: "commons-logging", status: "violation" } }],

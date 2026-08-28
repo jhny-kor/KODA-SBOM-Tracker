@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import csv
 import hashlib
 import ipaddress
+import io
+import json
+import logging
 import re
 import secrets
 import tempfile
@@ -13,11 +17,12 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal
+from zoneinfo import ZoneInfo
 
 from cryptography.fernet import Fernet, InvalidToken
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, Response, UploadFile
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import Text, cast, delete, func, inspect, or_, select, text
 from sqlalchemy.exc import IntegrityError
@@ -25,7 +30,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from .config import get_settings, session_cookie_name
 from .comparison import compare_components, compare_records
-from .db import Base, SessionLocal, engine, ensure_component_search_support, ensure_ldap_subject_attribute_column, ensure_postgres_manager_enum, ensure_user_approval_state_column, ensure_user_identity_columns, get_db
+from .db import Base, SessionLocal, engine, ensure_component_search_support, ensure_environment_active_column, ensure_ldap_subject_attribute_column, ensure_postgres_manager_enum, ensure_user_approval_state_column, ensure_user_identity_columns, get_db
 from .dtrack import DependencyTrackClient
 from .models import (
     AnalysisRevision,
@@ -62,8 +67,11 @@ from .security import (
     PERMISSION_CATALOG,
 )
 from .services import audit, create_components, enqueue
-from .vulnerability import active_bundle, scan_bundle_releases
+from .vulnerability import active_bundle, project_cve_findings, scan_bundle_releases
 from .ldap_auth import LdapConfig, LdapConfigurationError, LdapInvalidCredentials, LdapUnavailable, authenticate_user
+
+
+logger = logging.getLogger(__name__)
 
 
 class LoginRequest(BaseModel):
@@ -134,6 +142,7 @@ class EnvironmentPatch(BaseModel):
     name: str | None = None
     slug: str | None = None
     sortOrder: int | None = None
+    active: bool | None = None
 
 
 class ArchiveRequest(BaseModel):
@@ -175,6 +184,7 @@ async def lifespan(_: FastAPI):
     ensure_user_identity_columns(engine)
     ensure_ldap_subject_attribute_column(engine)
     ensure_component_search_support(engine)
+    ensure_environment_active_column(engine)
     # v1 uses create_all for a fresh install, but keep the one additive field
     # introduced by the vulnerability-data lifecycle backward compatible with
     # an already initialized portal database.
@@ -199,10 +209,18 @@ async def lifespan(_: FastAPI):
             ("prod", "운영", 40),
         ]:
             if not db.scalar(select(Environment).where(Environment.slug == slug)):
-                db.add(Environment(slug=slug, name=name, sort_order=order))
+                db.add(Environment(slug=slug, name=name, sort_order=order, active=True))
         for role, permissions in DEFAULT_ROLE_PERMISSIONS.items():
-            if db.get(RolePolicy, role) is None:
+            policy = db.get(RolePolicy, role)
+            if policy is None:
                 db.add(RolePolicy(role=role, permissions=sorted(permissions)))
+                continue
+            granted = set(policy.permissions or [])
+            if role == Role.ADMIN:
+                granted.add("sbom.delete")
+            else:
+                granted.discard("sbom.delete")
+            policy.permissions = sorted(granted)
         bootstrap_username = _normalize_username(settings.bootstrap_admin_username)
         if settings.bootstrap_admin_password and not db.scalar(select(User).where(func.lower(User.username) == bootstrap_username)):
             db.add(
@@ -237,6 +255,40 @@ def _user_payload(user: User) -> dict:
         "status": _user_status(user),
         "authSource": user.auth_source,
     }
+
+
+def _cve_data_as_of(analysis: AnalysisRevision | None) -> str | None:
+    if analysis is None:
+        return None
+    sources = analysis.data_sources or {}
+    nvd = sources.get("nvd") if isinstance(sources, dict) else None
+    if isinstance(nvd, dict) and nvd.get("dataAsOf") not in (None, "", "unknown"):
+        return str(nvd["dataAsOf"])
+    return analysis.data_as_of
+
+
+def _csv_safe(value: object) -> str:
+    text_value = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, separators=(",", ":")) if value is not None else ""
+    candidate = text_value.lstrip(" \t\r\n")
+    return "'" + text_value if text_value[:1] in ("\t", "\r", "\n") or candidate[:1] in ("=", "+", "-", "@") else text_value
+
+
+def _audit_csv_value(value: object) -> str:
+    if isinstance(value, dict):
+        value = {
+            key: _audit_csv_value(nested)
+            for key, nested in value.items()
+            if not re.search(r"sha[-_]?256", key, re.IGNORECASE)
+        }
+    elif isinstance(value, list):
+        value = [_audit_csv_value(item) for item in value]
+    return _csv_safe(value)
+
+
+def _seoul_datetime(value: datetime) -> str:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _ldap_public(row: LdapSettings | None) -> dict:
@@ -579,6 +631,8 @@ def login(body: LoginRequest, request: Request, response: Response, db: Session 
                 user.ldap_subject = identity.subject
                 user.password_hash = hash_password(secrets.token_urlsafe(32))
                 user.role = _ldap_role(identity.groups, row.group_mappings, row.default_role)
+                user.active = False
+                user.approval_state = "pending"
                 audit(db, "ldap", "user.link", "user", user.id, {"username": user.username, "role": user.role.value})
             elif user.ldap_subject and user.ldap_subject != identity.subject:
                 raise HTTPException(403, "LDAP 사용자 식별자가 기존 계정과 일치하지 않습니다")
@@ -591,8 +645,8 @@ def login(body: LoginRequest, request: Request, response: Response, db: Session 
                 username=local_username,
                 password_hash=hash_password(secrets.token_urlsafe(32)),
                 role=_ldap_role(identity.groups, row.group_mappings, row.default_role),
-                active=True,
-                approval_state="approved",
+                active=False,
+                approval_state="pending",
                 auth_source="ldap",
                 ldap_subject=identity.subject,
             )
@@ -803,9 +857,11 @@ def _policy_invariant(db: Session, overrides: dict[Role, set[str]] | None = None
         raise HTTPException(422, "roles.manage 및 users.manage 권한을 가진 활성 사용자가 최소 한 명 필요합니다")
 
 
-def _validate_permissions(permissions: list[str]) -> list[str]:
+def _validate_permissions(permissions: list[str], role: Role | None = None) -> list[str]:
     if len(permissions) != len(set(permissions)) or any(item not in PERMISSION_CATALOG for item in permissions):
         raise HTTPException(422, "알 수 없거나 중복된 권한입니다")
+    if role != Role.ADMIN and "sbom.delete" in permissions:
+        raise HTTPException(422, "sbom.delete 권한은 관리자 역할에만 부여할 수 있습니다")
     return sorted(permissions)
 
 @app.get("/api/v1/role-policies")
@@ -814,7 +870,7 @@ def list_role_policies(db: Session = Depends(get_db), _=Depends(require_permissi
 
 @app.put("/api/v1/role-policies/{role}")
 def update_role_policy(role: Role, body: RolePolicyRequest, db: Session = Depends(get_db), principal=Depends(require_permission("roles.manage")), _csrf=Depends(require_csrf)) -> dict:
-    permissions = _validate_permissions(body.permissions)
+    permissions = _validate_permissions(body.permissions, role)
     item = db.get(RolePolicy, role)
     before = sorted(item.permissions) if item and item.permissions else []
     if item is None:
@@ -834,7 +890,7 @@ def update_role_policies(
     principal=Depends(require_permission("roles.manage")),
     _csrf=Depends(require_csrf),
 ) -> dict:
-    updates = {role: _validate_permissions(permissions) for role, permissions in body.roles.items()}
+    updates = {role: _validate_permissions(permissions, role) for role, permissions in body.roles.items()}
     _policy_invariant(db, {role: set(permissions) for role, permissions in updates.items()})
     result = []
     for role, permissions in updates.items():
@@ -939,18 +995,19 @@ def delete_user(
         granted = set(policy.permissions if policy else DEFAULT_ROLE_PERMISSIONS.get(principal.role, ()))
         if "roles.manage" not in granted:
             raise HTTPException(403, "관리자 계정 삭제에는 roles.manage 권한이 필요합니다")
+    receipt = {"id": user.id, "username": user.username, "role": user.role.value, "status": "deleted"}
     try:
-        user.active = False
-        user.approval_state = "deleted"
         db.execute(delete(UserSession).where(UserSession.user_id == user.id))
+        db.execute(SbomRun.__table__.update().where(SbomRun.uploaded_by == user.id).values(uploaded_by=None))
+        db.delete(user)
         db.flush()
         _policy_invariant(db)
-        audit(db, principal.username, "user.delete", "user", user.id, {"username": user.username, "role": user.role.value})
+        audit(db, principal.username, "user.delete", "user", receipt["id"], receipt | {"hardDelete": True})
         db.commit()
     except Exception:
         db.rollback()
         raise
-    return _user_payload(user)
+    return receipt
 
 
 @app.post("/api/v1/users/{user_id}/approve")
@@ -1029,10 +1086,19 @@ def revoke_api_token(
 
 @app.get("/api/v1/services")
 def list_services(
+    include_inactive: bool = Query(default=False, alias="includeInactive"),
     db: Session = Depends(get_db),
-    _=Depends(require_permission("services.view")),
+    principal=Depends(require_permission("services.view")),
 ) -> list[dict]:
-    return [{"id": item.id, "slug": item.slug, "name": item.name, "active": item.active} for item in db.scalars(select(Service).order_by(Service.name))]
+    if include_inactive:
+        policy = db.get(RolePolicy, principal.role)
+        permissions = set(policy.permissions if policy else DEFAULT_ROLE_PERMISSIONS.get(principal.role, ()))
+        if "catalog.manage" not in permissions and "*" not in permissions:
+            raise HTTPException(403, "비활성 서비스 조회에는 catalog.manage 권한이 필요합니다")
+        query = select(Service).order_by(Service.name)
+    else:
+        query = select(Service).where(Service.active.is_(True)).order_by(Service.name)
+    return [{"id": item.id, "slug": item.slug, "name": item.name, "active": item.active} for item in db.scalars(query)]
 
 
 @app.post("/api/v1/services", status_code=201)
@@ -1052,7 +1118,7 @@ def create_service(
         db.commit()
     except IntegrityError as exc:
         raise HTTPException(409, "이미 존재하는 서비스입니다") from exc
-    return {"id": item.id, "slug": item.slug, "name": item.name}
+    return {"id": item.id, "slug": item.slug, "name": item.name, "active": item.active}
 
 
 @app.patch("/api/v1/services/{service_id}")
@@ -1077,10 +1143,19 @@ def patch_service(
 
 @app.get("/api/v1/environments")
 def list_environments(
+    include_inactive: bool = Query(default=False, alias="includeInactive"),
     db: Session = Depends(get_db),
-    _=Depends(require_permission("services.view")),
+    principal=Depends(require_permission("services.view")),
 ) -> list[dict]:
-    return [{"id": item.id, "slug": item.slug, "name": item.name, "sortOrder": item.sort_order} for item in db.scalars(select(Environment).order_by(Environment.sort_order))]
+    if include_inactive:
+        policy = db.get(RolePolicy, principal.role)
+        permissions = set(policy.permissions if policy else DEFAULT_ROLE_PERMISSIONS.get(principal.role, ()))
+        if "catalog.manage" not in permissions and "*" not in permissions:
+            raise HTTPException(403, "비활성 환경 조회에는 catalog.manage 권한이 필요합니다")
+        query = select(Environment).order_by(Environment.sort_order)
+    else:
+        query = select(Environment).where(Environment.active.is_(True)).order_by(Environment.sort_order)
+    return [{"id": item.id, "slug": item.slug, "name": item.name, "sortOrder": item.sort_order, "active": item.active} for item in db.scalars(query)]
 
 
 @app.post("/api/v1/environments", status_code=201)
@@ -1095,7 +1170,7 @@ def create_environment(
     db.flush()
     audit(db, principal.username, "environment.create", "environment", item.id)
     db.commit()
-    return {"id": item.id, "slug": item.slug, "name": item.name}
+    return {"id": item.id, "slug": item.slug, "name": item.name, "sortOrder": item.sort_order, "active": item.active}
 
 
 @app.patch("/api/v1/environments/{environment_id}")
@@ -1121,9 +1196,11 @@ def patch_environment(
         item.slug = next_slug
     if body.sortOrder is not None:
         item.sort_order = body.sortOrder
-    audit(db, principal.username, "environment.update", "environment", item.id, {"name": item.name, "slug": item.slug, "sortOrder": item.sort_order})
+    if body.active is not None:
+        item.active = body.active
+    audit(db, principal.username, "environment.update", "environment", item.id, {"name": item.name, "slug": item.slug, "sortOrder": item.sort_order, "active": item.active})
     db.commit()
-    return {"id": item.id, "slug": item.slug, "name": item.name, "sortOrder": item.sort_order}
+    return {"id": item.id, "slug": item.slug, "name": item.name, "sortOrder": item.sort_order, "active": item.active}
 
 
 def _principal_actor(principal: User | ApiToken) -> str:
@@ -1239,6 +1316,8 @@ async def upload_sbom(
             raise HTTPException(404, "서비스 또는 환경을 찾을 수 없습니다")
         if not service.active:
             raise HTTPException(409, "비활성 서비스에는 SBOM을 업로드할 수 없습니다")
+        if not environment.active:
+            raise HTTPException(409, "비활성 환경에는 SBOM을 업로드할 수 없습니다")
         lock_key = f"{service.id}:{environment.id}:{release_version}"
         async with _round_locks[lock_key]:
             return _persist_run(
@@ -1268,7 +1347,12 @@ def _run_payload(
     component_type_counts: dict[str, int] | None = None,
 ) -> dict:
     latest = max(item.analyses, key=lambda analysis: analysis.sequence, default=None)
-    findings = latest.findings if latest else []
+    findings = project_cve_findings(latest.findings if latest else [])
+    vulnerable_components = {
+        (str(finding.get("component")).strip(), str(finding.get("version") or "").strip())
+        for finding in findings
+        if str(finding.get("component") or "").strip()
+    }
     severity_counts: dict[str, int] = defaultdict(int)
     for finding in findings:
         severity = str(finding.get("severity") or "unknown").lower()
@@ -1289,10 +1373,12 @@ def _run_payload(
         "componentCount": component_count if component_count is not None else len(item.components),
         "componentTypeCounts": component_type_counts or {},
         "vulnerabilityCount": len(findings),
+        "vulnerableComponentCount": len(vulnerable_components),
         "severityCounts": dict(severity_counts),
         "kevCount": sum(1 for finding in findings if finding.get("kev") is True),
         "policyViolationCount": len(latest.policies) if latest else 0,
         "dataAsOf": latest.data_as_of if latest else None,
+        "cveDataAsOf": _cve_data_as_of(latest),
         "analysisDataSources": (latest.data_sources or {}) if latest else {},
         "createdAt": item.created_at.isoformat(),
         "dependencyTrackUrl": (
@@ -1313,7 +1399,7 @@ def list_runs(
     state: ProcessingState | None = None,
     q: str | None = Query(default=None, min_length=1, max_length=200),
     page: int = Query(default=1, ge=1),
-    size: int = Query(default=20, ge=1, le=100),
+    size: int = Query(default=10, ge=1, le=100),
     db: Session = Depends(get_db),
     _=Depends(require_permission("runs.view")),
 ) -> dict:
@@ -1376,6 +1462,7 @@ def _load_run(
     *,
     include_components: bool = False,
     include_analyses: bool = False,
+    for_update: bool = False,
 ) -> SbomRun:
     options = [
         selectinload(SbomRun.release).selectinload(Release.service),
@@ -1385,8 +1472,11 @@ def _load_run(
         options.append(selectinload(SbomRun.components))
     if include_analyses:
         options.append(selectinload(SbomRun.analyses))
+    query = select(SbomRun)
+    if for_update:
+        query = query.with_for_update()
     item = db.scalar(
-        select(SbomRun)
+        query
         .where(SbomRun.id == run_id)
         .options(*options)
     )
@@ -1413,9 +1503,10 @@ def get_run(
             "sequence": analysis.sequence,
             "state": analysis.state,
             "dataAsOf": analysis.data_as_of,
+            "cveDataAsOf": _cve_data_as_of(analysis),
             "toolVersion": analysis.tool_version,
             "dataSources": analysis.data_sources or {},
-            "findingCount": len(analysis.findings or []),
+            "findingCount": len(project_cve_findings(analysis.findings)),
             "policyCount": len(analysis.policies or []),
             "error": analysis.error,
         }
@@ -1429,7 +1520,7 @@ def get_run_components(
     run_id: str,
     q: str | None = Query(default=None, min_length=1, max_length=200),
     page: int = Query(default=1, ge=1),
-    size: int = Query(default=25, ge=1, le=100),
+    size: int = Query(default=10, ge=1, le=100),
     db: Session = Depends(get_db),
     _=Depends(require_permission("runs.view")),
 ) -> dict:
@@ -1469,7 +1560,7 @@ def get_run_findings(
     run_id: str,
     analysis_id: str | None = Query(default=None, alias="analysisId"),
     page: int = Query(default=1, ge=1),
-    size: int = Query(default=25, ge=1, le=100),
+    size: int = Query(default=10, ge=1, le=100),
     db: Session = Depends(get_db),
     _=Depends(require_permission("runs.view")),
 ) -> dict:
@@ -1479,7 +1570,7 @@ def get_run_findings(
     if analysis_id:
         query = query.where(AnalysisRevision.id == analysis_id)
     analysis = db.scalar(query.order_by(AnalysisRevision.sequence.desc()).limit(1))
-    findings = list(analysis.findings or []) if analysis else []
+    findings = project_cve_findings(analysis.findings if analysis else [])
     start = (page - 1) * size
     return {
         "analysisId": analysis.id if analysis else None,
@@ -1507,7 +1598,7 @@ def retry_dependency_track(
     principal=Depends(require_permission("dtrack.retry")),
     _csrf=Depends(require_csrf),
 ) -> dict:
-    run = _load_run(db, run_id)
+    run = _load_run(db, run_id, for_update=True)
     if run.archived_at is not None or run.state == ProcessingState.ARCHIVED:
         raise HTTPException(409, "보관된 회차는 다시 처리할 수 없습니다")
     run.dtrack_state = JobState.QUEUED
@@ -1526,7 +1617,7 @@ def create_analysis(
     principal=Depends(require_permission("analysis.create")),
     _csrf=Depends(require_csrf),
 ) -> dict:
-    run = _load_run(db, run_id)
+    run = _load_run(db, run_id, for_update=True)
     if run.archived_at is not None or run.state == ProcessingState.ARCHIVED:
         raise HTTPException(409, "보관된 회차는 다시 분석할 수 없습니다")
     run.analysis_state = JobState.QUEUED
@@ -1547,7 +1638,7 @@ def archive_run(
 ) -> dict:
     if not body.reason.strip():
         raise HTTPException(422, "보관 사유가 필요합니다")
-    run = _load_run(db, run_id)
+    run = _load_run(db, run_id, for_update=True)
     if run.archived_at is not None or run.state == ProcessingState.ARCHIVED:
         raise HTTPException(409, "이미 보관된 회차입니다")
     run.archived_at = datetime.now(UTC)
@@ -1556,6 +1647,71 @@ def archive_run(
     audit(db, principal.username, "sbom.archive", "sbom_run", run.id, {"reason": run.archive_reason})
     db.commit()
     return {"runId": run.id, "state": run.state, "archivedAt": run.archived_at.isoformat()}
+
+
+@app.delete("/api/v1/sbom-runs/{run_id}")
+def delete_run(
+    run_id: str,
+    db: Session = Depends(get_db),
+    principal=Depends(require_admin),
+    _=Depends(require_permission("sbom.delete")),
+    _csrf=Depends(require_csrf),
+) -> dict:
+    run = _load_run(db, run_id, for_update=True)
+    jobs = list(db.scalars(select(Job).where(Job.run_id == run.id)))
+    if run.state not in {ProcessingState.COMPLETED, ProcessingState.FAILED, ProcessingState.ARCHIVED} or any(job.state in {JobState.QUEUED, JobState.RUNNING} for job in jobs):
+        raise HTTPException(409, "완료·실패·보관 상태의 회차만 삭제할 수 있습니다")
+
+    root = get_settings().artifact_dir.resolve()
+    artifact = Path(run.artifact_path)
+    resolved = artifact.resolve()
+    try:
+        resolved.relative_to(root)
+    except ValueError as exc:
+        raise HTTPException(422, "회차 원본 경로가 artifact 루트 밖에 있습니다") from exc
+    shared_artifact = db.scalar(
+        select(SbomRun.id).where(
+            SbomRun.id != run.id,
+            SbomRun.artifact_path == run.artifact_path,
+        ).limit(1)
+    )
+    quarantine: Path | None = None
+    if artifact.exists() and not artifact.is_file():
+        raise HTTPException(422, "회차 원본은 일반 파일이어야 합니다")
+    if artifact.exists() and shared_artifact is None:
+        quarantine = root / ".delete-quarantine" / f"{run.id}-{uuid.uuid4().hex}"
+        quarantine.parent.mkdir(parents=True, exist_ok=True)
+        artifact.rename(quarantine)
+    receipt = {
+        "runId": run.id,
+        "deleted": True,
+        "dependencyTrackProjectUuid": run.dtrack_project_uuid,
+    }
+    try:
+        db.execute(delete(RunComponent).where(RunComponent.run_id == run.id))
+        db.execute(delete(AnalysisRevision).where(AnalysisRevision.run_id == run.id))
+        db.execute(delete(Job).where(Job.run_id == run.id))
+        db.delete(run)
+        db.flush()
+        audit(db, principal.username, "sbom.delete", "sbom_run", run_id, {"dependencyTrackProjectUuid": run.dtrack_project_uuid})
+        db.commit()
+    except Exception:
+        db.rollback()
+        if quarantine is not None and quarantine.exists() and not artifact.exists():
+            quarantine.rename(artifact)
+        raise
+    if quarantine is not None:
+        try:
+            quarantine.unlink(missing_ok=True)
+            quarantine.parent.rmdir()
+        except OSError:
+            receipt["artifactCleanupPending"] = True
+            logger.exception("SBOM artifact cleanup failed after committed deletion: run_id=%s path=%s", run_id, quarantine)
+        else:
+            receipt["artifactCleanupPending"] = False
+    else:
+        receipt["artifactCleanupPending"] = False
+    return receipt
 
 
 @app.get("/api/v1/jobs/{job_id}")
@@ -1597,8 +1753,8 @@ def compare_runs(
     target_analysis = analysis(target, target_analysis_id)
     component_changes = compare_components(base.components, target.components)
     finding_changes = compare_records(
-        base_analysis.findings if base_analysis else [],
-        target_analysis.findings if target_analysis else [],
+        project_cve_findings(base_analysis.findings if base_analysis else []),
+        project_cve_findings(target_analysis.findings if target_analysis else []),
         keys=("canonicalId", "component"),
     )
     policy_changes = compare_records(
@@ -1607,8 +1763,8 @@ def compare_runs(
         keys=("rule", "component"),
     )
     return {
-        "base": {"runId": base.id, "sha256": base.sha256, "dataAsOf": base_analysis.data_as_of if base_analysis else None, "artifactUrl": f"/api/v1/sbom-runs/{base.id}/artifact"},
-        "target": {"runId": target.id, "sha256": target.sha256, "dataAsOf": target_analysis.data_as_of if target_analysis else None, "artifactUrl": f"/api/v1/sbom-runs/{target.id}/artifact"},
+        "base": {"runId": base.id, "sha256": base.sha256, "dataAsOf": base_analysis.data_as_of if base_analysis else None, "cveDataAsOf": _cve_data_as_of(base_analysis), "artifactUrl": f"/api/v1/sbom-runs/{base.id}/artifact"},
+        "target": {"runId": target.id, "sha256": target.sha256, "dataAsOf": target_analysis.data_as_of if target_analysis else None, "cveDataAsOf": _cve_data_as_of(target_analysis), "artifactUrl": f"/api/v1/sbom-runs/{target.id}/artifact"},
         "summary": {
             "componentsAdded": sum(item["change"] == "added" for item in component_changes),
             "componentsRemoved": sum(item["change"] == "removed" for item in component_changes),
@@ -1627,7 +1783,8 @@ def compare_runs(
 def audit_events(
     q: str | None = Query(default=None, min_length=1, max_length=200),
     page: int = Query(default=1, ge=1),
-    size: int = Query(default=50, ge=1, le=100),
+    size: int = Query(default=10, ge=1, le=100),
+    format: Literal["json", "csv"] = Query(default="json"),
     db: Session = Depends(get_db),
     _admin=Depends(require_admin),
     _=Depends(require_permission("audit.view")),
@@ -1645,6 +1802,33 @@ def audit_events(
             )
         )
     total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
+    if format == "csv":
+        def rows():
+            output = io.StringIO(newline="")
+            writer = csv.writer(output, lineterminator="\r\n")
+            yield "\ufeff"
+            writer.writerow(["시각", "행위자", "작업", "대상 유형", "대상 ID", "상세"])
+            yield output.getvalue()
+            with SessionLocal() as stream_db:
+                result = stream_db.scalars(query.order_by(AuditEvent.created_at.desc())).yield_per(100)
+                for item in result:
+                    output.seek(0)
+                    output.truncate(0)
+                    writer.writerow([
+                        _seoul_datetime(item.created_at),
+                        _csv_safe(item.actor),
+                        _csv_safe(item.action),
+                        _csv_safe(item.target_type),
+                        _csv_safe(item.target_id),
+                        _audit_csv_value(item.detail),
+                    ])
+                    yield output.getvalue()
+
+        return StreamingResponse(
+            rows(),
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": 'attachment; filename="koda-audit-events.csv"'},
+        )
     items = db.scalars(query.order_by(AuditEvent.created_at.desc()).offset((page - 1) * size).limit(size))
     return {
         "items": [
