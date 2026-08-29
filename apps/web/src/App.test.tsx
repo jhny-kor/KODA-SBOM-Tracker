@@ -63,7 +63,53 @@ describe("KODA SBOM Tracker", () => {
     expect(screen.getByRole("heading", { name: "서비스 1개" })).toBeInTheDocument();
     expect(screen.getByText("운영")).toBeInTheDocument();
     expect(screen.queryByRole("columnheader", { name: "상태" })).not.toBeInTheDocument();
+    expect(within(screen.getByRole("row", { name: /결제 API/ })).getByRole("button", { name: "연동 ID 복사" })).toHaveAttribute("title", "svc");
+    expect(within(screen.getByRole("row", { name: /운영/ })).getByRole("button", { name: "연동 ID 복사" })).toHaveAttribute("title", "prod");
     expect(screen.queryByRole("button", { name: "삭제" })).not.toBeInTheDocument();
+  });
+
+  it("reveals the GitLab delivery token with its Tracker service ID", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ id: "token-1", name: "group-project", token: "koda_secret", serviceId: "svc-uuid" }), { status: 201, headers: { "Content-Type": "application/json" } }));
+    render(<SettingsPage
+      users={[]} services={[{ id: "svc-uuid", name: "group/project", slug: "group-project", active: true }]}
+      tokens={[]} dtrackStatus={null} ldapSettings={null} policies={[]} roleCatalog={[]}
+      bundles={[]} auditEvents={[]} isAdmin canVulnerability={false}
+      canVulnerabilityManage={false} canAudit={false} canUsers={false} canTokens
+      canDtrack={false} canPolicyEdit={false} canRoles={false}
+      onSync={async () => {}} onActivate={async () => {}} onPolicyChanged={async () => {}}
+      onLdapChanged={() => {}} onChanged={() => {}}
+    />);
+    fireEvent.click(screen.getByRole("button", { name: "API 토큰 발급" }));
+    fireEvent.change(screen.getByLabelText("토큰 이름"), { target: { value: "group-project" } });
+    fireEvent.change(screen.getByLabelText("허용 서비스"), { target: { value: "svc-uuid" } });
+    fireEvent.click(screen.getByRole("button", { name: "확인" }));
+    expect(await screen.findByText("koda_secret")).toBeInTheDocument();
+    expect(screen.getByText("svc-uuid")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "토큰 복사" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "서비스 ID 복사" })).toBeInTheDocument();
+  });
+
+  it("shows GitLab connection readiness inside the integration settings tab", () => {
+    render(<SettingsPage
+      users={[]} services={[{ id: "svc-uuid", name: "group/project", slug: "gitlab-42-a1b2c3d4e5f6", active: true }]}
+      environments={[{ id: "env-uuid", name: "GitLab 소스", slug: "gitlab-source", active: true, sortOrder: 50 }]}
+      tokens={[{ id: "token-1", name: "group-project", serviceId: "svc-uuid", active: true, createdAt: "2026-08-29T00:00:00Z" }]}
+      dtrackStatus={{ configured: true, reachable: true, authenticated: true, version: "4.13", team: "koda", permissions: [], missingPermissions: [] }} ldapSettings={null} policies={[]} roleCatalog={[]}
+      bundles={[]} auditEvents={[]} isAdmin canVulnerability={false}
+      canVulnerabilityManage={false} canAudit={false} canUsers={false} canTokens
+      canDtrack canPolicyEdit={false} canRoles={false} canServices
+      canCatalogManage={false} onSync={async () => {}} onActivate={async () => {}}
+      onPolicyChanged={async () => {}} onLdapChanged={() => {}} onChanged={() => {}}
+    />);
+    expect(screen.queryByRole("tab", { name: "GitLab 연동" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "연동 설정" }));
+    expect(screen.getByRole("heading", { name: "KODA GitLab 자동 연동" })).toBeInTheDocument();
+    expect(screen.getByText("GitLab 저장소 → KODA 점검·CycloneDX 생성 → Tracker 회차 수신·분석 → KODA가 GitLab 결과 MR·취약점 이슈 저장")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Dependency-Track 연결" })).toBeInTheDocument();
+    expect(screen.getByText("gitlab-source 환경이 자동 준비되었습니다.")).toBeInTheDocument();
+    expect(screen.getByRole("row", { name: /group\/project.*활성/ })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "자동 생성 항목 보기" }));
+    expect(screen.getByRole("heading", { name: "서비스 1개" })).toBeInTheDocument();
   });
 
   it("orders catalog actions and hides deleted services and environments", async () => {
@@ -206,7 +252,17 @@ describe("KODA SBOM Tracker", () => {
     const { container } = render(<App />);
     expect(screen.getByRole("heading", { name: "대시보드" })).toBeInTheDocument();
     expect(screen.getAllByText("구성요소 유형").length).toBeGreaterThan(0);
-    expect(container.querySelectorAll(".preview-sparkline circle title").length).toBeGreaterThan(1);
+    const sparklinePoint = container.querySelector(".preview-sparkline circle");
+    expect(sparklinePoint).not.toBeNull();
+    fireEvent.mouseEnter(sparklinePoint!);
+    expect(screen.getByRole("tooltip")).toHaveTextContent(/#\d+.*CVE 기준일.*\d+/);
+    fireEvent.mouseLeave(sparklinePoint!);
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+    const trendPoint = container.querySelector(".preview-chart .preview-chart-point");
+    expect(trendPoint).not.toBeNull();
+    fireEvent.mouseEnter(trendPoint!);
+    expect(screen.getByRole("tooltip")).toHaveTextContent(/구성요소 · #\d+.*CVE 기준일/);
+    expect(container.querySelector(".preview-chart-point title")).not.toBeInTheDocument();
     expect(screen.queryByText("연결 상태: 오프라인")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "SBOM 회차" }));
     expect(screen.getByRole("heading", { name: "SBOM 회차" })).toBeInTheDocument();
@@ -280,7 +336,10 @@ describe("KODA SBOM Tracker", () => {
     fireEvent.click(screen.getByRole("button", { name: "대시보드" }));
     const chart = await screen.findByRole("img", { name: "업로드별 구성요소와 취약 구성요소 추이" });
     expect(chart).toBeInTheDocument();
-    expect(chart.textContent).toContain("취약 구성요소 · #1 · 회원 서비스/검증 · 2");
+    const point = chart.querySelector('[aria-label="취약 구성요소 · #1 · 회원 서비스/검증 · 2 · CVE 기준일 2025-05-21"]');
+    expect(point).not.toBeNull();
+    fireEvent.mouseEnter(point!);
+    expect(screen.getByRole("tooltip")).toHaveTextContent("취약 구성요소 · #1 · 회원 서비스/검증 · 2");
     expect(screen.getByRole("heading", { name: "최신 SBOM 심각도" })).toBeInTheDocument();
     expect(screen.getByText("OPERATIONS SBOM PORTFOLIO")).toBeInTheDocument();
   });

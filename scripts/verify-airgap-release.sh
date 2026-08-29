@@ -37,6 +37,8 @@ for required_file in \
   [[ -f "$input/$required_file" ]] || { echo "release file missing: $required_file" >&2; exit 1; }
 done
 grep -q '^DISTRIBUTION_SCOPE=internal-only$' "$input/metadata.env" || { echo "release is not marked internal-only" >&2; exit 1; }
+grep -Eq '^TRACKER_GIT_REVISION=[0-9a-f]{40}$' "$input/metadata.env" || { echo "release git revision is missing or invalid" >&2; exit 1; }
+grep -q '^TRACKER_WORKTREE_DIRTY=false$' "$input/metadata.env" || { echo "release was not built from a clean worktree" >&2; exit 1; }
 [[ -d "$input/source/apps" ]] || { echo "application source missing" >&2; exit 1; }
 [[ ! -e "$input/config/.env" ]] || { echo "release must not contain a real .env" >&2; exit 1; }
 count="$(find "$input/images" -type f -name '*.tar' | wc -l | tr -d ' ')"

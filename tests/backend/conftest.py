@@ -16,3 +16,6 @@ os.environ["TRACKER_SECURE_COOKIES"] = "false"
 os.environ["TRACKER_DEPENDENCY_TRACK_URL"] = "http://dependency-track.test"
 os.environ["TRACKER_DEPENDENCY_TRACK_API_KEY"] = "test-api-key"
 os.environ["TRACKER_LDAP_ENCRYPTION_KEY"] = Fernet.generate_key().decode("ascii")
+KODA_PROVISIONING_TOKEN = TEST_ROOT / "koda-provisioning.token"
+KODA_PROVISIONING_TOKEN.write_text("test-koda-provisioning-secret\n", encoding="utf-8")
+os.environ["TRACKER_KODA_PROVISIONING_TOKEN_FILE"] = str(KODA_PROVISIONING_TOKEN)

@@ -79,3 +79,77 @@ Tracker backend용 team API 키는 `v1/team/self`의 권한으로 검증하며 t
 멤버가 0명이어도 사용할 수 있습니다. 공개 frontend base URL에는 `/api`를 붙이지
 않고, 관리자 자동화 base에만 `/api`를 붙입니다. 흰 화면·API 키·BOM 400 문제는
 [폐쇄망 장애 대응](troubleshooting-ko.md)을 따릅니다.
+
+## GitLab 기반 KODA 결과 수신
+
+KODA가 GitLab 저장소 점검을 완료하면 CycloneDX JSON을 Tracker의
+`POST /api/v1/sbom-runs`로 전송합니다. GitLab 저장소 하나를 Tracker 서비스 하나에
+대응시키며, 소스코드 취약점 결과는 보내지 않고 해당 회차에서 생성한 CycloneDX
+SBOM만 전송합니다. Tracker는 GitLab PAT를 저장하거나 GitLab에 직접 접속하지
+않습니다. GitLab 결과 브랜치·Merge Request·Issue 작성은 KODA가 담당합니다.
+Tracker의 직접 SBOM 업로드 회차도 GitLab에 게시하려면 KODA 게시 경로를 호출하는
+별도 연동이 필요하며, Tracker 설정 화면에 GitLab URL/PAT를 추가하는 것만으로는
+기능이 생기지 않습니다. `runUrl`은 Tracker 회차 조회 링크이며 GitLab Issue URL이
+아닙니다. 저장소별 서비스 토큰은 발급 시 원문을 한 번만 반환하고 재프로비저닝하면
+이전 토큰을 회전(폐기)합니다. 동일 `Idempotency-Key` 재전송은 같은 회차를 반환합니다.
+
+### Tracker 준비
+
+Tracker와 KODA가 함께 읽는 프로비저닝 비밀값 파일을 하나 준비하고 Tracker API에는
+`TRACKER_KODA_PROVISIONING_TOKEN_FILE`, KODA에는
+`KODA_TRACKER_PROVISIONING_TOKEN_FILE`로 같은 파일을 읽기 전용 연결합니다. 통합
+Suite는 최초 시작 시 실행 계정 전용 파일을 자동 생성하고 설치된 Tracker `.env`에
+경로를 기록합니다.
+
+KODA 관리자가 저장소를 연결하면 `POST /api/v1/integrations/koda/repositories`가
+다음을 한 트랜잭션으로 처리합니다.
+
+1. GitLab URL과 프로젝트 ID로 결정한 저장소별 Tracker 서비스를 생성하거나
+   기존 항목을 활성화·재사용합니다.
+2. 공용 `gitlab-source` 환경을 생성하거나 재사용합니다.
+3. 해당 서비스에만 업로드할 수 있는 전송 토큰을 새로 발급하고 이전 자동 토큰은
+   폐기합니다.
+4. 서비스 UUID, 환경 UUID와 토큰 원문을 KODA에 한 번 반환합니다. KODA는 UUID와
+   토큰 파일 참조만 DB에 보관하고 토큰 원문은 권한 `0600` 파일로 저장합니다.
+
+관리자가 Tracker 화면에서 서비스 UUID·환경 UUID·토큰을 복사해 KODA에 입력할
+필요는 없습니다. 자동 생성된 서비스와 `gitlab-source` 환경은 `설정 > 서비스·환경`
+및 `설정 > 연동 설정`에서 확인할 수 있습니다.
+
+통합 Suite에서는 Tracker gateway와 KODA가 전용 `koda-dashboard` 네트워크를
+공유하므로 `http://koda-sbom-gateway:8080`으로 호출합니다. Compose 프로젝트명을
+바꾸면 gateway 이름도 같이 바꿉니다. 프로비저닝 비밀값은 읽기 전용으로, KODA의
+서비스 토큰 디렉터리는 실행 계정 전용 읽기·쓰기로 마운트합니다.
+
+### 전송 계약
+
+KODA는 Bearer 토큰으로 다음 값을 `multipart/form-data` 요청에 보냅니다.
+
+| 항목 | 값 |
+| --- | --- |
+| URL | `POST /api/v1/sbom-runs` |
+| `serviceId` | 저장소 전용 Tracker 서비스 UUID |
+| `environmentId` | `gitlab-source` 환경 UUID |
+| `releaseVersion` | 태그명 또는 `브랜치명@commit-SHA-앞12자리` |
+| `note` | KODA 회차 ID, GitLab 저장소 경로, 전체 commit SHA |
+| `sbom` | KODA 회차에서 생성한 CycloneDX JSON |
+| `Idempotency-Key` | `koda:<KODA 회차 ID>:<SBOM SHA-256>` |
+
+서비스 토큰은 발급할 때 지정한 서비스로만 업로드할 수 있습니다. 다른 서비스 UUID,
+비활성 서비스 또는 비활성 환경을 지정하면 Tracker가 요청을 거부합니다. 같은 토큰과
+같은 `Idempotency-Key`로 재전송하면 기존 Tracker 회차를 반환하므로 중복 회차가
+생기지 않습니다.
+
+KODA는 서비스 토큰으로 `GET /api/v1/integrations/koda/runs/{runId}`를 조회합니다.
+토큰에 연결된 서비스의 회차만 조회할 수 있으며 응답에는 회차 상태, 최신 CVE
+projection, CVSS·KEV·제안 버전과 정책 결과가 포함됩니다. 다른 서비스의 회차는
+존재 여부를 노출하지 않고 `404`를 반환합니다.
+
+### 상태, 재전송과 토큰 교체
+
+Tracker 전송은 일시 오류를 최대 세 번 재시도합니다. 이후 KODA는 분석 완료를 제한
+시간 동안 조회하고 GitLab 결과 게시까지 성공해야 연동 상태를 `completed`로 기록합니다.
+실패 시 Tracker 회차 ID와 오류를 보존하므로 사용자는 KODA 결과 화면에서 같은
+`Idempotency-Key`로 재시도할 수 있습니다. KODA는 commit SHA별 결정적 결과 경로와
+브랜치를 사용하고 기존 MR·Issue를 조회해 재사용하므로 같은 회차를 재시도해도 GitLab
+항목이 중복되지 않습니다.

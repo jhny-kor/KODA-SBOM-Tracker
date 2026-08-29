@@ -160,7 +160,7 @@ export KODA_TRACKER_TOKEN='관리자가 발급한 서비스 범위 토큰'
 | [운영 가이드](docs/operations-ko.md) | 기동·설정·백업 등 일상 운영 |
 | [외부 TLS·DNS 운영 절차](docs/operations-ko.md#2-2-koda-suite-외부-tls-reverse-proxy) | 통합 Suite의 외부 Nginx, 인증서, DNS와 컨테이너 교체 |
 | [오프라인 번들 가이드](docs/offline-bundle-ko.md) | 폐쇄망 반입과 취약점 데이터 bundle |
-| [KODA 통합 인증·운영 계약](docs/koda-integration-ko.md) | KODA suite와 세션·신원을 공유할 때 |
+| [KODA 통합 인증·운영 계약](docs/koda-integration-ko.md) | KODA suite와 세션·신원을 공유하거나 GitLab 저장소 결과를 받을 때 |
 | [폐쇄망 장애 대응](docs/troubleshooting-ko.md) | 로그인·API 키·업로드 오류가 났을 때 |
 | [Windows 설치파일 가이드](docs/windows-installer-ko.md) | Windows 설치파일을 만들거나 설치할 때 |
 | [오픈소스 라이선스 정책](docs/open-source-compliance-ko.md) | 산출물을 배포하기 전 |

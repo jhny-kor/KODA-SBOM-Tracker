@@ -61,10 +61,11 @@ const pageIds = new Set<Page>([...nav.map((item) => item.id), guideNav.id]);
 function readPortalLink() {
   const params = new URLSearchParams(window.location.search);
   const requestedPage = params.get("page");
+  const requestedSettingsTab = params.get("settingsTab");
   const legacyServices = requestedPage === "services";
   return {
     page: legacyServices ? "settings" as Page : requestedPage && pageIds.has(requestedPage as Page) ? (requestedPage as Page ): ("dashboard" as Page),
-    settingsTab: legacyServices ? "services" as SettingsTab : (params.get("settingsTab") as SettingsTab | null),
+    settingsTab: legacyServices ? "services" as SettingsTab : requestedSettingsTab === "gitlab" ? "integration" as SettingsTab : (requestedSettingsTab as SettingsTab | null),
     runId: params.get("runId") || ""};}
 
 function replacePortalLink(updates: { page?: Page; runId?: string | null }) {
@@ -95,6 +96,14 @@ function roleLabel(role: string) {
 
 function permissionLabel(permission: string) {
   return PERMISSION_LABELS[permission] || permission;
+}
+
+async function copyOrShow(label: string, value: string) {
+  try {
+    await navigator.clipboard.writeText(value);
+  } catch {
+    window.prompt(label, value);
+  }
 }
 
 function dataBaselineLabel(value: string | null | undefined, empty = "아직 반입된 분석 데이터 없음") {
@@ -265,12 +274,20 @@ function chartPoints(values: number[], width: number, height: number, padding = 
 function pathFor(values: number[], width: number, height: number) {
   return chartPoints(values, width, height).map((point, index) => `${index ? "L" : "M"}${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" ");}
 
+type ChartTooltip = { x: number; y: number; text: string };
+
+function ImmediateChartTooltip({ tooltip }: { tooltip: ChartTooltip | null }) {
+  if (!tooltip) return null;
+  return <span className="preview-chart-tooltip" role="tooltip" style={{ left: `${tooltip.x}%`, top: `${tooltip.y}%` }}>{tooltip.text}</span>;
+}
+
 function Sparkline({ values, color, label, pointLabels = [] }: { values: number[]; color: string; label: string; pointLabels?: string[];}) {
   const points = chartPoints(values, 100, 28, 3);
-  return (<svg className="preview-sparkline" viewBox="0 0 100 28" role="img" aria-label={`${label} 추이`}>
+  const [tooltip, setTooltip] = useState<ChartTooltip | null>(null);
+  return (<div className="preview-sparkline-wrap"><svg className="preview-sparkline" viewBox="0 0 100 28" role="img" aria-label={`${label} 추이`}>
     <path d={pathFor(values, 100, 28)} fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
-    {points.map((point, index) => (<circle key={`${point.x}-${point.y}`} cx={point.x} cy={point.y} r="2.5" fill={color}><title>{pointLabels[index] || label}: {values[index] ?? 0}</title></circle>))}
-  </svg>);}
+    {points.map((point, index) => { const text = `${pointLabels[index] || label}: ${values[index] ?? 0}`; const show = () => setTooltip({ x: Math.max(16, Math.min(84, point.x)), y: (point.y / 28) * 100, text }); return (<circle className="preview-chart-point" key={`${point.x}-${point.y}`} cx={point.x} cy={point.y} r="2.5" fill={color} role="img" aria-label={text} tabIndex={0} onMouseEnter={show} onMouseLeave={() => setTooltip(null)} onFocus={show} onBlur={() => setTooltip(null)} />);})}
+  </svg><ImmediateChartTooltip tooltip={tooltip} /></div>);}
 
 function PreviewMetric({ label, value, description, values, color, pointLabels }: { label: string; value: string; description: string; values: number[]; color: string; pointLabels?: string[];}) {
   return (<article className="preview-metric-card">
@@ -281,7 +298,7 @@ function PreviewMetric({ label, value, description, values, color, pointLabels }
 function PreviewBars({ items, emptyLabel }: { items: { label: string; value: number; tone?: string }[]; emptyLabel: string;}) {
   const maximum = Math.max(1, ...items.map((item) => item.value));
   if (!items.some((item) => item.value)) return <p className="preview-chart-empty">{emptyLabel}</p>;
-  return (<div className="preview-bars">{items.map((item) => (<div className="preview-bar-row" key={item.label} title={`${item.label}: ${item.value}`}>
+  return (<div className="preview-bars">{items.map((item) => (<div className="preview-bar-row" key={item.label}>
     <span>{item.label}</span><div className="preview-bar-track"><i className={item.tone || ""} style={{ width: `${(item.value / maximum) * 100}%` }} /></div><strong>{item.value}</strong>
   </div>))}</div>);}
 
@@ -297,6 +314,7 @@ function Dashboard({ runs, onUpload,
     .sort((left, right) => left.createdAt.localeCompare(right.createdAt)), [runs, standalone]);
   // ponytail: chart the latest 12 uploads to keep the local preview readable; add pagination when history needs to scale.
   const chartRuns = useMemo(() => uploadedRuns.slice(-12), [uploadedRuns]);
+  const [trendTooltip, setTrendTooltip] = useState<ChartTooltip | null>(null);
 
   const latest = uploadedRuns.at(-1);
   const severityCounts = latest?.severityCounts || {};
@@ -345,12 +363,12 @@ function Dashboard({ runs, onUpload,
     <div className="preview-chart-grid">
       <article className="preview-chart-card preview-trend-card"><header><div><h2>업로드별 분석 추이</h2><p>최근 SBOM 회차의 구성요소·취약 구성요소 변화</p></div><span className="preview-chart-meta">{cveBaseline(latest)}</span></header>
         <div className="preview-legend">{series.map((item) => (<span key={item.label}><i style={{ background: item.color }} />{item.label}</span>))}</div>
-        <div className="preview-chart-scroll"><svg className="preview-chart" viewBox="0 0 760 250" role="img" aria-label="업로드별 구성요소와 취약 구성요소 추이">
+        <div className="preview-chart-scroll"><div className="preview-chart-canvas"><svg className="preview-chart" viewBox="0 0 760 250" role="img" aria-label="업로드별 구성요소와 취약 구성요소 추이">
           <title>업로드별 구성요소와 취약 구성요소 추이</title>
           {[50, 105, 160, 215].map((y) => (<line key={y} x1="36" x2="744" y1={y} y2={y} className="preview-grid-line" />))}
-          {series.map((item) => (<g key={item.label}><path d={pathFor(item.values, 708, 165)} transform="translate(36 45)" fill="none" stroke={item.color} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />{chartPoints(item.values, 708, 165).map((point, index) => { const run = chartRuns[index]; return (<circle className="preview-chart-point" key={`${item.label}-${index}`} cx={point.x + 36} cy={point.y + 45} r="4" fill={item.color}><title>{item.label} · #{run.roundNumber} · {run.service.name}/{run.environment.name} · {item.values[index]} · CVE 기준일 {cveBaseline(run)}</title></circle>); })}</g>))}
+          {series.map((item) => (<g key={item.label}><path d={pathFor(item.values, 708, 165)} transform="translate(36 45)" fill="none" stroke={item.color} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />{chartPoints(item.values, 708, 165).map((point, index) => { const run = chartRuns[index]; const x = point.x + 36; const y = point.y + 45; const text = `${item.label} · #${run.roundNumber} · ${run.service.name}/${run.environment.name} · ${item.values[index]} · CVE 기준일 ${cveBaseline(run)}`; const show = () => setTrendTooltip({ x: Math.max(14, Math.min(86, (x / 760) * 100)), y: (y / 250) * 100, text }); return (<circle className="preview-chart-point" key={`${item.label}-${index}`} cx={x} cy={y} r="4" fill={item.color} role="img" aria-label={text} tabIndex={0} onMouseEnter={show} onMouseLeave={() => setTrendTooltip(null)} onFocus={show} onBlur={() => setTrendTooltip(null)} />); })}</g>))}
           {chartRuns.map((run, index) => (<text key={run.id} x={chartRuns.length === 1 ? 390 : 36 + (index / (chartRuns.length - 1)) * 708} y="238" textAnchor="middle" className="preview-axis-label">#{uploadedRuns.length - chartRuns.length + index + 1}</text>))}
-        </svg></div>
+        </svg><ImmediateChartTooltip tooltip={trendTooltip} /></div></div>
       </article>
       <article className="preview-chart-card"><header><div><h2>최신 SBOM 심각도</h2><p>{latest?.filename || "업로드 파일"}</p></div><span className="preview-chart-total">{latest?.vulnerabilityCount || 0}건</span></header>
         <PreviewBars items={severityItems} emptyLabel="최신 분석에 취약점 레코드가 없습니다." />
@@ -829,19 +847,20 @@ function ServicesPage({
   const visibleServices = activeServices.slice((currentServicePage - 1) * catalogPageSize, currentServicePage * catalogPageSize);
   const visibleEnvironments = activeEnvironments.slice((currentEnvironmentPage - 1) * catalogPageSize, currentEnvironmentPage * catalogPageSize);
   return (<section className="page generic-page">
-    <div className="page-heading"><div><h1>서비스</h1><p>서비스·환경·릴리스 구조와 업로드 권한을 관리합니다.</p></div>{canManage && (<div className="button-row"><button className="primary" onClick={() => setMode("service")}>서비스 추가
+    <div className="page-heading"><div><h1>서비스</h1><p>서비스·환경·릴리스 구조와 업로드 권한을 관리합니다. GitLab 저장소 연동에는 저장소별 서비스와 gitlab-source 환경의 연동 ID를 사용합니다.</p></div>{canManage && (<div className="button-row"><button className="primary" onClick={() => setMode("service")}>서비스 추가
             </button><button className="secondary" onClick={() => setMode("environment")}>환경 추가
             </button></div>)}
       </div>
     {message && (<p className="form-message" role="status">{message}</p>)}
-    <div className="settings-grid catalog-grid"><div className="table-frame"><h2 className="table-title">서비스 {activeServices.length}개</h2><table><thead><tr><th>서비스</th><th>식별자</th><th>작업</th></tr></thead><tbody>{activeServices.length ? (visibleServices.map((item) => (<tr key={item.id}><td>{item.name}</td><td className="mono">{item.slug}</td><td>{canManage && (
+    <div className="settings-grid catalog-grid"><div className="table-frame"><h2 className="table-title">서비스 {activeServices.length}개</h2><table><thead><tr><th>서비스</th><th>식별자</th><th>작업</th></tr></thead><tbody>{activeServices.length ? (visibleServices.map((item) => (<tr key={item.id}><td>{item.name}</td><td className="mono">{item.slug}</td><td><button type="button" className="secondary compact" title={item.id} onClick={() => void copyOrShow("서비스 연동 ID", item.id)}>연동 ID 복사</button>{canManage && (
                         <>
+                          {" "}
                           <button className="secondary compact" disabled={busy} onClick={() => void editService(item)}>이름 변경
                           </button> {" "}<button className="danger compact" disabled={busy} onClick={() => void removeService(item)}>삭제</button></>
                       )}
     </td></tr>) )
-              ): (<tr><td colSpan={3}>등록된 서비스가 없습니다.</td></tr>)}</tbody></table><DetailPagination total={activeServices.length} page={currentServicePage} pageSize={catalogPageSize} label="서비스 페이지당 행 수" onPage={setServicePage} onPageSize={(size) => { setCatalogPageSize(size); setServicePage(1); setEnvironmentPage(1); }} /></div><div className="table-frame"><h2 className="table-title">환경 {activeEnvironments.length}개</h2><table><thead><tr><th>환경</th><th>식별자</th><th>정렬</th><th>작업</th></tr></thead><tbody>{activeEnvironments.length ? (visibleEnvironments.map((item) => (<tr key={item.id}><td>{item.name}</td><td className="mono">{item.slug}</td><td>{item.sortOrder ?? "-"}</td><td>{canManage && (<><button className="secondary compact" disabled={busy} onClick={() => setEditingEnvironment(item)}>변경
-                        </button><button className="danger compact" disabled={busy} onClick={() => void removeEnvironment(item)}>삭제</button></>)}</td></tr>) )
+              ): (<tr><td colSpan={3}>등록된 서비스가 없습니다.</td></tr>)}</tbody></table><DetailPagination total={activeServices.length} page={currentServicePage} pageSize={catalogPageSize} label="서비스 페이지당 행 수" onPage={setServicePage} onPageSize={(size) => { setCatalogPageSize(size); setServicePage(1); setEnvironmentPage(1); }} /></div><div className="table-frame"><h2 className="table-title">환경 {activeEnvironments.length}개</h2><table><thead><tr><th>환경</th><th>식별자</th><th>정렬</th><th>작업</th></tr></thead><tbody>{activeEnvironments.length ? (visibleEnvironments.map((item) => (<tr key={item.id}><td>{item.name}</td><td className="mono">{item.slug}</td><td>{item.sortOrder ?? "-"}</td><td><button type="button" className="secondary compact" title={item.id} onClick={() => void copyOrShow("환경 연동 ID", item.id)}>연동 ID 복사</button>{canManage && (<>{" "}<button className="secondary compact" disabled={busy} onClick={() => setEditingEnvironment(item)}>변경
+                        </button> <button className="danger compact" disabled={busy} onClick={() => void removeEnvironment(item)}>삭제</button></>)}</td></tr>) )
               ): (<tr><td colSpan={4}>등록된 환경이 없습니다.</td></tr>)}</tbody></table><DetailPagination total={activeEnvironments.length} page={currentEnvironmentPage} pageSize={catalogPageSize} label="환경 페이지당 행 수" onPage={setEnvironmentPage} onPageSize={(size) => { setCatalogPageSize(size); setServicePage(1); setEnvironmentPage(1); }} /></div></div>
     {mode && (<div className="modal-backdrop" role="presentation"><section className="modal" role="dialog" aria-modal="true"><header><h2>{mode === "service" ? "서비스 추가" : "환경 추가"}</h2><button type="button" className="icon-button" aria-label="추가 창 닫기" onClick={() => setMode(null)}><Icon name="close" /></button></header><form onSubmit={submit}><label>이름
                 <input name="name" required autoFocus /></label><label>식별자
@@ -1004,10 +1023,12 @@ export function SettingsPage({ users, services, environments = [], tokens, dtrac
   const [mode, setMode] = useState<"user" | "token" | null>(null);
   const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab || "users");
   const [message, setMessage] = useState("");
-  const [issuedToken, setIssuedToken] = useState("");
+  const [issuedToken, setIssuedToken] = useState<{ name: string; token: string; serviceId: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [userPage, setUserPage] = useState(1);
   const [tokenPage, setTokenPage] = useState(1);
+  const [gitlabServicePage, setGitlabServicePage] = useState(1);
+  const [gitlabPageSize, setGitlabPageSize] = useState(10);
   const [accountPageSize, setAccountPageSize] = useState(10);
   const [policyDraft, setPolicyDraft] = useState<Record<string, Set<string>>>(
     () =>
@@ -1020,7 +1041,7 @@ export function SettingsPage({ users, services, environments = [], tokens, dtrac
     if (canRoles || canPolicyEdit) tabs.push({ id: "roles", label: "권한 관리", icon: "settings" });
     if (isAdmin && canVulnerability) tabs.push({ id: "vulnerability", label: "취약점 데이터", icon: "shield" });
     if (isAdmin && canAudit) tabs.push({ id: "audit", label: "감사 로그", icon: "audit" });
-    if (canDtrack) tabs.push({ id: "integration", label: "연동 설정", icon: "external" });
+    if (canDtrack || (canServices && canTokens)) tabs.push({ id: "integration", label: "연동 설정", icon: "external" });
     if (isAdmin) tabs.push({ id: "ldap", label: "LDAP 로그인", icon: "shield" });
     return tabs;
   }, [canAudit, canDtrack, canPolicyEdit, canRoles, canServices, canTokens, canUsers, canVulnerability, isAdmin]);
@@ -1040,7 +1061,7 @@ export function SettingsPage({ users, services, environments = [], tokens, dtrac
       if (mode === "user") await createUser({ username: String(values.get("username")), password: String(values.get("password")), role: String(values.get("role")) });
       if (mode === "token") {
         const result = await createApiToken({ name: String(values.get("name")), serviceId: String(values.get("serviceId") || "") });
-        setIssuedToken(result.token);} else { setMode(null);}
+        setIssuedToken(result);} else { setMode(null);}
       setMessage(mode === "token" ? "토큰이 발급되었습니다. 지금 한 번만 복사하세요." : "사용자를 등록했습니다."); onChanged();} catch (error) { setMessage(error instanceof Error ? error.message : "처리에 실패했습니다");} finally { setBusy(false);}
   }
   async function revoke(id: string) {
@@ -1079,15 +1100,26 @@ export function SettingsPage({ users, services, environments = [], tokens, dtrac
   const currentTokenPage = Math.min(tokenPage, tokenPageCount);
   const visibleUsers = users.slice((currentUserPage - 1) * accountPageSize, currentUserPage * accountPageSize);
   const visibleTokens = tokens.slice((currentTokenPage - 1) * accountPageSize, currentTokenPage * accountPageSize);
+  const gitlabEnvironment = environments.find((item) => item.active !== false && item.slug === "gitlab-source");
+  const gitlabServices = services.filter((item) => item.active !== false && item.slug.startsWith("gitlab-"));
+  const gitlabServicePageCount = Math.max(1, Math.ceil(gitlabServices.length / gitlabPageSize));
+  const currentGitlabServicePage = Math.min(gitlabServicePage, gitlabServicePageCount);
+  const visibleGitlabServices = gitlabServices.slice((currentGitlabServicePage - 1) * gitlabPageSize, currentGitlabServicePage * gitlabPageSize);
   return (<section className="page generic-page">
-    <div className="page-heading"><div><h1>설정</h1><p>사용자·권한·취약점 데이터·감사 로그와 연동을 관리합니다.</p></div>{activeTab === "users" && (<div className="button-row">{canTokens && (<button type="button" className="secondary" onClick={() => { setIssuedToken(""); setMode("token"); }}>API 토큰 발급</button>)}{canUsers && (<button type="button" className="primary" onClick={() => setMode("user")}>사용자 추가</button>)}</div>)}</div>
+    <div className="page-heading"><div><h1>설정</h1><p>사용자·권한·취약점 데이터·감사 로그와 연동을 관리합니다.</p></div>{activeTab === "users" && (<div className="button-row">{canTokens && (<button type="button" className="secondary" onClick={() => { setIssuedToken(null); setMode("token"); }}>API 토큰 발급</button>)}{canUsers && (<button type="button" className="primary" onClick={() => setMode("user")}>사용자 추가</button>)}</div>)}</div>
     <div className="settings-tabs" role="tablist" aria-label="설정 하위 메뉴">
       {settingsTabs.map((tab) => (<button type="button" role="tab" id={`settings-tab-${tab.id}`} aria-controls={`settings-panel-${tab.id}`} aria-selected={activeTab === tab.id} className={activeTab === tab.id ? "active" : ""} key={tab.id} onClick={() => setActiveTab(tab.id)}><Icon name={tab.icon} /><span>{tab.label}</span></button>))}
     </div>
     {message && (<p className="form-message" role="status">{message}</p>)}
-    {issuedToken && activeTab === "users" && (<div className="token-reveal"><strong>새 토큰</strong><code>{issuedToken}</code></div>)}
+    {issuedToken && activeTab === "users" && (<div className="token-reveal"><strong>{issuedToken.name}</strong><code>{issuedToken.token}</code><span>서비스 ID <code>{issuedToken.serviceId}</code></span><button type="button" className="secondary compact" onClick={() => void copyOrShow("KODA 서비스 토큰", issuedToken.token)}>토큰 복사</button><button type="button" className="secondary compact" onClick={() => void copyOrShow("서비스 연동 ID", issuedToken.serviceId)}>서비스 ID 복사</button></div>)}
     {activeTab === "users" && canUsers && (<p className="form-message">가입 신청 계정은 승인 대기로 구분됩니다. 역할을 확인한 뒤 승인하세요.</p>)}
-    {activeTab === "integration" && canDtrack && (<div className="settings-panel" id="settings-panel-integration" role="tabpanel" aria-labelledby="settings-tab-integration"><div className="table-frame dtrack-status"><h2 className="table-title">Dependency-Track 연결</h2><div className="dtrack-status-body"><strong className={`state ${dtrackLabel === "연결됨" ? "completed" : "partial"}`}>{dtrackLabel}</strong><span>버전 {dtrackStatus?.version || "-"}</span><span>팀 {dtrackStatus?.team || "-"}</span>{!dtrackStatus?.configured && (<p>API 키를 설정하면 실제 BOM 업로드가 활성화됩니다.</p>)}{dtrackStatus?.reachable && dtrackStatus?.authenticated && Boolean(dtrackStatus.missingPermissions.length) && (<p>연결은 되었지만 누락 권한을 확인하세요: {(dtrackStatus.missingPermissions || []).map(permissionLabel).join(", ")}</p>)}{dtrackStatus?.error && !dtrackStatus?.reachable && <p>{dtrackStatus.error}</p>}</div></div></div>)}
+    {activeTab === "integration" && (canDtrack || (canServices && canTokens)) && (<div className="settings-panel integration-settings-panel" id="settings-panel-integration" role="tabpanel" aria-labelledby="settings-tab-integration">
+      {canServices && canTokens && (<>
+        <div className="table-frame dtrack-status"><div className="settings-panel-heading"><div><h2 className="table-title">KODA GitLab 자동 연동</h2><p>GitLab 연결과 저장소 선택은 KODA에서만 설정합니다. Tracker는 KODA 요청을 받아 저장소별 서비스·환경·전송 토큰을 자동 생성하거나 재사용합니다.</p></div><span className={`user-status ${gitlabServices.length ? "active" : "inactive"}`}>{gitlabServices.length ? "저장소 연결됨" : "연결 대기"}</span></div><div className="dtrack-status-body"><p>GitLab 저장소 → KODA 점검·CycloneDX 생성 → Tracker 회차 수신·분석 → KODA가 GitLab 결과 MR·취약점 이슈 저장</p><p>{gitlabEnvironment ? "gitlab-source 환경이 자동 준비되었습니다." : "첫 저장소 연결 시 gitlab-source 환경이 자동 준비됩니다."}</p><div className="button-row"><button type="button" className="secondary" onClick={() => setActiveTab("services")}>자동 생성 항목 보기</button></div></div></div>
+        <div className="table-frame"><h2 className="table-title">자동 생성된 저장소 서비스</h2><table><thead><tr><th>GitLab 저장소</th><th>Tracker 식별자</th><th>전송 토큰</th></tr></thead><tbody>{gitlabServices.length ? visibleGitlabServices.map((item) => { const tokenCount = tokens.filter((token) => token.active && token.serviceId === item.id).length; return (<tr key={item.id}><td>{item.name}</td><td className="mono">{item.slug}</td><td>{tokenCount ? "활성" : "확인 필요"}</td></tr>);}) : (<tr><td colSpan={3}>KODA에서 연결한 GitLab 저장소가 없습니다.</td></tr>)}</tbody></table><DetailPagination total={gitlabServices.length} page={currentGitlabServicePage} pageSize={gitlabPageSize} label="GitLab 서비스 페이지당 행 수" onPage={setGitlabServicePage} onPageSize={(size) => { setGitlabPageSize(size); setGitlabServicePage(1); }} /></div>
+      </>)}
+      {canDtrack && (<div className="table-frame dtrack-status"><h2 className="table-title">Dependency-Track 연결</h2><div className="dtrack-status-body"><strong className={`state ${dtrackLabel === "연결됨" ? "completed" : "partial"}`}>{dtrackLabel}</strong><span>버전 {dtrackStatus?.version || "-"}</span><span>팀 {dtrackStatus?.team || "-"}</span>{!dtrackStatus?.configured && (<p>API 키를 설정하면 실제 BOM 업로드가 활성화됩니다.</p>)}{dtrackStatus?.reachable && dtrackStatus?.authenticated && Boolean(dtrackStatus.missingPermissions.length) && (<p>연결은 되었지만 누락 권한을 확인하세요: {(dtrackStatus.missingPermissions || []).map(permissionLabel).join(", ")}</p>)}{dtrackStatus?.error && !dtrackStatus?.reachable && <p>{dtrackStatus.error}</p>}</div></div>)}
+    </div>)}
     {activeTab === "services" && canServices && (<div id="settings-panel-services" role="tabpanel" aria-labelledby="settings-tab-services"><ServicesPage services={services} environments={environments} canManage={canCatalogManage} onChanged={onChanged} /></div>)}
     {activeTab === "ldap" && isAdmin && (<LdapSettingsPanel settings={ldapSettings} onChanged={onLdapChanged} />)}
     {activeTab === "users" && (canUsers || canTokens) && (<div className="settings-panel" id="settings-panel-users" role="tabpanel" aria-labelledby="settings-tab-users"><div className="settings-grid">{canUsers && (<div className="table-frame"><h2 className="table-title">사용자 {users.length}명</h2><table><thead><tr><th>사용자</th><th>역할</th><th>상태</th><th>작업</th></tr></thead><tbody>{users.length ? visibleUsers.map((item) => (<tr key={item.id || item.username} className={item.status === "pending" ? "pending-user" : ""}><td>{item.username}</td><td><select aria-label={`${item.username} 역할`} value={item.role} disabled={busy || item.status === "deleted"} onChange={(event) => void updateUser(item, "role", event.target.value)}>{canRoles && (<><option value="admin">관리자</option><option value="manager">매니저</option></>)}<option value="analyst">분석자</option><option value="uploader">업로더</option><option value="viewer">조회자</option></select></td><td><span className={`user-status ${item.status || (item.active ? "active" : "inactive")}`}>{userStatusLabel(item)}</span></td><td>{item.id && (item.status === "pending" ? (<button type="button" className="primary compact" disabled={busy} onClick={() => void approve(item)}>승인</button>) : item.status === "deleted" ? (<span>삭제됨</span>) : (<><button type="button" className="secondary compact" disabled={busy} onClick={() => void updateUser(item, "active", !item.active)}>{item.active ? "비활성화" : "활성화"}</button>{<button type="button" className="danger compact" disabled={busy} onClick={() => void removeUser(item)}>삭제</button>}</>))}</td></tr>)) : (<tr><td colSpan={4}>등록된 사용자가 없습니다.</td></tr>)}</tbody></table><DetailPagination total={users.length} page={currentUserPage} pageSize={accountPageSize} label="사용자 페이지당 행 수" onPage={setUserPage} onPageSize={(size) => { setAccountPageSize(size); setUserPage(1); setTokenPage(1); }} /></div>)}{canTokens && (<div className="table-frame"><h2 className="table-title">API 토큰 {tokens.length}개</h2><table><thead><tr><th>이름</th><th>서비스</th><th>생성 시각</th><th>상태</th><th /></tr></thead><tbody>{tokens.length ? visibleTokens.map((item) => (<tr key={item.id}><td>{item.name}</td><td>{services.find((service) => service.id === item.serviceId)?.name || item.serviceId || "-"}</td><td>{formatSeoulDateTime(item.createdAt)}</td><td>{item.active ? "활성" : "폐기"}</td><td>{item.active && (<button type="button" className="secondary compact" onClick={() => void revoke(item.id)} disabled={busy}>폐기</button>)}</td></tr>)) : (<tr><td colSpan={5}>발급된 토큰이 없습니다.</td></tr>)}</tbody></table><DetailPagination total={tokens.length} page={currentTokenPage} pageSize={accountPageSize} label="토큰 페이지당 행 수" onPage={setTokenPage} onPageSize={(size) => { setAccountPageSize(size); setUserPage(1); setTokenPage(1); }} /></div>)}</div></div>)}

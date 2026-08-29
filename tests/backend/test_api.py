@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -9,7 +10,7 @@ from fastapi.testclient import TestClient
 from koda_tracker.config import get_settings
 from koda_tracker.db import SessionLocal
 from koda_tracker.main import app
-from koda_tracker.models import AnalysisRevision, JobState
+from koda_tracker.models import AnalysisRevision, JobState, ProcessingState, SbomRun
 
 
 def test_authenticated_upload_idempotency_and_artifact_round_trip() -> None:
@@ -149,6 +150,71 @@ def test_problem_details_and_authentication_boundary() -> None:
         assert response.json()["status"] == 401
 
 
+def test_koda_repository_provisioning_rotates_service_token_and_exposes_scoped_result() -> None:
+    headers = {"Authorization": "Bearer test-koda-provisioning-secret"}
+    repository = {
+        "gitlabUrl": "https://gitlab.example.internal",
+        "gitlabProjectId": 42,
+        "pathWithNamespace": "group/demo",
+    }
+    sbom = json.dumps({"bomFormat": "CycloneDX", "specVersion": "1.6", "components": []}).encode()
+    with TestClient(app) as client:
+        assert client.post("/api/v1/integrations/koda/repositories", json=repository).status_code == 401
+        first = client.post("/api/v1/integrations/koda/repositories", json=repository, headers=headers)
+        second = client.post("/api/v1/integrations/koda/repositories", json=repository, headers=headers)
+        assert first.status_code == second.status_code == 201
+        assert first.json()["serviceCreated"] is True
+        assert second.json()["serviceCreated"] is False
+        assert first.json()["serviceId"] == second.json()["serviceId"]
+        assert first.json()["environmentId"] == second.json()["environmentId"]
+        upload_data = {
+            "serviceId": second.json()["serviceId"],
+            "environmentId": second.json()["environmentId"],
+            "releaseVersion": "main@aaaaaaaaaaaa",
+        }
+        assert client.post(
+            "/api/v1/sbom-runs", data=upload_data,
+            files={"sbom": ("demo.cdx.json", sbom, "application/json")},
+            headers={"Authorization": f"Bearer {first.json()['uploadToken']}"},
+        ).status_code == 401
+        uploaded = client.post(
+            "/api/v1/sbom-runs", data=upload_data,
+            files={"sbom": ("demo.cdx.json", sbom, "application/json")},
+            headers={"Authorization": f"Bearer {second.json()['uploadToken']}"},
+        )
+        assert uploaded.status_code == 202
+        with SessionLocal() as db:
+            run = db.get(SbomRun, uploaded.json()["runId"])
+            run.state = ProcessingState.COMPLETED
+            run.analysis_state = JobState.COMPLETED
+            db.add(AnalysisRevision(
+                run_id=run.id, sequence=1, state=JobState.COMPLETED,
+                findings=[
+                    {"canonicalId": "CVE-2026-0001", "severity": "high", "component": "demo"},
+                    {"canonicalId": "GHSA-only", "severity": "high", "component": "demo"},
+                ],
+                policies=[{"name": "critical-cve"}],
+            ))
+            db.commit()
+        result = client.get(
+            f"/api/v1/integrations/koda/runs/{uploaded.json()['runId']}",
+            headers={"Authorization": f"Bearer {second.json()['uploadToken']}"},
+        )
+        assert result.status_code == 200
+        assert result.json()["run"]["service"]["name"] == "group/demo"
+        assert [item["canonicalId"] for item in result.json()["analysis"]["findings"]] == ["CVE-2026-0001"]
+        assert result.json()["analysis"]["policyViolations"] == [{"name": "critical-cve"}]
+        other = client.post(
+            "/api/v1/integrations/koda/repositories",
+            json={**repository, "gitlabProjectId": 43, "pathWithNamespace": "group/other"},
+            headers=headers,
+        ).json()
+        assert client.get(
+            f"/api/v1/integrations/koda/runs/{uploaded.json()['runId']}",
+            headers={"Authorization": f"Bearer {other['uploadToken']}"},
+        ).status_code == 404
+
+
 def test_ldap_login_fails_closed_until_configured() -> None:
     with TestClient(app) as client:
         response = client.post(
@@ -222,9 +288,28 @@ def test_service_token_is_upload_only_and_can_read_only_its_job() -> None:
                 "releaseVersion": "token-test",
             },
             files={"sbom": ("empty.cdx.json", sbom, "application/json")},
-            headers={"Authorization": f"Bearer {other_token}"},
+            headers={
+                "Authorization": f"Bearer {other_token}",
+                "Idempotency-Key": f"koda:run-42:{hashlib.sha256(sbom).hexdigest()}",
+            },
         )
         assert upload.status_code == 202
+        replay = client.post(
+            "/api/v1/sbom-runs",
+            data={
+                "serviceId": service_id,
+                "environmentId": environment_id,
+                "releaseVersion": "token-test",
+            },
+            files={"sbom": ("empty.cdx.json", sbom, "application/json")},
+            headers={
+                "Authorization": f"Bearer {other_token}",
+                "Idempotency-Key": f"koda:run-42:{hashlib.sha256(sbom).hexdigest()}",
+            },
+        )
+        assert replay.status_code == 202
+        assert replay.json()["runId"] == upload.json()["runId"]
+        assert replay.json()["idempotentReplay"] is True
         job_id = upload.json()["jobId"]
         assert client.get(
             f"/api/v1/jobs/{job_id}",
@@ -240,6 +325,110 @@ def test_service_token_is_upload_only_and_can_read_only_its_job() -> None:
         ).status_code == 403
         assert client.get("/api/v1/services", headers={"Authorization": f"Bearer {other_token}"}).status_code == 403
         assert client.get("/api/v1/environments", headers={"Authorization": f"Bearer {other_token}"}).status_code == 403
+
+
+def test_service_token_rotation_preserves_idempotency_and_job_access(monkeypatch) -> None:
+    repository = {
+        "gitlabUrl": "https://gitlab.example.internal",
+        "gitlabProjectId": 9001,
+        "pathWithNamespace": "group/rotation",
+    }
+    sbom = json.dumps({"bomFormat": "CycloneDX", "specVersion": "1.6", "components": []}).encode()
+    with TestClient(app) as client:
+        provisioning_headers = {"Authorization": "Bearer test-koda-provisioning-secret"}
+        first = client.post(
+            "/api/v1/integrations/koda/repositories", json=repository, headers=provisioning_headers
+        ).json()
+        upload_data = {
+            "serviceId": first["serviceId"],
+            "environmentId": first["environmentId"],
+            "releaseVersion": "main@rotation",
+        }
+        upload_headers = {"Authorization": f"Bearer {first['uploadToken']}", "Idempotency-Key": "rotation-key"}
+        uploaded = client.post(
+            "/api/v1/sbom-runs", data=upload_data,
+            files={"sbom": ("rotation.cdx.json", sbom, "application/json")}, headers=upload_headers,
+        )
+        assert uploaded.status_code == 202
+
+        rotated = client.post(
+            "/api/v1/integrations/koda/repositories", json=repository, headers=provisioning_headers
+        ).json()
+        replay = client.post(
+            "/api/v1/sbom-runs", data=upload_data,
+            files={"sbom": ("rotation.cdx.json", sbom, "application/json")},
+            headers={"Authorization": f"Bearer {rotated['uploadToken']}", "Idempotency-Key": "rotation-key"},
+        )
+        assert replay.status_code == 202
+        assert replay.json()["runId"] == uploaded.json()["runId"]
+        assert replay.json()["idempotentReplay"] is True
+        assert client.get(
+            f"/api/v1/jobs/{uploaded.json()['jobId']}",
+            headers={"Authorization": f"Bearer {rotated['uploadToken']}"},
+        ).status_code == 200
+
+        result = client.get(
+            f"/api/v1/integrations/koda/runs/{uploaded.json()['runId']}",
+            headers={"Authorization": f"Bearer {rotated['uploadToken']}"},
+        )
+        assert result.status_code == 200
+        assert result.json()["run"]["runUrl"] is None
+        monkeypatch.setattr(get_settings(), "public_origin", "https://tracker.example.internal/base")
+        result = client.get(
+            f"/api/v1/integrations/koda/runs/{uploaded.json()['runId']}",
+            headers={"Authorization": f"Bearer {rotated['uploadToken']}"},
+        )
+        assert result.status_code == 200
+        assert result.json()["run"]["runUrl"] == (
+            f"https://tracker.example.internal/base/?page=runs&runId={uploaded.json()['runId']}"
+        )
+
+
+def test_service_scoped_idempotency_is_distinct_between_services() -> None:
+    sbom = json.dumps({"bomFormat": "CycloneDX", "specVersion": "1.6", "components": []}).encode()
+    headers = {"Authorization": "Bearer test-koda-provisioning-secret"}
+    with TestClient(app) as client:
+        repositories = [
+            {"gitlabUrl": "https://gitlab.example.internal", "gitlabProjectId": 9101, "pathWithNamespace": "group/one"},
+            {"gitlabUrl": "https://gitlab.example.internal", "gitlabProjectId": 9102, "pathWithNamespace": "group/two"},
+        ]
+        provisioned = [client.post("/api/v1/integrations/koda/repositories", json=item, headers=headers).json() for item in repositories]
+        uploads = []
+        for item in provisioned:
+            uploads.append(client.post(
+                "/api/v1/sbom-runs",
+                data={"serviceId": item["serviceId"], "environmentId": item["environmentId"], "releaseVersion": "main@same-key"},
+                files={"sbom": ("same-key.cdx.json", sbom, "application/json")},
+                headers={"Authorization": f"Bearer {item['uploadToken']}", "Idempotency-Key": "same-key"},
+            ))
+        assert [item.status_code for item in uploads] == [202, 202]
+        assert uploads[0].json()["runId"] != uploads[1].json()["runId"]
+
+
+def test_service_scoped_idempotency_concurrent_uploads_create_one_run() -> None:
+    sbom = json.dumps({"bomFormat": "CycloneDX", "specVersion": "1.6", "components": []}).encode()
+    headers = {"Authorization": "Bearer test-koda-provisioning-secret"}
+    with TestClient(app) as client:
+        item = client.post(
+            "/api/v1/integrations/koda/repositories",
+            json={"gitlabUrl": "https://gitlab.example.internal", "gitlabProjectId": 9201, "pathWithNamespace": "group/concurrent"},
+            headers=headers,
+        ).json()
+
+    def upload() -> tuple[int, str]:
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/v1/sbom-runs",
+                data={"serviceId": item["serviceId"], "environmentId": item["environmentId"], "releaseVersion": "main@concurrent"},
+                files={"sbom": ("concurrent.cdx.json", sbom, "application/json")},
+                headers={"Authorization": f"Bearer {item['uploadToken']}", "Idempotency-Key": "concurrent-key"},
+            )
+            return response.status_code, response.json()["runId"]
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(lambda _: upload(), range(2)))
+    assert [status for status, _ in results] == [202, 202]
+    assert len({run_id for _, run_id in results}) == 1
 
 
 def test_api_token_requires_service_scope_and_admin_catalog_patches() -> None:

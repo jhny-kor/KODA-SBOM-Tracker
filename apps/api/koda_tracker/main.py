@@ -17,6 +17,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal
+from urllib.parse import quote, urlparse
 from zoneinfo import ZoneInfo
 
 from cryptography.fernet import Fernet, InvalidToken
@@ -143,6 +144,12 @@ class EnvironmentPatch(BaseModel):
     slug: str | None = None
     sortOrder: int | None = None
     active: bool | None = None
+
+
+class KodaRepositoryRequest(BaseModel):
+    gitlabUrl: str = Field(min_length=1, max_length=512)
+    gitlabProjectId: int = Field(gt=0)
+    pathWithNamespace: str = Field(min_length=1, max_length=255)
 
 
 class ArchiveRequest(BaseModel):
@@ -1207,6 +1214,92 @@ def _principal_actor(principal: User | ApiToken) -> str:
     return principal.username if isinstance(principal, User) else f"token:{principal.id}"
 
 
+def _find_idempotent_run(
+    db: Session,
+    *,
+    principal: User | ApiToken,
+    idempotency_key: str,
+    service_id: str | None = None,
+) -> SbomRun | None:
+    """Find a replay without coupling service-scoped tokens to token IDs."""
+    query = select(SbomRun).join(Release, SbomRun.release_id == Release.id).where(
+        SbomRun.idempotency_key == idempotency_key,
+    )
+    if isinstance(principal, ApiToken) and principal.service_id:
+        scoped_service_id = service_id or principal.service_id
+        if scoped_service_id != principal.service_id:
+            return None
+        query = query.where(Release.service_id == scoped_service_id)
+    else:
+        query = query.where(SbomRun.idempotency_actor == _principal_actor(principal))
+    return db.scalar(query)
+
+
+def _require_koda_provisioning(
+    authorization: str | None = Header(default=None),
+) -> str:
+    token_file = get_settings().koda_provisioning_token_file
+    if token_file is None:
+        raise HTTPException(503, "KODA 자동 연동이 설정되지 않았습니다")
+    try:
+        if not token_file.is_file() or token_file.stat().st_size > 16 * 1024:
+            raise OSError
+        expected = token_file.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeError) as exc:
+        raise HTTPException(503, "KODA 자동 연동 비밀값을 읽을 수 없습니다") from exc
+    supplied = authorization[7:].strip() if authorization and authorization.lower().startswith("bearer ") else ""
+    if not expected or not secrets.compare_digest(supplied, expected):
+        raise HTTPException(401, "KODA 자동 연동 인증이 필요합니다")
+    return "integration:koda"
+
+
+@app.post("/api/v1/integrations/koda/repositories", status_code=201)
+def provision_koda_repository(
+    body: KodaRepositoryRequest,
+    db: Session = Depends(get_db),
+    actor: str = Depends(_require_koda_provisioning),
+) -> dict:
+    gitlab_url = body.gitlabUrl.strip().rstrip("/")
+    parsed = urlparse(gitlab_url)
+    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise HTTPException(422, "GitLab URL은 인증정보가 없는 HTTPS URL이어야 합니다")
+    path = body.pathWithNamespace.strip().strip("/")
+    if not re.fullmatch(r"[^/\s]+(?:/[^/\s]+)+", path):
+        raise HTTPException(422, "GitLab 저장소 경로가 올바르지 않습니다")
+    repository_key = hashlib.sha256(f"{gitlab_url.lower()}:{body.gitlabProjectId}".encode()).hexdigest()
+    slug = f"gitlab-{body.gitlabProjectId}-{repository_key[:12]}"
+    service = db.scalar(select(Service).where(Service.slug == slug))
+    service_created = service is None
+    if service_created:
+        service = Service(slug=slug, name=path, active=True)
+        db.add(service)
+        db.flush()
+    else:
+        service.name = path
+        service.active = True
+    environment = db.scalar(select(Environment).where(Environment.slug == "gitlab-source"))
+    if environment is None:
+        environment = Environment(slug="gitlab-source", name="GitLab 소스", sort_order=50, active=True)
+        db.add(environment)
+        db.flush()
+    else:
+        environment.active = True
+    token_name = f"koda-gitlab:{repository_key[:24]}"
+    for token in db.scalars(select(ApiToken).where(ApiToken.name == token_name, ApiToken.active.is_(True))):
+        token.active = False
+    raw = f"koda_{secrets.token_urlsafe(36)}"
+    db.add(ApiToken(name=token_name, token_hash=digest(raw), service_id=service.id))
+    audit(db, actor, "koda.repository.provision", "service", service.id, {
+        "gitlabUrl": gitlab_url, "gitlabProjectId": body.gitlabProjectId,
+        "pathWithNamespace": path, "environmentId": environment.id,
+    })
+    db.commit()
+    return {
+        "serviceId": service.id, "environmentId": environment.id,
+        "uploadToken": raw, "serviceCreated": service_created,
+    }
+
+
 def _persist_run(
     db: Session,
     *,
@@ -1229,8 +1322,8 @@ def _persist_run(
         advisory_key = int.from_bytes(hashlib.sha256(lock_material).digest()[:8], "big", signed=True)
         db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": advisory_key})
     if idempotency_key:
-        existing = db.scalar(
-            select(SbomRun).where(SbomRun.idempotency_actor == actor, SbomRun.idempotency_key == idempotency_key)
+        existing = _find_idempotent_run(
+            db, principal=principal, idempotency_key=idempotency_key, service_id=service.id
         )
         if existing:
             return {"runId": existing.id, "state": existing.state, "idempotentReplay": True}
@@ -1293,8 +1386,8 @@ async def upload_sbom(
         raise HTTPException(403, "이 토큰에는 해당 서비스 업로드 권한이 없습니다")
     actor = _principal_actor(principal)
     if idempotency_key:
-        existing = db.scalar(
-            select(SbomRun).where(SbomRun.idempotency_actor == actor, SbomRun.idempotency_key == idempotency_key)
+        existing = _find_idempotent_run(
+            db, principal=principal, idempotency_key=idempotency_key, service_id=service_id
         )
         if existing:
             return {"runId": existing.id, "state": existing.state, "idempotentReplay": True}
@@ -1359,6 +1452,11 @@ def _run_payload(
         severity_counts[severity if severity in {"critical", "high", "medium", "low", "info"} else "unknown"] += 1
     return {
         "id": item.id,
+        "runUrl": (
+            f"{get_settings().public_origin.rstrip('/')}/?page=runs&runId={quote(item.id, safe='')}"
+            if get_settings().public_origin.strip()
+            else None
+        ),
         "service": {"id": item.release.service.id, "name": item.release.service.name, "slug": item.release.service.slug},
         "environment": {"id": item.release.environment.id, "name": item.release.environment.name, "slug": item.release.environment.slug},
         "releaseVersion": item.release.version,
@@ -1389,6 +1487,41 @@ def _run_payload(
         "dependencyTrackError": item.dtrack_error,
         "dependencyTrackMetrics": item.dtrack_metrics,
         "dependencyTrackPolicies": item.dtrack_policies,
+    }
+
+
+@app.get("/api/v1/integrations/koda/runs/{run_id}")
+def koda_run_result(
+    run_id: str,
+    db: Session = Depends(get_db),
+    principal=Depends(require_permission("runs.view", allow_service_token=True)),
+) -> dict:
+    item = db.scalar(
+        select(SbomRun)
+        .where(SbomRun.id == run_id)
+        .options(
+            selectinload(SbomRun.release).selectinload(Release.service),
+            selectinload(SbomRun.release).selectinload(Release.environment),
+            selectinload(SbomRun.analyses),
+            selectinload(SbomRun.components),
+        )
+    )
+    if item is None:
+        raise HTTPException(404, "회차를 찾을 수 없습니다")
+    if isinstance(principal, ApiToken) and principal.service_id != item.release.service_id:
+        raise HTTPException(404, "회차를 찾을 수 없습니다")
+    latest = max(item.analyses, key=lambda analysis: analysis.sequence, default=None)
+    return {
+        "run": _run_payload(item),
+        "analysis": None if latest is None else {
+            "sequence": latest.sequence,
+            "state": latest.state,
+            "dataAsOf": latest.data_as_of,
+            "cveDataAsOf": _cve_data_as_of(latest),
+            "findings": project_cve_findings(latest.findings or []),
+            "policyViolations": latest.policies or [],
+            "error": latest.error,
+        },
     }
 
 
@@ -1721,7 +1854,13 @@ def get_job(job_id: str, db: Session = Depends(get_db), principal=Depends(requir
         raise HTTPException(404, "작업을 찾을 수 없습니다")
     if isinstance(principal, ApiToken):
         run = db.get(SbomRun, job.run_id) if job.run_id else None
-        if not run or run.idempotency_actor != f"token:{principal.id}":
+        if not run or (
+            principal.service_id
+            and run.release.service_id != principal.service_id
+        ) or (
+            principal.service_id is None
+            and run.idempotency_actor != f"token:{principal.id}"
+        ):
             raise HTTPException(403, "자신이 생성한 작업만 조회할 수 있습니다")
     else:
         policy = db.get(RolePolicy, principal.role)

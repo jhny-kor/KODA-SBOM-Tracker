@@ -11,6 +11,16 @@ ENV_FILE="$EXAMPLE_ENV_FILE"
 load_env "$EXAMPLE_ENV_FILE"
 usage() { local rc="${1:-2}"; echo "usage: $0 [output.tar.gz] [--vuln-bundle DIR]" >&2; exit "$rc"; }
 distribution_scope="${KODA_DISTRIBUTION_SCOPE:-internal}"
+release_mode="${TRACKER_RELEASE_MODE:-production}"
+[[ "$release_mode" == production || "$release_mode" == development ]] || { echo "TRACKER_RELEASE_MODE must be production or development" >&2; exit 2; }
+git_revision="$(git -C "$ROOT_DIR" rev-parse HEAD)"
+worktree_dirty=0
+git -C "$ROOT_DIR" diff --quiet HEAD -- || worktree_dirty=1
+[[ -z "$(git -C "$ROOT_DIR" ls-files --others --exclude-standard)" ]] || worktree_dirty=1
+if [[ "$worktree_dirty" == 1 && "$release_mode" == production ]]; then
+  echo "production release requires a clean git worktree; use TRACKER_RELEASE_MODE=development KODA_RELEASE_INCLUDE_UNTRACKED=1 only for an explicit development bundle" >&2
+  exit 1
+fi
 [[ "$distribution_scope" == internal ]] || {
   echo "external image redistribution is unsupported until corresponding-source delivery and legal review are approved" >&2
   exit 1
@@ -89,6 +99,8 @@ TARGET_PLATFORM=linux/amd64
 DISTRIBUTION_SCOPE=internal-only
 COMPOSE_FILE=compose.yaml:compose.airgap.yaml
 VULNERABILITY_BUNDLE=$([[ -n "$vuln_bundle" ]] && echo included || echo absent)
+TRACKER_GIT_REVISION=$git_revision
+TRACKER_WORKTREE_DIRTY=$([[ "$worktree_dirty" == 1 ]] && echo true || echo false)
 EOF
 (
   cd "$stage_dir"

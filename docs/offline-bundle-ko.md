@@ -136,6 +136,13 @@ bundle/
 - `NVD_DATASET_DATE`, `KEV_DATASET_DATE` (각 데이터셋을 포함할 때 권장)
 - `NVD_INDEX`, `ALIAS_INDEX`, `KEV_CATALOG` (기본 파일명 대신 다른 경로를 사용할 때)
 
+Tracker air-gap release의 `metadata.env`에는 `TRACKER_GIT_REVISION`과
+`TRACKER_WORKTREE_DIRTY=false`가 추가로 기록됩니다. 기본 production 빌드는 Git
+revision과 작업 트리가 깨끗해야 하며, 변경/미추적 파일이 있으면 중단됩니다. 개발용
+번들이 꼭 필요할 때만 `TRACKER_RELEASE_MODE=development
+KODA_RELEASE_INCLUDE_UNTRACKED=1`을 명시할 수 있습니다. 개발 번들은 production
+반입물로 사용하지 않으며 verifier가 거부합니다.
+
 인터넷 연결 빌드 PC에서 원본 feed를 먼저 검증한 뒤 bundle을 생성합니다. 이 명령은
 네트워크를 사용하지 않으며, NVD 2.0 JSON/JSON.GZ feed는 alias와 설명·CVSS·CPE·참조
 URL을 포함한 compact offline index로 정규화합니다. 원본 feed 전체를 폐쇄망에 복사하지

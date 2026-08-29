@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     cyclonedx_cli_binary: str = ""
     grype_binary: str = "grype"
     grype_db_dir: Path = Path("./data/vuln-data/current/grype-db")
+    koda_provisioning_token_file: Path | None = None
 
 
 @lru_cache
