@@ -59,6 +59,9 @@ SHA-256 원문을 표시하지 않습니다.
    감사 로그로 남고, 허용된 관리자는 검색 결과를 Excel 호환 CSV로 내려받습니다.
 6. 사이드바의 `KODA 보안 분석` 아이콘은 동일 오리진의 `/koda/`를 새 브라우저 탭으로 엽니다.
 
+이 문서는 Tracker 내부 흐름을 다룹니다. KODA·GitLab과 맞물린 전체 프로세스는
+[KODA 통합 인증·운영 계약의 전체 흐름 도식](koda-integration-ko.md#전체-흐름-한눈에-보기)에 있습니다.
+
 ## 권한 경계
 
 | 영역 | 일반 사용자 | 관리자·허용 역할 |
@@ -74,6 +77,8 @@ SHA-256 원문을 표시하지 않습니다.
 ## 문서와 화면을 함께 유지하는 기준
 
 - 메뉴나 권한 이름을 바꾸면 이 문서의 화면 예시와 권한 표를 함께 수정합니다.
+- 제품 사이의 흐름이 바뀌면 `docs/diagrams/koda-suite-process.svg`도 함께 고칩니다.
+  생성 방법은 [docs/diagrams/README.md](diagrams/README.md)에 있습니다.
 - 회차 결과에 SHA-256 원문이나 운영 비밀값을 예시 데이터로 넣지 않습니다.
 - 화면 변경 후에는 `apps/web`에서 `npm test`, `npm run typecheck`, `npm run lint`,
   `npm run build`를 실행해 문서에 설명한 기본 흐름이 깨지지 않았는지 확인합니다.

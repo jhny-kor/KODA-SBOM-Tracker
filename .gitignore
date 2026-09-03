@@ -24,3 +24,5 @@ runtime/
 volumes/
 *.log
 *.pid
+.omc/
+docs/presentations/*.visual-check.*

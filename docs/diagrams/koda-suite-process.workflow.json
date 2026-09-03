@@ -1,0 +1,251 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "KODA · SBOM Tracker · GitLab 폐쇄망 점검 프로세스",
+    "output": "docs/presentations/koda-flow.html",
+    "quality_profile": "showcase",
+    "legend": {
+      "mode": "auto",
+      "entries": {
+        "frontend": {
+          "label": "사용자 화면"
+        },
+        "backend": {
+          "label": "점검 실행"
+        },
+        "security": {
+          "label": "인증 · 승인"
+        },
+        "database": {
+          "label": "데이터 · 회차"
+        },
+        "external": {
+          "label": "GitLab"
+        }
+      }
+    }
+  },
+  "lanes": [
+    {
+      "id": "user",
+      "label": "사용자 · 접근"
+    },
+    {
+      "id": "gitlab",
+      "label": "GitLab 저장소"
+    },
+    {
+      "id": "koda",
+      "label": "KODA 점검"
+    },
+    {
+      "id": "tracker",
+      "label": "KODA SBOM Tracker · 취약점 데이터"
+    }
+  ],
+  "phases": [
+    {
+      "id": "ph-access",
+      "label": "접근",
+      "fromCol": 0,
+      "toCol": 1
+    },
+    {
+      "id": "ph-scan",
+      "label": "점검 · 분석",
+      "fromCol": 2,
+      "toCol": 4,
+      "variant": "emphasis"
+    },
+    {
+      "id": "ph-act",
+      "label": "확인 · 조치",
+      "fromCol": 5,
+      "toCol": 5,
+      "variant": "dashed"
+    }
+  ],
+  "mainPath": [
+    "n-login",
+    "n-approve",
+    "n-session",
+    "n-repo",
+    "n-scan",
+    "n-publish",
+    "n-user"
+  ],
+  "nodes": [
+    {
+      "id": "n-login",
+      "lane": "user",
+      "col": 0,
+      "type": "frontend",
+      "label": "Tracker 로그인",
+      "sublabel": "로컬 · LDAP",
+      "width": 110
+    },
+    {
+      "id": "n-approve",
+      "lane": "user",
+      "col": 1,
+      "type": "security",
+      "label": "관리자 승인",
+      "sublabel": "승인 전 세션 없음",
+      "width": 112
+    },
+    {
+      "id": "n-session",
+      "lane": "user",
+      "col": 2,
+      "type": "security",
+      "label": "gateway 세션 검증",
+      "sublabel": "Tracker · KODA 공유",
+      "tag": "세션 1개",
+      "width": 136
+    },
+    {
+      "id": "n-user",
+      "lane": "user",
+      "col": 5,
+      "type": "frontend",
+      "label": "확인 · 조치",
+      "sublabel": "MR · Issue · 회차 비교",
+      "width": 124
+    },
+    {
+      "id": "n-repo",
+      "lane": "gitlab",
+      "col": 2,
+      "type": "external",
+      "label": "GitLab 저장소",
+      "sublabel": "브랜치 · 태그",
+      "width": 104
+    },
+    {
+      "id": "n-publish",
+      "lane": "gitlab",
+      "col": 4,
+      "type": "external",
+      "label": "GitLab 결과 등록",
+      "sublabel": "브랜치 · MR · CVE Issue",
+      "width": 130
+    },
+    {
+      "id": "n-direct",
+      "lane": "koda",
+      "col": 2,
+      "type": "frontend",
+      "label": "직접 입력",
+      "sublabel": "파일 · CycloneDX",
+      "width": 96
+    },
+    {
+      "id": "n-scan",
+      "lane": "koda",
+      "col": 3,
+      "type": "backend",
+      "label": "KODA 점검",
+      "sublabel": "라이브러리 · 소스코드 · 품질",
+      "tag": "commit SHA 고정",
+      "width": 134
+    },
+    {
+      "id": "n-run",
+      "lane": "tracker",
+      "col": 4,
+      "type": "database",
+      "label": "Tracker 회차",
+      "sublabel": "구성요소 · CVE · 정책",
+      "tag": "Dependency-Track",
+      "width": 114
+    },
+    {
+      "id": "n-vuln",
+      "lane": "tracker",
+      "col": 3,
+      "type": "database",
+      "label": "취약점 데이터",
+      "sublabel": "오프라인 Grype · NVD · KEV",
+      "width": 134
+    }
+  ],
+  "edges": [
+    {
+      "from": "n-login",
+      "to": "n-approve",
+      "label": "가입 · 인증"
+    },
+    {
+      "from": "n-approve",
+      "to": "n-session",
+      "label": "승인 완료"
+    },
+    {
+      "from": "n-session",
+      "to": "n-repo",
+      "label": "두 화면 접근",
+      "variant": "emphasis"
+    },
+    {
+      "from": "n-repo",
+      "to": "n-scan",
+      "label": "브랜치 · 태그 선택"
+    },
+    {
+      "from": "n-direct",
+      "to": "n-scan",
+      "label": "파일 등록 최대 1GB",
+      "role": "branch"
+    },
+    {
+      "from": "n-scan",
+      "to": "n-run",
+      "label": "CycloneDX 1.6 전송",
+      "variant": "emphasis"
+    },
+    {
+      "from": "n-run",
+      "to": "n-scan",
+      "label": "분석 결과 조회",
+      "variant": "dashed",
+      "role": "return"
+    },
+    {
+      "from": "n-scan",
+      "to": "n-publish",
+      "label": "확정 취약점 등록",
+      "variant": "emphasis"
+    },
+    {
+      "from": "n-publish",
+      "to": "n-user",
+      "label": "MR · Issue 검토"
+    },
+    {
+      "from": "n-run",
+      "to": "n-user",
+      "label": "대시보드 · 회차 비교",
+      "role": "branch"
+    },
+    {
+      "from": "n-vuln",
+      "to": "n-scan",
+      "label": "취약점 판정",
+      "variant": "dashed"
+    },
+    {
+      "from": "n-vuln",
+      "to": "n-run",
+      "label": "CVE 기준일",
+      "variant": "dashed"
+    },
+    {
+      "from": "n-user",
+      "to": "n-repo",
+      "label": "조치 후 새 커밋",
+      "variant": "dashed",
+      "role": "return"
+    }
+  ]
+}

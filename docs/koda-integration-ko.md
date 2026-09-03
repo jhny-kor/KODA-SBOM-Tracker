@@ -13,6 +13,22 @@ https://<서버>/          KODA SBOM Tracker
 https://<서버>/koda/     KODA
 ```
 
+## 전체 흐름 한눈에 보기
+
+![KODA · KODA SBOM Tracker · GitLab 폐쇄망 점검 프로세스](diagrams/koda-suite-process.svg)
+
+레인은 위에서부터 사용자 접근, GitLab 저장소, KODA 점검, Tracker와 취약점 데이터입니다.
+굵은 실선이 주 경로이고 점선은 되돌아오는 조회·판정 경로입니다. 아래 절들은 이 그림의
+각 구간을 계약 수준으로 정의합니다.
+
+- **접근** — Tracker 로그인과 관리자 승인을 거친 세션을 gateway가 검증해 두 화면에 전달합니다.
+- **입력** — GitLab 브랜치·태그는 실행 직전 commit SHA로 고정하고, 파일 직접 등록 경로도 있습니다.
+- **점검·분석** — KODA가 점검한 결과의 CycloneDX를 Tracker가 회차로 보관하고 분석합니다.
+- **확인·조치** — GitLab 결과 브랜치·MR·Issue와 Tracker 회차를 확인하고, 새 커밋으로 다시 시작합니다.
+
+취약점 판정은 폐쇄망에 반입된 오프라인 데이터를 사용하므로 결과를 볼 때 CVE 기준일을
+함께 확인합니다.
+
 ## 로그인과 로그아웃
 
 사용자는 Tracker 로그인 화면에서 로컬 또는 LDAP으로 로그인합니다. LDAP 설정은
