@@ -144,6 +144,8 @@ docker compose up -d --force-recreate portal-api portal-worker
 
 ### 2-2. KODA Suite 외부 TLS reverse proxy
 
+> 이 문서의 `koda.example.internal`과 `10.0.0.10`은 자리표시자입니다. 실제 운영 호스트명과 IP로 바꿔 사용하고, 문서·이슈에 실제 값을 남기지 않습니다.
+
 통합 Suite의 gateway는 HTTP `8088`만 제공하고, 인증서 종료는 별도 OpenResty/Nginx
 컨테이너 `nginx`가 담당합니다. 현재 운영 서버의 영속 설정은 다음 bind mount를
 기준으로 합니다.
@@ -155,7 +157,7 @@ docker compose up -d --force-recreate portal-api portal-worker
 | `/data/docker_data/volumes/nginx/ssl` | `/etc/nginx/ssl` | 인증서·개인키 |
 
 KODA vhost는 현재 main config의 `http {}` 안에 직접 두며, `server_name`은
-`koda.ssis.or.kr`, backend는 `http://10.95.58.147:8088`로 지정합니다. 인증서와
+`koda.example.internal`, backend는 `http://10.0.0.10:8088`로 지정합니다. 인증서와
 개인키 원문은 문서·로그에 남기지 않습니다. `conf.d` 방식을 사용할 때는 main
 config의 `http {}` 안에만 다음 include를 한 번 넣고, 같은 vhost를 main config와
 중복해서 두지 않습니다.
@@ -167,17 +169,17 @@ include /etc/nginx/conf.d/*.conf;
 Suite 환경 파일(`~/koda-suite/tracker/.env`)에는 외부 origin을 맞춥니다.
 
 ```dotenv
-GATEWAY_SERVER_NAME=koda.ssis.or.kr
+GATEWAY_SERVER_NAME=koda.example.internal
 GATEWAY_PUBLIC_SCHEME=https
-TRACKER_PUBLIC_ORIGIN=https://koda.ssis.or.kr
+TRACKER_PUBLIC_ORIGIN=https://koda.example.internal
 TRACKER_SECURE_COOKIES=true
-DTRACK_API_BASE_URL=https://koda.ssis.or.kr/dependency-track
-DTRACK_ADMIN_API_BASE_URL=https://koda.ssis.or.kr/dependency-track/api
-KODA_SSBOM_TRACKER_URL=https://koda.ssis.or.kr/
+DTRACK_API_BASE_URL=https://koda.example.internal/dependency-track
+DTRACK_ADMIN_API_BASE_URL=https://koda.example.internal/dependency-track/api
+KODA_SSBOM_TRACKER_URL=https://koda.example.internal/
 ```
 
 내부 gateway는 HTTP `:8080`에서 동작하므로 인증되지 않은 `/koda/` 요청의
-`Location`을 `http://koda.ssis.or.kr:8080/koda/login`으로 만들 수 있습니다. 외부
+`Location`을 `http://koda.example.internal:8080/koda/login`으로 만들 수 있습니다. 외부
 TLS vhost에서 `/koda`의 슬래시와 이 redirect를 보정합니다.
 
 ```nginx
@@ -186,8 +188,8 @@ location = /koda {
 }
 
 location / {
-    proxy_pass http://10.95.58.147:8088;
-    proxy_redirect http://koda.ssis.or.kr:8080/ https://koda.ssis.or.kr/;
+    proxy_pass http://10.0.0.10:8088;
+    proxy_redirect http://koda.example.internal:8080/ https://koda.example.internal/;
     proxy_set_header Host $host;
     proxy_set_header X-Forwarded-Proto https;
     proxy_set_header X-Forwarded-Host $host;
@@ -206,10 +208,10 @@ Tracker의 CSRF 토큰은 브라우저가 `X-CSRF-Token` 요청 헤더로 전송
 
 ```bash
 docker exec nginx nginx -t && docker exec nginx nginx -s reload
-curl --resolve koda.ssis.or.kr:443:10.95.58.147 -sSI \
-  https://koda.ssis.or.kr/koda/
-curl --resolve koda.ssis.or.kr:443:10.95.58.147 -fsS \
-  https://koda.ssis.or.kr/koda/live
+curl --resolve koda.example.internal:443:10.0.0.10 -sSI \
+  https://koda.example.internal/koda/
+curl --resolve koda.example.internal:443:10.0.0.10 -fsS \
+  https://koda.example.internal/koda/live
 ```
 
 변경·컨테이너 교체 전후에는 마운트와 active config를 먼저 확인합니다. 상위
@@ -227,8 +229,8 @@ docker exec nginx nginx -t
 docker exec nginx nginx -s reload
 
 curl -fsS http://127.0.0.1:8088/healthz
-curl --resolve koda.ssis.or.kr:443:10.95.58.147 \
-  -fsS https://koda.ssis.or.kr/healthz
+curl --resolve koda.example.internal:443:10.0.0.10 \
+  -fsS https://koda.example.internal/healthz
 ```
 
 개별 파일을 `vi`로 저장하면 단일 파일 bind mount의 inode가 교체되어 컨테이너가

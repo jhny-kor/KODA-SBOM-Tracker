@@ -188,33 +188,35 @@ docker compose --env-file .env "${COMPOSE_FILES[@]}" \
 
 ## 9-1. 외부 TLS 주소가 DNS에서 해석되지 않음
 
+> 이 문서의 `koda.example.internal`과 `10.0.0.10`은 자리표시자입니다. 실제 운영 호스트명과 IP로 바꿔 사용하고, 문서·이슈에 실제 값을 남기지 않습니다.
+
 `DNS_PROBE_FINISHED_NXDOMAIN`은 Docker·Nginx에 도달하기 전에 DNS가
-`koda.ssis.or.kr` 레코드를 찾지 못했다는 뜻입니다. 서버에서 다음 명령으로
+`koda.example.internal` 레코드를 찾지 못했다는 뜻입니다. 서버에서 다음 명령으로
 확인합니다.
 
 ```bash
-nslookup koda.ssis.or.kr
+nslookup koda.example.internal
 ```
 
-사내 DNS의 `ssis.or.kr` zone에 다음 A 레코드를 추가합니다. 사설 IP이므로 외부
+사내 DNS의 `example.internal` zone에 다음 A 레코드를 추가합니다. 사설 IP이므로 외부
 공개 DNS에 넣을지 여부는 네트워크 정책에 따릅니다.
 
 ```text
-koda.ssis.or.kr.  A  10.95.58.147
+koda.example.internal.  A  10.0.0.10
 ```
 
 DNS 반영 전 Windows 브라우저에서만 임시 확인할 때는 관리자 권한으로
 `C:\Windows\System32\drivers\etc\hosts`에 다음 줄을 넣고 DNS 캐시를 비웁니다.
 
 ```text
-10.95.58.147  koda.ssis.or.kr
+10.0.0.10  koda.example.internal
 ```
 
 ```cmd
 ipconfig /flushdns
 ```
 
-`curl --resolve koda.ssis.or.kr:443:10.95.58.147 ...`는 DNS를 우회하는 테스트라서,
+`curl --resolve koda.example.internal:443:10.0.0.10 ...`는 DNS를 우회하는 테스트라서,
 이 명령이 성공해도 브라우저의 DNS 레코드가 자동으로 만들어지는 것은 아닙니다.
 
 ## 9-2. 단일 파일 bind mount가 이전 inode를 가리킴
@@ -258,13 +260,13 @@ docker exec nginx nginx -s reload
 ```nginx
 location = /koda { return 308 /koda/; }
 location / {
-    proxy_pass http://10.95.58.147:8088;
-    proxy_redirect http://koda.ssis.or.kr:8080/ https://koda.ssis.or.kr/;
+    proxy_pass http://10.0.0.10:8088;
+    proxy_redirect http://koda.example.internal:8080/ https://koda.example.internal/;
 }
 ```
 
 기존 `proxy_set_header`와 timeout 설정은 삭제하지 않습니다. `nginx -t` 후 reload하고,
-`curl -sSI https://koda.ssis.or.kr/koda/`의 `Location`이 `https://koda.ssis.or.kr`
+`curl -sSI https://koda.example.internal/koda/`의 `Location`이 `https://koda.example.internal`
 또는 상대 경로 `/koda/login`인지 확인합니다. `http://...:8080`이 남으면 실제 active
 설정에 `proxy_redirect`가 포함됐는지 `nginx -T`로 확인합니다.
 
