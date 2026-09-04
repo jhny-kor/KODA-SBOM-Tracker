@@ -1,0 +1,7 @@
+# 실제 호스트명·IP는 작업 트리에만 두고 커밋에는 자리표시자만 남긴다.
+# 설정: scripts/setup-host-redact.sh
+docs/operations-ko.md              filter=hostredact
+docs/troubleshooting-ko.md         filter=hostredact
+docs/koda-integration-ko.md        filter=hostredact
+docs/presentations/*.html          filter=hostredact
+README.md                          filter=hostredact

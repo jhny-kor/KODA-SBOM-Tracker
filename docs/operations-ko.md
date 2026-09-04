@@ -144,7 +144,9 @@ docker compose up -d --force-recreate portal-api portal-worker
 
 ### 2-2. KODA Suite 외부 TLS reverse proxy
 
-> 이 문서의 `koda.example.internal`과 `10.0.0.10`은 자리표시자입니다. 실제 운영 호스트명과 IP로 바꿔 사용하고, 문서·이슈에 실제 값을 남기지 않습니다.
+> 이 문서의 호스트명과 IP는 커밋될 때 자리표시자로 자동 치환됩니다. 작업 트리에는
+> 실제 값이 그대로 남습니다. 새 클론에서는 `./scripts/setup-host-redact.sh`를 한 번
+> 실행하고 `.hostmap`에 실제 값을 채웁니다. 원격 저장소에는 실제 값이 올라가지 않습니다.
 
 통합 Suite의 gateway는 HTTP `8088`만 제공하고, 인증서 종료는 별도 OpenResty/Nginx
 컨테이너 `nginx`가 담당합니다. 현재 운영 서버의 영속 설정은 다음 bind mount를

@@ -188,7 +188,8 @@ docker compose --env-file .env "${COMPOSE_FILES[@]}" \
 
 ## 9-1. 외부 TLS 주소가 DNS에서 해석되지 않음
 
-> 이 문서의 `koda.example.internal`과 `10.0.0.10`은 자리표시자입니다. 실제 운영 호스트명과 IP로 바꿔 사용하고, 문서·이슈에 실제 값을 남기지 않습니다.
+> 이 문서의 호스트명과 IP는 커밋 시 자리표시자로 치환됩니다. 설정 방법은
+> [운영 가이드](operations-ko.md#2-2-koda-suite-외부-tls-reverse-proxy)에 있습니다.
 
 `DNS_PROBE_FINISHED_NXDOMAIN`은 Docker·Nginx에 도달하기 전에 DNS가
 `koda.example.internal` 레코드를 찾지 못했다는 뜻입니다. 서버에서 다음 명령으로

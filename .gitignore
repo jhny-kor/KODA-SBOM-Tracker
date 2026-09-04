@@ -26,3 +26,5 @@ volumes/
 *.pid
 .omc/
 docs/presentations/*.visual-check.*
+.hostmap
+docs/presentations/*.pdf
