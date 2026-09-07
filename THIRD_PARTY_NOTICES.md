@@ -24,6 +24,26 @@ installed packages into their `legal` directory. Python
 packages and container base images retain license material supplied by their
 package or image publishers.
 
+## Presentation and documentation assets
+
+The guide decks under `docs/presentations/` are single self-contained HTML files
+intended for closed-network use, so they embed their fonts and libraries instead
+of loading them from a CDN. The components below are redistributed inside those
+files only; the Tracker, KODA, and web application builds do not include them.
+
+| Component | Version | License | Embedded in |
+| --- | --- | --- | --- |
+| three.js | r128 | MIT | `KODA 사용자 가이드.html` |
+| IBM Plex Sans KR | Google Fonts v11 | SIL Open Font License 1.1 | all guide decks |
+| IBM Plex Mono | Google Fonts v20 | SIL Open Font License 1.1 | `KODA 사용자 가이드.html`, `koda-suite-user-briefing.html` |
+| JetBrains Mono | Google Fonts v24 | SIL Open Font License 1.1 | `koda-flow.html` |
+
+Only the glyph subsets a deck actually renders are embedded, not the complete
+font families. The three.js copyright header and its `SPDX-License-Identifier:
+MIT` line are retained verbatim in the embedded script. Sources:
+https://github.com/mrdoob/three.js, https://github.com/IBM/plex,
+https://github.com/JetBrains/JetBrainsMono
+
 ## Distribution boundary
 
 The Dockerless Windows preview contains only the compiled web application and
