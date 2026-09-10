@@ -12,6 +12,28 @@ afterEach(() => {
 });
 
 describe("KODA SBOM Tracker", () => {
+  it("expands the sidebar from the KODA logo without navigating", () => {
+    render(<App />);
+    const collapse = screen.queryByRole("button", { name: "사이드바 접기" });
+    if (collapse) fireEvent.click(collapse);
+    const logo = screen.getByRole("button", { name: "KODA 로고로 사이드바 펼치기" });
+    expect(logo).toHaveAttribute("aria-expanded", "false");
+    const url = window.location.href;
+    fireEvent.click(logo);
+    expect(logo).toHaveAttribute("aria-expanded", "true");
+    expect(document.querySelector(".app-shell")).not.toHaveClass("is-collapsed");
+    expect(window.location.href).toBe(url);
+  });
+
+  it("shows sample LDAP settings without allowing a save", async () => {
+    window.history.replaceState(null, "", "/?page=settings");
+    render(<App />);
+    fireEvent.click(await screen.findByRole("tab", { name: "LDAP 로그인" }));
+    expect(await screen.findByLabelText("LDAP 서버")).toHaveValue("ldap.example.com");
+    expect(screen.getByRole("button", { name: "샘플 모드 · 저장 안 함" })).toBeDisabled();
+    expect(screen.getByRole("note")).toHaveTextContent("실제 연결·저장은 하지 않습니다");
+  });
+
   it("offers LDAP as an explicit login choice", () => {
     render(<LoginPage onAuthenticated={() => {}} />);
     expect(screen.getByLabelText("아이디")).toBeInTheDocument();
@@ -245,7 +267,7 @@ describe("KODA SBOM Tracker", () => {
     expect(link).toHaveAttribute("href", "/koda/");
     expect(link).toHaveAttribute("target", "_blank");
     expect(link).toHaveAttribute("rel", "noopener noreferrer");
-    expect(link.querySelector("svg path")).toBeInTheDocument();
+    expect(link.querySelector("svg image")).toHaveAttribute("href", "/KODA.ico");
   });
 
   it("renders dense run history and opens comparison", () => {

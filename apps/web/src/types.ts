@@ -27,6 +27,8 @@ export interface SbomRun {
   analysisDataSources?: Record<string, unknown>;
   dependencyTrackMetrics?: Record<string, unknown> | null;
   dependencyTrackPolicies?: Record<string, unknown>[];
+  source?: "manual" | "api" | "scheduled" | string;
+  sourceMetadata?: Record<string, unknown>;
 }
 
 export interface AnalysisRevisionSummary {

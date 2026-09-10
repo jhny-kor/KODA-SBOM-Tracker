@@ -28,8 +28,7 @@ def load_map(root):
         holder, real = (x.strip() for x in line.split(sep, 1))
         if holder and real:
             pairs.append((holder, real))
-    # 긴 문자열을 먼저 바꿔 부분 치환을 막는다
-    return sorted(pairs, key=lambda kv: -len(kv[0]))
+    return pairs
 
 def main():
     mode = sys.argv[1] if len(sys.argv) > 1 else ""
@@ -43,7 +42,10 @@ def main():
     except UnicodeDecodeError:
         sys.stdout.buffer.write(data)   # 텍스트가 아니면 손대지 않는다
         return 0
-    for holder, real in load_map(root):
+    pairs = load_map(root)
+    # 긴 쪽을 먼저 바꿔야 부분 치환이 생기지 않는다. 방향마다 기준 문자열이 다르다.
+    pairs.sort(key=lambda kv: -len(kv[1] if mode == "clean" else kv[0]))
+    for holder, real in pairs:
         text = text.replace(real, holder) if mode == "clean" else text.replace(holder, real)
     sys.stdout.buffer.write(text.encode("utf-8"))
     return 0

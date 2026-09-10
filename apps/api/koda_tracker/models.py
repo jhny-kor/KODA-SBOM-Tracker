@@ -183,6 +183,9 @@ class SbomRun(Base):
     dtrack_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     dtrack_metrics: Mapped[dict] = mapped_column(JSON, default=dict)
     dtrack_policies: Mapped[list] = mapped_column(JSON, default=list)
+    # Additive provenance for KODA scheduled server scans.  Manual and legacy
+    # API rows keep an empty object so existing clients remain compatible.
+    source_metadata: Mapped[dict] = mapped_column(JSON, default=dict)
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     archive_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, index=True)

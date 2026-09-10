@@ -1,4 +1,16 @@
-import type { ComponentChange, RolePolicyCatalog, SbomRun } from "./types";
+import type { ComponentChange, LdapSettings, RolePolicyCatalog, SbomRun } from "./types";
+
+export const demoLdapSettings: LdapSettings = {
+  enabled: true, host: "ldap.example.com", port: 636, tlsMode: "ldaps",
+  verifyCertificate: true, caCertPath: "/run/secrets/ldap-ca.crt",
+  bindDn: "CN=tracker-reader,OU=ServiceAccounts,DC=example,DC=com",
+  baseDn: "OU=People,DC=example,DC=com",
+  loginAttribute: "sAMAccountName", usernameAttribute: "sAMAccountName",
+  subjectAttribute: "objectGUID", userFilter: "(sAMAccountName={username})",
+  groupAttribute: "memberOf",
+  groupMappings: { "CN=Security-Analysts,OU=Groups,DC=example,DC=com": "analyst", "CN=SBOM-Viewers,OU=Groups,DC=example,DC=com": "viewer" },
+  autoProvision: true, defaultRole: "viewer", hasBindPassword: true, encryptionReady: true,
+};
 
 const permissions = [
   "dashboard.view", "services.view", "runs.view", "compare.view", "vulnerability.view", "audit.view", "settings.view",

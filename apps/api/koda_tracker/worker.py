@@ -38,7 +38,16 @@ async def process_one() -> bool:
 
 
 def run() -> None:
+    # Keep retention active for long-running workers; API startup pruning alone
+    # would leave a continuously running installation past its 90-day window.
+    from .main import _prune_scheduled_runs
+
+    next_prune = 0.0
     while True:
+        now = time.monotonic()
+        if now >= next_prune:
+            _prune_scheduled_runs()
+            next_prune = now + 3600
         if not asyncio.run(process_one()):
             time.sleep(2)
 

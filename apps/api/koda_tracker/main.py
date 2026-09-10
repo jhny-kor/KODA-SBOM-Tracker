@@ -31,7 +31,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from .config import get_settings, session_cookie_name
 from .comparison import compare_components, compare_records
-from .db import Base, SessionLocal, engine, ensure_component_search_support, ensure_environment_active_column, ensure_ldap_subject_attribute_column, ensure_postgres_manager_enum, ensure_user_approval_state_column, ensure_user_identity_columns, get_db
+from .db import Base, SessionLocal, engine, ensure_component_search_support, ensure_environment_active_column, ensure_ldap_subject_attribute_column, ensure_postgres_manager_enum, ensure_sbom_source_metadata_column, ensure_user_approval_state_column, ensure_user_identity_columns, get_db
 from .dtrack import DependencyTrackClient
 from .models import (
     AnalysisRevision,
@@ -192,12 +192,14 @@ async def lifespan(_: FastAPI):
     ensure_ldap_subject_attribute_column(engine)
     ensure_component_search_support(engine)
     ensure_environment_active_column(engine)
+    ensure_sbom_source_metadata_column(engine)
     # v1 uses create_all for a fresh install, but keep the one additive field
     # introduced by the vulnerability-data lifecycle backward compatible with
     # an already initialized portal database.
     if "data_sources" not in {column["name"] for column in inspect(engine).get_columns("analysis_revisions")}:
         with engine.begin() as connection:
             connection.execute(text("ALTER TABLE analysis_revisions ADD COLUMN data_sources JSON"))
+    _prune_scheduled_runs()
     with SessionLocal() as db:
         normalized_usernames: dict[str, str] = {}
         for user in db.scalars(select(User)):
@@ -243,6 +245,47 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title="KODA SBOM Tracker API", version="0.1.0", lifespan=lifespan)
 _round_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+
+
+def _prune_scheduled_runs(days: int = 90) -> int:
+    """Retain scheduled Tracker results for the same window as KODA."""
+    cutoff = datetime.now(UTC) - timedelta(days=int(days))
+    artifact_root = get_settings().artifact_dir.resolve()
+    paths: list[Path] = []
+    deleted = 0
+    with SessionLocal() as db:
+        runs = list(db.scalars(select(SbomRun).where(
+            SbomRun.source == "scheduled",
+            SbomRun.created_at < cutoff,
+            SbomRun.state.in_((ProcessingState.COMPLETED, ProcessingState.PARTIAL, ProcessingState.FAILED, ProcessingState.ARCHIVED)),
+        )))
+        for run in runs:
+            if db.scalar(select(Job.id).where(Job.run_id == run.id, Job.state.in_((JobState.QUEUED, JobState.RUNNING))).limit(1)):
+                continue
+            artifact = Path(run.artifact_path)
+            shared = db.scalar(select(SbomRun.id).where(SbomRun.id != run.id, SbomRun.artifact_path == run.artifact_path).limit(1))
+            if artifact.exists() and not shared:
+                try:
+                    artifact.resolve().relative_to(artifact_root)
+                except ValueError:
+                    logger.error("scheduled artifact outside artifact root; retaining run: %s", run.id)
+                    continue
+                if not artifact.is_file():
+                    logger.error("scheduled artifact is not a regular file; retaining run: %s", run.id)
+                    continue
+                paths.append(artifact)
+            db.execute(delete(RunComponent).where(RunComponent.run_id == run.id))
+            db.execute(delete(AnalysisRevision).where(AnalysisRevision.run_id == run.id))
+            db.execute(delete(Job).where(Job.run_id == run.id))
+            db.delete(run)
+            deleted += 1
+        db.commit()
+    for path in paths:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            logger.exception("scheduled artifact cleanup failed: %s", path)
+    return deleted
 
 
 def _user_status(user: User) -> str:
@@ -1214,6 +1257,80 @@ def _principal_actor(principal: User | ApiToken) -> str:
     return principal.username if isinstance(principal, User) else f"token:{principal.id}"
 
 
+_SCHEDULE_SOURCE_METADATA_KEYS = frozenset({
+    "targetId", "scheduleRunId", "server", "directory", "mode", "changedFiles", "changedFilesTruncated",
+    "kodaRunId", "rulePolicyVersion",
+})
+_MAX_SCHEDULE_CHANGED_FILES = 2_000
+
+
+def _validated_source_metadata(
+    principal: User | ApiToken, source: str, source_metadata: dict | None,
+) -> tuple[str, dict]:
+    source_value = str(source or "").strip().lower()
+    if source_value not in {"", "manual", "api", "scheduled"}:
+        raise HTTPException(422, "SBOM 출처가 올바르지 않습니다")
+    metadata = source_metadata if isinstance(source_metadata, dict) else {}
+    if source_value != "scheduled":
+        return source_value, {}
+    if not isinstance(principal, ApiToken) or not principal.name.startswith("koda-gitlab:"):
+        raise HTTPException(403, "예약 점검 출처는 KODA 연동 토큰만 지정할 수 있습니다")
+    metadata = {key: value for key, value in metadata.items() if key in _SCHEDULE_SOURCE_METADATA_KEYS}
+    if not re.fullmatch(r"[A-Za-z0-9._-]{1,128}", str(metadata.get("targetId") or "")):
+        raise HTTPException(422, "예약 점검 대상 ID가 올바르지 않습니다")
+    if not re.fullmatch(r"[A-Za-z0-9._-]{1,128}", str(metadata.get("scheduleRunId") or "")):
+        raise HTTPException(422, "예약 점검 실행 ID가 올바르지 않습니다")
+    for key, limit in (("server", 1024), ("directory", 1024), ("kodaRunId", 128)):
+        value = metadata.get(key)
+        if not isinstance(value, str) or not value or len(value) > limit or any(ord(char) < 32 for char in value):
+            raise HTTPException(422, f"예약 점검 {key} 메타데이터가 올바르지 않습니다")
+    if not str(metadata["directory"]).startswith("/"):
+        raise HTTPException(422, "예약 점검 디렉토리는 절대 경로여야 합니다")
+    if metadata.get("mode") not in {"full", "changed"}:
+        raise HTTPException(422, "예약 점검 방식이 올바르지 않습니다")
+    changed_files = metadata.get("changedFiles", [])
+    if (
+        not isinstance(changed_files, list)
+        or len(changed_files) > _MAX_SCHEDULE_CHANGED_FILES
+        or any(
+            not isinstance(item, str) or not item or len(item) > 2048 or any(ord(char) < 32 for char in item)
+            for item in changed_files
+        )
+    ):
+        raise HTTPException(422, "예약 점검 변경 파일 목록이 올바르지 않습니다")
+    if "changedFilesTruncated" in metadata and not isinstance(metadata["changedFilesTruncated"], bool):
+        raise HTTPException(422, "예약 점검 변경 파일 목록 상태가 올바르지 않습니다")
+    if "rulePolicyVersion" in metadata and (
+        isinstance(metadata["rulePolicyVersion"], bool)
+        or not isinstance(metadata["rulePolicyVersion"], int)
+        or metadata["rulePolicyVersion"] < 0
+    ):
+        raise HTTPException(422, "예약 점검 규칙 버전이 올바르지 않습니다")
+    return source_value, metadata
+
+
+def _scheduled_environment(db: Session, *, service: Service, requested: Environment, metadata: dict) -> Environment:
+    """Keep each target's full and changed SBOM history in separate catalogs."""
+    target = str(metadata["targetId"])
+    mode = str(metadata["mode"])
+    slug = f"scheduled-{service.id[:12]}-{target}-{mode}"
+    if len(slug) > 128:
+        slug = f"scheduled-{hashlib.sha256(f'{service.id}:{target}'.encode()).hexdigest()[:32]}-{mode}"
+    environment = db.scalar(select(Environment).where(Environment.slug == slug))
+    if environment is None:
+        environment = Environment(
+            slug=slug,
+            name=f"예약 {target} · {'전체' if mode == 'full' else '변경분'}",
+            sort_order=requested.sort_order + 1000,
+            active=True,
+        )
+        db.add(environment)
+        db.flush()
+    elif not environment.active:
+        environment.active = True
+    return environment
+
+
 def _find_idempotent_run(
     db: Session,
     *,
@@ -1316,7 +1433,12 @@ def _persist_run(
     note: str,
     idempotency_key: str | None,
     raw_sha256: str,
+    source: str = "",
+    source_metadata: dict | None = None,
 ) -> dict:
+    source_value, metadata = _validated_source_metadata(principal, source, source_metadata)
+    if len(json.dumps(metadata, ensure_ascii=False).encode("utf-8")) > 64 * 1024:
+        raise HTTPException(422, "예약 점검 메타데이터가 너무 큽니다")
     if db.bind and db.bind.dialect.name == "postgresql":
         lock_material = f"{service.id}:{environment.id}:{release_version}".encode()
         advisory_key = int.from_bytes(hashlib.sha256(lock_material).digest()[:8], "big", signed=True)
@@ -1355,7 +1477,8 @@ def _persist_run(
         idempotency_actor=actor,
         idempotency_key=idempotency_key,
         note=note,
-        source="api" if isinstance(principal, ApiToken) else "manual",
+        source=source_value or ("api" if isinstance(principal, ApiToken) else "manual"),
+        source_metadata=metadata,
     )
     db.add(run)
     db.flush()
@@ -1376,6 +1499,8 @@ async def upload_sbom(
     environment_id: str = Form(alias="environmentId"),
     release_version: str = Form(alias="releaseVersion"),
     note: str = Form(default=""),
+    source: str = Form(default=""),
+    source_metadata: str = Form(default="", alias="sourceMetadata"),
     sbom: UploadFile = File(),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     db: Session = Depends(get_db),
@@ -1384,6 +1509,9 @@ async def upload_sbom(
 ) -> dict:
     if isinstance(principal, ApiToken) and principal.service_id and principal.service_id != service_id:
         raise HTTPException(403, "이 토큰에는 해당 서비스 업로드 권한이 없습니다")
+    source_value = str(source or "").strip().lower()
+    if source_value not in {"", "manual", "api", "scheduled"}:
+        raise HTTPException(422, "SBOM 출처가 올바르지 않습니다")
     actor = _principal_actor(principal)
     if idempotency_key:
         existing = _find_idempotent_run(
@@ -1391,6 +1519,15 @@ async def upload_sbom(
         )
         if existing:
             return {"runId": existing.id, "state": existing.state, "idempotentReplay": True}
+    parsed_source_metadata: dict = {}
+    if source_metadata:
+        try:
+            parsed_source_metadata = json.loads(source_metadata)
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise HTTPException(422, "예약 점검 메타데이터 JSON이 올바르지 않습니다") from exc
+        if not isinstance(parsed_source_metadata, dict):
+            raise HTTPException(422, "예약 점검 메타데이터는 객체여야 합니다")
+    source_value, parsed_source_metadata = _validated_source_metadata(principal, source_value, parsed_source_metadata)
     staged_path, raw_sha256, size_bytes = await _stage_upload(sbom, get_settings().max_upload_bytes)
     try:
         try:
@@ -1411,6 +1548,10 @@ async def upload_sbom(
             raise HTTPException(409, "비활성 서비스에는 SBOM을 업로드할 수 없습니다")
         if not environment.active:
             raise HTTPException(409, "비활성 환경에는 SBOM을 업로드할 수 없습니다")
+        if source_value == "scheduled":
+            environment = _scheduled_environment(
+                db, service=service, requested=environment, metadata=parsed_source_metadata
+            )
         lock_key = f"{service.id}:{environment.id}:{release_version}"
         async with _round_locks[lock_key]:
             return _persist_run(
@@ -1428,6 +1569,8 @@ async def upload_sbom(
                 note=note,
                 idempotency_key=idempotency_key,
                 raw_sha256=raw_sha256,
+                source=source_value,
+                source_metadata=parsed_source_metadata,
             )
     finally:
         staged_path.unlink(missing_ok=True)
@@ -1462,6 +1605,8 @@ def _run_payload(
         "releaseVersion": item.release.version,
         "roundNumber": item.round_number,
         "state": item.state,
+        "source": item.source or "manual",
+        "sourceMetadata": item.source_metadata or {},
         "analysisState": item.analysis_state,
         "dependencyTrackState": item.dtrack_state,
         "sha256": item.sha256,
@@ -1530,6 +1675,7 @@ def list_runs(
     service_id: str | None = None,
     environment_id: str | None = None,
     state: ProcessingState | None = None,
+    source: str | None = Query(default=None, pattern="^(manual|api|scheduled)$"),
     q: str | None = Query(default=None, min_length=1, max_length=200),
     page: int = Query(default=1, ge=1),
     size: int = Query(default=10, ge=1, le=100),
@@ -1547,6 +1693,10 @@ def list_runs(
         query = query.join(Release).where(Release.environment_id == environment_id)
     if state:
         query = query.where(SbomRun.state == state)
+    if source:
+        query = query.where(
+            SbomRun.source.in_(("", "manual", "api")) if source == "manual" else SbomRun.source == source
+        )
     if q:
         pattern = f"%{q.strip()}%"
         query = query.where(

@@ -30,7 +30,9 @@ svg { width: 20px; height: 20px; flex: 0 0 auto; }
 .sidebar { grid-row: 1 / 3; background: var(--navy); color: #f5fafc; position: sticky; top: 0; height: 100vh; z-index: 20; display: flex; flex-direction: column; overflow: hidden; }
 .brand { height: var(--header); border-bottom: 1px solid rgba(255,255,255,.13); display: flex; align-items: center; gap: 8px; padding: 0 15px; white-space: nowrap; }
 .brand strong { font-size: 17px; letter-spacing: -.35px; }
-.brand-mark { display: none; border: 1px solid #8ad5dc; color: #8ad5dc; width: 30px; height: 30px; object-fit: contain; }
+.brand-mark { display: none; border: 0; width: 30px; height: 30px; object-fit: contain; }
+.brand-logo-toggle { display: none; align-items: center; justify-content: center; width: 44px; height: 44px; padding: 0; border: 0; border-radius: 6px; background: transparent; }
+.collapsed .brand-logo-toggle { display: inline-flex; }
 .sidebar nav { padding: 8px 0; }
 .sidebar nav button { width: calc(100% - 10px); margin: 2px 5px; min-height: 50px; padding: 0 15px; border: 0; border-radius: 5px; background: transparent; color: inherit; display: flex; align-items: center; gap: 14px; font-size: 15px; text-align: left; white-space: nowrap; }
 .sidebar nav button:hover { background: rgba(255,255,255,.06); }
@@ -263,14 +265,26 @@ tbody tr:hover { background: #f4fbfb; }
 .user-status.active { color: #08705c; background: #effcf8; border-color: #76cbb7; }
 .user-status.inactive { color: #566872; background: #f3f6f7; border-color: #bfcbd0; }
 .user-status.deleted { color: #7f2d2d; background: #fff1f1; border-color: #e2a1a1; }
-.danger { color: var(--danger); border-color: #e2a1a1; background: #fff7f7; }
-.danger:hover { background: #ffeded; }
+button.danger { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 40px; padding: 0 16px; border: 1px solid #edc7c7; border-radius: 6px; background: #fff; color: #b42318; font-size: 14px; font-weight: 600; line-height: 1.2; transition: background-color .15s, border-color .15s; }
+button.danger:hover:not(:disabled) { background: #fff4f3; border-color: #d9928c; }
+button.danger:active:not(:disabled) { background: #ffe8e5; }
+button.danger:disabled { opacity: .45; cursor: not-allowed; }
+button.danger.compact { min-height: 30px; padding: 0 10px; font-size: 12px; }
+.drawer-actions > button.danger { justify-self: end; width: auto; margin-top: 4px; }
 .settings-panel-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 14px 16px; border-bottom: 1px solid var(--border); }
 .settings-panel-heading h2 { border: 0; padding: 0; }
 .settings-panel-heading p { margin: 5px 0 0; color: var(--muted); font-size: 12px; }
 .ldap-form { display: grid; gap: 16px; padding: 20px; }
-.ldap-form label { display: grid; gap: 7px; font-size: 13px; font-weight: 650; }
+.ldap-form label { display: grid; align-content: start; gap: 7px; min-width: 0; font-size: 13px; font-weight: 650; }
 .ldap-form input, .ldap-form select, .ldap-form textarea { border: 1px solid var(--border-dark); border-radius: 4px; padding: 9px 11px; background: white; font-weight: 400; }
+.ldap-form input:not([type="checkbox"]), .ldap-form select { width: 100%; min-width: 0; height: 38px; }
+.ldap-form h3, .ldap-form > .login-checkbox { font-size: 1.17em; font-weight: 700; letter-spacing: -.35px; }
+.ldap-form .login-checkbox { display: inline-flex; align-items: center; justify-self: start; gap: 8px; min-height: 32px; }
+.ldap-form .login-checkbox input[type="checkbox"] { width: 16px; height: 16px; flex: 0 0 16px; margin: 0; padding: 0; accent-color: var(--teal); }
+.ldap-form > .login-checkbox input[type="checkbox"] { width: 20px; height: 20px; flex-basis: 20px; }
+.ldap-form .form-row:has(> .login-checkbox) { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 24px; }
+.ldap-form .form-row:has(> .login-checkbox) > label:not(.login-checkbox) { display: inline-flex; align-items: center; gap: 8px; }
+.ldap-form .form-row:has(> .login-checkbox) select { width: 140px; max-width: 100%; }
 .ldap-form small { color: var(--muted); font-weight: 400; }
 .ldap-form footer { display: flex; justify-content: flex-end; }
 .role-policy-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; padding: 16px; }
@@ -363,7 +377,7 @@ tbody tr:hover { background: #f4fbfb; }
 
 @media (max-width: 900px) {
   :root { --sidebar: 64px; }
-  .brand { justify-content: center; padding: 0; }.brand-mark { display: grid; }.brand strong, .sidebar nav span { display: none; }
+  .brand { justify-content: center; padding: 0; }.brand-logo-toggle { display: inline-flex; }.brand-mark { display: grid; }.brand strong, .sidebar nav span { display: none; }
   .sidebar nav button { justify-content: center; padding: 0; }
   .topbar { padding: 0 12px; gap: 6px; }.topbar .global-search { max-width: none; flex: 1; }.topbar .divider, .topbar .freshness, .user-menu span { display: none; }
   .page-heading { align-items: flex-start; }.status-summary { display: none; }

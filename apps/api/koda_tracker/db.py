@@ -102,6 +102,15 @@ def ensure_environment_active_column(bind=engine) -> None:
             connection.execute(text("ALTER TABLE environments ADD COLUMN active BOOLEAN NOT NULL DEFAULT TRUE"))
 
 
+def ensure_sbom_source_metadata_column(bind=engine) -> None:
+    """Add scheduled-run provenance without changing existing SBOM rows."""
+    if "sbom_runs" not in inspect(bind).get_table_names():
+        return
+    if "source_metadata" not in {column["name"] for column in inspect(bind).get_columns("sbom_runs")}:
+        with bind.begin() as connection:
+            connection.execute(text("ALTER TABLE sbom_runs ADD COLUMN source_metadata JSON"))
+
+
 def get_db() -> Generator[Session, None, None]:
     with SessionLocal() as session:
         yield session

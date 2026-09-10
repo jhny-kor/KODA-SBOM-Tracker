@@ -97,6 +97,7 @@ export type RunQuery = {
   serviceId?: string;
   environmentId?: string;
   state?: string;
+  source?: string;
 };
 
 export async function fetchRuns(options: RunQuery = {}): Promise<PageResult<SbomRun>> {
@@ -109,6 +110,10 @@ export async function fetchRuns(options: RunQuery = {}): Promise<PageResult<Sbom
       if (options.serviceId && run.service.id !== options.serviceId) return false;
       if (options.environmentId && run.environment.id !== options.environmentId) return false;
       if (options.state && run.state !== options.state) return false;
+      if (options.source) {
+        const runSource = run.source || "manual";
+        if (options.source === "manual" ? !["", "manual", "api"].includes(runSource) : runSource !== options.source) return false;
+      }
       if (!term) return true;
       const summary = `${run.service.name} ${run.environment.name} ${run.releaseVersion} ${run.filename || ""} ${run.id}`.toLowerCase();
       const standaloneComponents = getStandaloneRun(run.id)?.components || [];
@@ -126,6 +131,7 @@ export async function fetchRuns(options: RunQuery = {}): Promise<PageResult<Sbom
   if (options.serviceId) params.set("service_id", options.serviceId);
   if (options.environmentId) params.set("environment_id", options.environmentId);
   if (options.state) params.set("state", options.state);
+  if (options.source) params.set("source", options.source);
   return request<PageResult<SbomRun>>(`/api/v1/sbom-runs?${params}`);
 }
 

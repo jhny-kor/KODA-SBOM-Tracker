@@ -1,6 +1,6 @@
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { demoMode, previewMode, standaloneMode, activateVulnerabilityBundle, approveUser, archiveRun, createApiToken, createAnalysis, createEnvironment, createService, createUser, deleteRun, deleteUser, fetchAuditEvents, fetchApiTokens, fetchCatalogs, fetchComparison, fetchDependencyTrackStatus, fetchJob, fetchLdapSettings, fetchRun, fetchRunComponents, fetchRunFindings, fetchRuns, fetchUsers, fetchVulnerabilityBundles, login, patchEnvironment, patchService, patchUser, logout, register, resumeSession, retryDependencyTrack, revokeApiToken, updateLdapSettings, uploadRun, syncVulnerabilityBundles, fetchRolePolicies, updateRolePolicies, setForbiddenHandler } from "./api";
-import { demoChanges, demoRolePolicyCatalog, demoRuns } from "./demo";
+import { demoChanges, demoLdapSettings, demoRolePolicyCatalog, demoRuns } from "./demo";
 import { formatSeoulDateTime } from "./format";
 import { Icon } from "./icons";
 import { canPage, dataAccess, hasPermissions, pageForPermissions, permissionSet, type Page } from "./permissions";
@@ -231,12 +231,12 @@ export function KodaPortalLink() {
   return <a className="portal-link" href="/koda/" target="_blank" rel="noopener noreferrer" aria-label="KODA 보안 분석" title="KODA 보안 분석"><Icon name="koda" /><span>KODA 보안 분석</span></a>;
 }
 
-function Sidebar({ page, collapsed, onNavigate,
-  canNavigatePage}: { page: Page; collapsed: boolean; onNavigate: (page: Page) => void;
+function Sidebar({ page, collapsed, onNavigate, onExpand,
+  canNavigatePage}: { page: Page; collapsed: boolean; onNavigate: (page: Page) => void; onExpand: () => void;
   canNavigatePage: (page: Page) => boolean;}) {
   return (
     <aside className={`sidebar ${collapsed ? "collapsed" : ""}`}>
-      <div className="brand"><img className="brand-mark" src="/KODA.ico" alt="KODA" /><strong>KODA SBOM Tracker</strong></div>
+      <div className="brand"><button type="button" className="brand-logo-toggle" onClick={onExpand} aria-label="KODA 로고로 사이드바 펼치기" aria-expanded={!collapsed}><img className="brand-mark" src="/KODA.ico" alt="" /></button><strong>KODA SBOM Tracker</strong></div>
       <nav aria-label="주 메뉴">
         {nav.filter((item) => canNavigatePage(item.id)).map((item) => (
           <button type="button" key={item.id} className={page === item.id ? "active" : ""} onClick={() => onNavigate(item.id)} title={item.label}>
@@ -389,6 +389,7 @@ function RunsPage({ runs, services, environments, search, onUpload, onSelect,
   const [service, setService] = useState("");
   const [environment, setEnvironment] = useState("");
   const [state, setState] = useState("");
+  const [source, setSource] = useState<"manual" | "scheduled">("manual");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
   const [result, setResult] = useState({ items: runs.slice(0, 10), page: 1, size: 10, total: runs.length });
@@ -404,12 +405,12 @@ function RunsPage({ runs, services, environments, search, onUpload, onSelect,
         setError("");
       }
     });
-    void fetchRuns({ page, size: pageSize, q: deferredSearch, serviceId: service, environmentId: environment, state })
+    void fetchRuns({ page, size: pageSize, q: deferredSearch, serviceId: service, environmentId: environment, state, source })
       .then((next) => { if (!cancelled) setResult(next); })
       .catch((reason) => { if (!cancelled) setError(reason instanceof Error ? reason.message : "회차를 불러오지 못했습니다."); })
       .finally(() => { if (!cancelled) setSearching(false); });
     return () => { cancelled = true; };
-  }, [deferredSearch, environment, page, pageSize, runs, service, state]);
+  }, [deferredSearch, environment, page, pageSize, runs, service, source, state]);
   const pageCount = Math.max(1, Math.ceil(result.total / pageSize));
   const currentPage = Math.min(page, pageCount);
   const visible = result.items;
@@ -434,7 +435,11 @@ function RunsPage({ runs, services, environments, search, onUpload, onSelect,
         <SelectFilter label="서비스" value={service} values={services.filter((item) => item.active !== false).map((item) => item.id)} onChange={(value) => { setService(value); setPage(1); }} formatValue={(value) => services.find((item) => item.id === value)?.name || value} />
         <SelectFilter label="환경" value={environment} values={environments.filter((item) => item.active !== false).map((item) => item.id)} onChange={(value) => { setEnvironment(value); setPage(1); }} formatValue={(value) => environments.find((item) => item.id === value)?.name || value} />
         <SelectFilter label="상태" value={state} values={["completed", "processing", "partial", "failed", "queued", "archived"]} onChange={(value) => { setState(value); setPage(1); }} formatValue={(value) => stateLabel(value as SbomRun["state"])} />
-        <button className="secondary reset" onClick={() => { setService(""); setEnvironment(""); setState(""); setPage(1);}}>초기화</button>
+        <button className="secondary reset" onClick={() => { setService(""); setEnvironment(""); setState(""); setSource("manual"); setPage(1);}}>초기화</button>
+      </div>
+      <div className="tabs" role="tablist" aria-label="점검 출처">
+        <button role="tab" aria-selected={source === "manual"} className={source === "manual" ? "active" : ""} onClick={() => { setSource("manual"); setPage(1); }}>수동 점검 결과</button>
+        <button role="tab" aria-selected={source === "scheduled"} className={source === "scheduled" ? "active" : ""} onClick={() => { setSource("scheduled"); setPage(1); }}>스케줄 점검 결과</button>
       </div>
       <div className="table-frame">
         <div className="table-scroll">
@@ -740,6 +745,8 @@ function RunDetail({ run, onClose, onChanged,
     finally { setBusy(false); }
   }
   const current = detail || run;
+  const scheduled = current.source === "scheduled";
+  const sourceMetadata = current.sourceMetadata || {};
   const components = componentResult.items;
   const findings = findingResult.items;
   const componentPageCount = Math.max(1, Math.ceil(componentResult.total / componentPageSize));
@@ -748,8 +755,8 @@ function RunDetail({ run, onClose, onChanged,
   const currentFindingPage = Math.min(findingPage, findingPageCount);
   return (<div className="drawer-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><section className="detail-modal" role="dialog" aria-modal="true" aria-labelledby="run-detail-title"><header><div><span>{current.service.name}</span><h2 id="run-detail-title">{current.releaseVersion} · {current.roundNumber}차
             </h2></div><button type="button" className="icon-button" aria-label="회차 상세 닫기" onClick={onClose}><Icon name="close" /></button></header>
-    <div className="detail-status"><span className={`state ${current.state}`}>{stateLabel(current.state)}</span><span>{current.environment.name}</span><span>CycloneDX {current.specVersion}</span></div>
-    <dl><dt>원본 파일</dt><dd>{current.filename || "-"}</dd><dt>CVE 기준일</dt><dd>{cveBaseline(current)}</dd><dt>오프라인 분석</dt><dd>{jobStateLabel(current.analysisState)}</dd><dt>Dependency-Track</dt><dd>{jobStateLabel(current.dependencyTrackState)}</dd><dt>구성요소</dt><dd>{current.componentCount.toLocaleString()}개</dd><dt>취약점</dt><dd>{current.vulnerabilityCount}건</dd><dt>정책 위반</dt><dd>{current.policyViolationCount}건</dd></dl>
+    <div className="detail-status"><span className={`state ${current.state}`}>{stateLabel(current.state)}</span><span>{scheduled ? "스케줄 점검" : "수동/API 점검"}</span><span>{current.environment.name}</span><span>CycloneDX {current.specVersion}</span></div>
+    <dl><dt>원본 파일</dt><dd>{current.filename || "-"}</dd>{scheduled && (<><dt>대상 서버</dt><dd>{String(sourceMetadata.server || sourceMetadata.remoteServer || "-")}</dd><dt>대상 디렉토리</dt><dd className="mono wrap">{String(sourceMetadata.directory || sourceMetadata.remoteDirectory || "-")}</dd><dt>점검 방식</dt><dd>{String(sourceMetadata.mode || "-")}</dd><dt>예약 실행 ID</dt><dd className="mono wrap">{String(sourceMetadata.scheduleRunId || "-")}</dd><dt>규칙 버전</dt><dd>{String(sourceMetadata.rulePolicyVersion ?? "-")}</dd></>)}<dt>CVE 기준일</dt><dd>{cveBaseline(current)}</dd><dt>오프라인 분석</dt><dd>{jobStateLabel(current.analysisState)}</dd><dt>Dependency-Track</dt><dd>{jobStateLabel(current.dependencyTrackState)}</dd><dt>구성요소</dt><dd>{current.componentCount.toLocaleString()}개</dd><dt>취약점</dt><dd>{current.vulnerabilityCount}건</dd><dt>정책 위반</dt><dd>{current.policyViolationCount}건</dd></dl>
     <h3>분석 리비전</h3><ul className="paths">{detail?.analyses?.length ? (detail.analyses.map((analysis) => (<li key={analysis.id}>r{analysis.sequence} · {jobStateLabel(analysis.state)} ·{" "}
                 {dataBaselineLabel(preferredCveDate(analysis.cveDataAsOf, analysis.dataAsOf), "CVE 기준일 확인 필요")}{analysis.error ? ` · ${analysis.error}` : ""}</li>) )
           ): (<li>상세를 불러오는 중이거나 분석 리비전이 없습니다.</li>)}</ul>
@@ -950,6 +957,7 @@ function LdapSettingsPanel({ settings, onChanged }: { settings: LdapSettings | n
   const change = <K extends keyof LdapForm>(key: K, value: LdapForm[K]) => setForm((current) => current ? { ...current, [key]: value } : current);
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setMessage("");
+    if (previewMode) { setMessage("샘플 화면에서는 LDAP 설정을 저장하거나 서버에 연결하지 않습니다."); return; }
     const current = form;
     if (!current) return;
     setBusy(true);
@@ -968,11 +976,12 @@ function LdapSettingsPanel({ settings, onChanged }: { settings: LdapSettings | n
   }
   return (<div className="settings-panel ldap-settings-panel" id="settings-panel-ldap" role="tabpanel" aria-labelledby="settings-tab-ldap">
     <div className="table-frame"><div className="settings-panel-heading"><div><h2 className="table-title">LDAP 로그인</h2><p>Tracker에서 LDAP을 인증하고 같은 세션으로 KODA에 접근합니다. 비밀번호는 서버의 암호화 키로 저장됩니다.</p></div><span className={`user-status ${form.enabled && form.hasBindPassword ? "active" : "inactive"}`}>{form.enabled && form.hasBindPassword ? "구성됨" : "미설정"}</span></div>
+      {previewMode && <p className="form-message" role="note">디자인 점검용 샘플입니다. 아래 서버·계정·그룹은 가상 값이며 실제 연결·저장은 하지 않습니다.</p>}
       <form className="ldap-form" onSubmit={submit}>
         <label className="login-checkbox"><input type="checkbox" checked={form.enabled} onChange={(event) => setForm((current) => current ? { ...current, enabled: event.target.checked, verifyCertificate: true } : current)} /> LDAP 로그인 사용</label>
         <h3>연결</h3>
         <div className="form-row"><label>LDAP 서버<input value={form.host} onChange={(event) => change("host", event.target.value)} placeholder="ldap.example.or.kr" required={form.enabled} /></label><label>포트<input type="number" min={1} max={65535} value={form.port} onChange={(event) => change("port", Number(event.target.value))} /></label><label>TLS 방식<select value={form.tlsMode} onChange={(event) => change("tlsMode", event.target.value as LdapForm["tlsMode"])}><option value="starttls">StartTLS (389)</option><option value="ldaps">LDAPS (636)</option><option value="plain">LDAP 평문 (389, 현재 AI 호환)</option></select></label></div>
-        <div className="form-row"><label>Bind DN / UPN<input value={form.bindDn} onChange={(event) => change("bindDn", event.target.value)} placeholder="ssisadm@ssis-g.or.kr" required={form.enabled} /></label><label>Bind 비밀번호<input type="password" value={form.bindPassword} onChange={(event) => change("bindPassword", event.target.value)} placeholder={form.hasBindPassword ? "기존 값 유지" : "입력 필요"} autoComplete="new-password" required={form.enabled && !form.hasBindPassword} /></label></div>
+        <div className="form-row"><label>Bind DN / UPN<input value={form.bindDn} onChange={(event) => change("bindDn", event.target.value)} placeholder="admin@example.or.kr" required={form.enabled} /></label><label>Bind 비밀번호<input type="password" value={form.bindPassword} onChange={(event) => change("bindPassword", event.target.value)} placeholder={form.hasBindPassword ? "기존 값 유지" : "입력 필요"} autoComplete="new-password" required={form.enabled && !form.hasBindPassword} /></label></div>
         <h3>사용자 식별</h3>
         <div className="form-row"><label>검색 기준 DN<input value={form.baseDn} onChange={(event) => change("baseDn", event.target.value)} placeholder="DC=example,DC=or,DC=kr" required={form.enabled} /></label><label>CA 인증서 경로<input value={form.caCertPath} onChange={(event) => change("caCertPath", event.target.value)} placeholder="/run/secrets/ldap-ca.crt" /></label></div>
         <div className="form-row"><label>로그인 속성<input value={form.loginAttribute} onChange={(event) => change("loginAttribute", event.target.value)} /></label><label>Tracker 사용자 ID 속성<input value={form.usernameAttribute} onChange={(event) => change("usernameAttribute", event.target.value)} /></label><label>고유 식별자 속성<input value={form.subjectAttribute} onChange={(event) => change("subjectAttribute", event.target.value)} /><small>AD는 objectGUID, OpenLDAP은 entryUUID를 사용합니다.</small></label><label>그룹 속성<input value={form.groupAttribute} onChange={(event) => change("groupAttribute", event.target.value)} /></label></div>
@@ -985,7 +994,7 @@ function LdapSettingsPanel({ settings, onChanged }: { settings: LdapSettings | n
         {form.tlsMode === "plain" && <p className="form-message" role="alert">현재 AI 서버 호환 모드입니다. LDAP 자격증명이 네트워크에 평문으로 전달될 수 있으므로 내부망에서만 사용하고, 가능하면 StartTLS 또는 LDAPS로 전환하세요.</p>}
         {!form.encryptionReady && <p className="form-message" role="alert">서버에 TRACKER_LDAP_ENCRYPTION_KEY가 없거나 올바르지 않아 bind 비밀번호를 저장할 수 없습니다.</p>}
         {message && <p className="form-message" role="status">{message}</p>}
-        <footer><button className="primary" disabled={busy || (form.enabled && !form.encryptionReady)}>{busy ? "저장 중…" : "LDAP 설정 저장"}</button></footer>
+        <footer><button className="primary" disabled={previewMode || busy || (form.enabled && !form.encryptionReady)}>{previewMode ? "샘플 모드 · 저장 안 함" : busy ? "저장 중…" : "LDAP 설정 저장"}</button></footer>
       </form>
     </div>
   </div>);
@@ -1039,10 +1048,10 @@ export function SettingsPage({ users, services, environments = [], tokens, dtrac
     if (canServices) tabs.push({ id: "services", label: "서비스·환경", icon: "service" });
     if (canUsers || canTokens) tabs.push({ id: "users", label: "사용자 관리", icon: "user" });
     if (canRoles || canPolicyEdit) tabs.push({ id: "roles", label: "권한 관리", icon: "settings" });
-    if (isAdmin && canVulnerability) tabs.push({ id: "vulnerability", label: "취약점 데이터", icon: "shield" });
+    if (isAdmin && canVulnerability) tabs.push({ id: "vulnerability", label: "취약점 데이터", icon: "vulnerability" });
     if (isAdmin && canAudit) tabs.push({ id: "audit", label: "감사 로그", icon: "audit" });
-    if (canDtrack || (canServices && canTokens)) tabs.push({ id: "integration", label: "연동 설정", icon: "external" });
-    if (isAdmin) tabs.push({ id: "ldap", label: "LDAP 로그인", icon: "shield" });
+    if (canDtrack || (canServices && canTokens)) tabs.push({ id: "integration", label: "연동 설정", icon: "integration" });
+    if (isAdmin) tabs.push({ id: "ldap", label: "LDAP 로그인", icon: "lock" });
     return tabs;
   }, [canAudit, canDtrack, canPolicyEdit, canRoles, canServices, canTokens, canUsers, canVulnerability, isAdmin]);
   useEffect(
@@ -1251,7 +1260,7 @@ export default function App() {
   const [users, setUsers] = useState<UserSummary[]>([]);
   const [tokens, setTokens] = useState<ApiTokenSummary[]>([]);
   const [dtrackStatus, setDtrackStatus] = useState<DependencyTrackStatus | null>(null);
-  const [ldapSettings, setLdapSettings] = useState<LdapSettings | null>(null);
+  const [ldapSettings, setLdapSettings] = useState<LdapSettings | null>(demoMode ? demoLdapSettings : null);
   const [loadError, setLoadError] = useState("");
   const [uploadOpen, setUploadOpen] = useState(false);
   const [selectedRun, setSelectedRun] = useState<SbomRun | null>(() =>
@@ -1422,7 +1431,7 @@ export default function App() {
   if (!permittedPage) return <div className="auth-loading">허용된 화면이 없습니다.</div>;
   if (permittedPage !== page) return null;
   return (<div className={`app-shell ${collapsed ? "is-collapsed" : ""}`}>
-    <Sidebar page={page} collapsed={collapsed} canNavigatePage={(next) => canPage(authUser, next)} onNavigate={(next) => canPage(authUser, next) && navigate(next)} />
+    <Sidebar page={page} collapsed={collapsed} onExpand={() => setCollapsed(false)} canNavigatePage={(next) => canPage(authUser, next)} onNavigate={(next) => canPage(authUser, next) && navigate(next)} />
     <Header collapsed={collapsed} search={globalSearch} onSearch={(value) => { setGlobalSearch(value); if (value.trim() && page !== "runs" && can("runs.view")) navigate("runs"); }} dataAsOf={runs.map((run) => preferredCveDate(run.cveDataAsOf, run.dataAsOf)).filter((value): value is string => Boolean(value) && value !== "unknown").sort().at(-1) || ""} onToggle={() => setCollapsed((value) => !value)} onLogout={() => {
       void logout()
         .then(() => {
