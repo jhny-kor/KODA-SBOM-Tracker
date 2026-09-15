@@ -26,6 +26,10 @@ class Settings(BaseSettings):
     cyclonedx_cli_binary: str = ""
     grype_binary: str = "grype"
     grype_db_dir: Path = Path("./data/vuln-data/current/grype-db")
+    # Optional second pinned binary used to prove KODA/Tracker DB compatibility
+    # during an offline update.  Empty keeps standalone Tracker installs valid.
+    data_update_koda_grype_binary: str = ""
+    data_update_spool_dir: Path = Path("./data/vuln-data/staging")
     koda_provisioning_token_file: Path | None = None
 
 

@@ -1,6 +1,6 @@
 import { demoChanges, demoRolePolicyCatalog, demoRuns } from "./demo";
 import { compareStandaloneRuns, getStandaloneCatalogs, getStandaloneRun, getStandaloneRuns, importStandaloneSbom } from "./standalone";
-import type { AuditEvent, AuthUser, CatalogItem, Comparison, ComponentSnapshot, DependencyTrackStatus, JobState, LdapSettings, PageResult, RolePolicy, RolePolicyCatalog, SbomRun, SbomRunDetail, UserSummary, VulnerabilityBundle } from "./types";
+import type { AuditEvent, AuthUser, CatalogItem, Comparison, ComponentSnapshot, DependencyTrackStatus, JobState, LdapSettings, PageResult, RolePolicy, RolePolicyCatalog, SbomRun, SbomRunDetail, UserSummary, VulnerabilityBundle, VulnerabilityDataJob } from "./types";
 
 export const standaloneMode = import.meta.env.VITE_STANDALONE_MODE === "true";
 export const demoMode = !standaloneMode && import.meta.env.VITE_DEMO_MODE !== "false";
@@ -238,6 +238,24 @@ export async function syncVulnerabilityBundles() {
 export async function activateVulnerabilityBundle(version: string) {
   if (previewMode) return undefined;
   return request<VulnerabilityBundle>(`/api/v1/vulnerability-data-bundles/${encodeURIComponent(version)}/activate`, { method: "POST" });
+}
+
+export function uploadVulnerabilityData(kind: "grype-db" | "vuln-data", file: File) {
+  if (previewMode) return Promise.resolve({ id: `preview-${Date.now()}`, kind, action: "validate", state: "completed", attempts: 1, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } as VulnerabilityDataJob);
+  return request<VulnerabilityDataJob>(`/api/v1/vulnerability-data-bundles/upload?kind=${encodeURIComponent(kind)}`, { method: "POST", body: file });
+}
+
+export function fetchVulnerabilityDataJob(jobId: string) {
+  return request<VulnerabilityDataJob>(`/api/v1/vulnerability-data-bundles/jobs/${encodeURIComponent(jobId)}`);
+}
+
+export function applyVulnerabilityDataJob(jobId: string) {
+  return request<VulnerabilityDataJob>(`/api/v1/vulnerability-data-bundles/jobs/${encodeURIComponent(jobId)}/apply`, { method: "POST" });
+}
+
+export function rollbackVulnerabilityData(kind: "grype-db" | "vuln-data", version?: string) {
+  const query = version ? `?version=${encodeURIComponent(version)}` : "";
+  return request<VulnerabilityDataJob>(`/api/v1/vulnerability-data-bundles/${kind}/rollback${query}`, { method: "POST" });
 }
 
 export async function createService(body: { slug: string; name: string }) {

@@ -1,7 +1,8 @@
+import { demoRuns } from "./demo";
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import App, { ComponentInspector, KodaPortalLink, LoginPage, SettingsPage } from "./App";
+import App, { Dashboard, ComponentInspector, KodaPortalLink, LoginPage, SettingsPage } from "./App";
 import { formatSeoulDateTime } from "./format";
 import { allowedPages, canPermission, dataAccess, hasPermissions, pageForPermissions } from "./permissions";
 
@@ -391,4 +392,15 @@ describe("KODA SBOM Tracker", () => {
     expect(screen.getByRole("cell", { name: "4.5.14, 5.0.0" })).toBeInTheDocument();
     expect(screen.getAllByText("결제 API").length).toBeGreaterThan(0);
   });
+});
+
+
+it("plots vulnerable components below the total on one shared scale", () => {
+  const run = { ...demoRuns[0], componentCount: 100, vulnerableComponentCount: 10 };
+  render(<Dashboard runs={[run]} onUpload={() => {}} standalone={false} canUpload={false} />);
+  const total = document.querySelector('circle[aria-label^="구성요소 ·"]');
+  const vulnerable = document.querySelector('circle[aria-label^="취약 구성요소 ·"]');
+  expect(total).not.toBeNull();
+  expect(vulnerable).not.toBeNull();
+  expect(Number(vulnerable!.getAttribute("cy"))).toBeGreaterThan(Number(total!.getAttribute("cy")));
 });

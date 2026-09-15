@@ -80,6 +80,30 @@ def test_registration_requires_admin_approval_before_login() -> None:
         assert client.patch(f"/api/v1/users/{pending['id']}", json={"active": False}, headers={"X-CSRF-Token": csrf}).json()["status"] == "inactive"
 
 
+def test_koda_identity_snapshot_requires_provisioning_secret_and_projects_no_passwords() -> None:
+    username = f"snapshot-{uuid.uuid4().hex[:12]}"
+    with TestClient(app) as client:
+        assert client.get("/api/v1/integrations/koda/users").status_code == 401
+        admin = client.post("/api/v1/auth/login", json={"username": "test-admin", "password": "correct-horse-battery-staple"})
+        csrf = admin.json()["csrfToken"]
+        created = client.post(
+            "/api/v1/users",
+            json={"username": username, "password": "snapshot-password-123", "role": "viewer"},
+            headers={"X-CSRF-Token": csrf},
+        )
+        assert created.status_code == 201
+        user_id = created.json()["id"]
+        headers = {"Authorization": "Bearer test-koda-provisioning-secret"}
+        snapshot = client.get("/api/v1/integrations/koda/users", headers=headers)
+        assert snapshot.status_code == 200
+        user = next(item for item in snapshot.json()["users"] if item["id"] == user_id)
+        assert user["status"] == "approved"
+        assert "password" not in user
+        client.patch(f"/api/v1/users/{user_id}", json={"active": False}, headers={"X-CSRF-Token": csrf})
+        revoked = client.get("/api/v1/integrations/koda/users", headers=headers).json()
+        assert next(item for item in revoked["users"] if item["id"] == user_id)["status"] == "revoked"
+
+
 def test_logout_current_requires_browser_headers_and_invalidates_session() -> None:
     with TestClient(app) as client:
         _login(client)

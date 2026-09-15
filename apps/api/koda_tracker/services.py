@@ -21,7 +21,7 @@ from .models import (
     SbomRun,
 )
 from .sbom import licenses_for, normalized_identity, sha256_for
-from .vulnerability import load_context, normalize_finding
+from .vulnerability import active_bundle, load_context, normalize_finding
 
 
 def create_components(db: Session, run: SbomRun) -> None:
@@ -68,9 +68,14 @@ def analyze_offline(db: Session, run: SbomRun) -> AnalysisRevision:
     db.flush()
     findings: list[dict] = []
     settings = get_settings()
-    context = load_context(settings)
+    initial_bundle = active_bundle(settings)
+    context = load_context(settings, release_path=initial_bundle.path) if initial_bundle else load_context(settings)
     env = os.environ.copy()
-    env["GRYPE_DB_CACHE_DIR"] = str(settings.grype_db_dir)
+    # Pin the immutable composite release for this analysis.  A concurrent
+    # offline data update may switch ``current`` while Grype is running.
+    env["GRYPE_DB_CACHE_DIR"] = str(
+        context.bundle.path / "grype-db" if context.bundle is not None else settings.grype_db_dir
+    )
     env["GRYPE_DB_AUTO_UPDATE"] = "false"
     env["GRYPE_DB_VALIDATE_AGE"] = "false"
     try:

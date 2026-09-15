@@ -68,6 +68,7 @@ services:
       TRACKER_DATABASE_URL: ${TRACKER_DATABASE_URL}
       TRACKER_ARTIFACT_DIR: ${ARTIFACT_ROOT:-/var/lib/sbom-tracker/artifacts}
       TRACKER_MAX_UPLOAD_BYTES: ${UPLOAD_MAX_BYTES:-104857600}
+      TRACKER_DATA_UPDATE_SPOOL_DIR: /var/lib/sbom-tracker/data-updates
       TRACKER_BOOTSTRAP_ADMIN_USERNAME: ${TRACKER_BOOTSTRAP_ADMIN_USERNAME:-admin}
       TRACKER_BOOTSTRAP_ADMIN_PASSWORD: ${TRACKER_BOOTSTRAP_ADMIN_PASSWORD}
       TRACKER_SECURE_COOKIES: ${TRACKER_SECURE_COOKIES:-false}
@@ -83,6 +84,7 @@ services:
       TRACKER_CYCLONEDX_CLI_BINARY: /usr/local/bin/cyclonedx
     volumes:
       - tracker-artifacts:${ARTIFACT_ROOT:-/var/lib/sbom-tracker/artifacts}
+      - data-updates:/var/lib/sbom-tracker/data-updates
       - vuln-data:${VULN_DATA_ROOT:-/var/lib/sbom-tracker/vuln-data}:ro
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:${PORTAL_API_PORT:-8000}/health')\" || exit 1"]
@@ -124,6 +126,28 @@ services:
       timeout: 5s
       retries: 5
       start_period: 20s
+    networks:
+      - app
+    restart: unless-stopped
+
+  portal-data-updater:
+    image: ${PORTAL_API_IMAGE}:${PORTAL_IMAGE_TAG:-dev}
+    container_name: ${COMPOSE_PROJECT_NAME:-koda-sbom}-portal-data-updater
+    command: ["python", "-m", "koda_tracker.worker", "--data-updates"]
+    environment:
+      TRACKER_DATABASE_URL: ${TRACKER_DATABASE_URL}
+      TRACKER_GRYPE_BINARY: ${TRACKER_GRYPE_BINARY:-grype}
+      TRACKER_DATA_UPDATE_KODA_GRYPE_BINARY: /usr/local/bin/koda-grype
+      TRACKER_GRYPE_DB_DIR: ${TRACKER_GRYPE_DB_DIR:-/var/lib/sbom-tracker/vuln-data/current/grype-db}
+      TRACKER_DATA_UPDATE_SPOOL_DIR: /var/lib/sbom-tracker/data-updates
+    volumes:
+      - data-updates:/var/lib/sbom-tracker/data-updates
+      - vuln-data:${VULN_DATA_ROOT:-/var/lib/sbom-tracker/vuln-data}
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=256m
     networks:
       - app
     restart: unless-stopped
@@ -231,5 +255,7 @@ volumes:
     name: ${TRACKER_ARTIFACTS_VOLUME_NAME:-koda-sbom-tracker-artifacts}
   vuln-data:
     name: ${VULN_DATA_VOLUME_NAME:-koda-sbom-vuln-data}
+  data-updates:
+    name: ${DATA_UPDATES_VOLUME_NAME:-koda-sbom-data-updates}
   backups:
     name: ${BACKUP_VOLUME_NAME:-koda-sbom-backups}

@@ -68,7 +68,7 @@ from .security import (
     PERMISSION_CATALOG,
 )
 from .services import audit, create_components, enqueue
-from .vulnerability import active_bundle, project_cve_findings, scan_bundle_releases
+from .vulnerability import active_bundle, cvss_score, project_cve_findings, scan_bundle_releases
 from .ldap_auth import LdapConfig, LdapConfigurationError, LdapInvalidCredentials, LdapUnavailable, authenticate_user
 
 
@@ -1370,6 +1370,22 @@ def _require_koda_provisioning(
     return "integration:koda"
 
 
+@app.get("/api/v1/integrations/koda/users")
+def list_koda_users(
+    db: Session = Depends(get_db),
+    _actor: str = Depends(_require_koda_provisioning),
+) -> dict:
+    """Return a complete, password-free identity snapshot for KODA sync."""
+    users = []
+    for user in db.scalars(select(User).where(User.approval_state != "deleted").order_by(User.id)):
+        users.append({
+            "id": user.id,
+            "username": user.username,
+            "status": "approved" if user.approval_state == "approved" and user.active else "revoked",
+        })
+    return {"users": users, "snapshotAt": datetime.now(UTC).isoformat()}
+
+
 @app.post("/api/v1/integrations/koda/repositories", status_code=201)
 def provision_koda_repository(
     body: KodaRepositoryRequest,
@@ -1838,6 +1854,21 @@ def get_run_components(
     }
 
 
+def _finding_sort_key(finding: dict) -> tuple:
+    """Stable server-side order, applied before slicing pages."""
+    severity_rank = {"critical": 4, "high": 3, "medium": 2, "low": 1, "unknown": 0}
+    raw_score = cvss_score(finding)
+    try:
+        score = float(raw_score) if raw_score is not None else -1.0
+    except (TypeError, ValueError):
+        score = -1.0
+    if not 0 <= score <= 10:
+        score = -1.0
+    component = str(finding.get("component") or "").casefold()
+    canonical = str(finding.get("canonicalId") or finding.get("id") or "").casefold()
+    return (0 if finding.get("kev") is True else 1, -score, -severity_rank.get(str(finding.get("severity") or "unknown").casefold(), 0), component, canonical)
+
+
 @app.get("/api/v1/sbom-runs/{run_id}/findings")
 def get_run_findings(
     run_id: str,
@@ -1853,7 +1884,7 @@ def get_run_findings(
     if analysis_id:
         query = query.where(AnalysisRevision.id == analysis_id)
     analysis = db.scalar(query.order_by(AnalysisRevision.sequence.desc()).limit(1))
-    findings = project_cve_findings(analysis.findings if analysis else [])
+    findings = sorted(project_cve_findings(analysis.findings if analysis else []), key=_finding_sort_key)
     start = (page - 1) * size
     return {
         "analysisId": analysis.id if analysis else None,
@@ -2144,8 +2175,10 @@ def _bundle_payload(item: VulnerabilityDataBundle) -> dict:
     return {
         "id": item.id,
         "version": item.version,
-        "dataAsOf": item.data_as_of,
+        "dataAsOf": metadata.get("GRYPE_DATASET_DATE", item.data_as_of),
         "grypeDbSchema": metadata.get("GRYPE_DB_SCHEMA", "unknown"),
+        "grypeDbVersion": metadata.get("GRYPE_DB_VERSION", item.version if item.active else None),
+        "vulnDataVersion": metadata.get("VULN_DATA_VERSION", item.version if item.active else None),
         "nvdDataAsOf": metadata.get("NVD_DATASET_DATE", "unknown"),
         "kevDataAsOf": metadata.get("KEV_DATASET_DATE", "unknown"),
         "aliasCount": int(manifest.get("aliasCount", 0) or 0),
@@ -2154,6 +2187,118 @@ def _bundle_payload(item: VulnerabilityDataBundle) -> dict:
         "active": item.active,
         "importedAt": item.imported_at.isoformat(),
     }
+
+
+_DATA_UPDATE_MAX_BYTES = 2 * 1024 * 1024 * 1024
+
+
+async def _stage_data_update_request(request: Request, *, kind: str) -> tuple[Path, str, int]:
+    if kind not in {"grype-db", "vuln-data"}:
+        raise HTTPException(422, "데이터 종류는 grype-db 또는 vuln-data여야 합니다")
+    spool = get_settings().data_update_spool_dir
+    spool.mkdir(parents=True, exist_ok=True)
+    path = spool / f"upload-{uuid.uuid4().hex}.tar.gz"
+    digest_value = hashlib.sha256()
+    total = 0
+    try:
+        with path.open("wb") as handle:
+            async for chunk in request.stream():
+                total += len(chunk)
+                if total > _DATA_UPDATE_MAX_BYTES:
+                    raise HTTPException(413, "취약점 데이터 파일이 업로드 제한을 초과했습니다")
+                digest_value.update(chunk)
+                handle.write(chunk)
+        if total == 0:
+            raise HTTPException(422, "빈 데이터 파일은 업로드할 수 없습니다")
+        return path, digest_value.hexdigest(), total
+    except Exception:
+        path.unlink(missing_ok=True)
+        raise
+
+
+def _data_job_payload(job: Job) -> dict:
+    payload = job.payload or {}
+    return {
+        "id": job.id,
+        "kind": payload.get("kind"),
+        "action": payload.get("action", "validate"),
+        "state": job.state,
+        "attempts": job.attempts,
+        "error": job.error,
+        "version": payload.get("version"),
+        "dataAsOf": payload.get("dataAsOf"),
+        "manifestSha256": payload.get("manifestSha256"),
+        "fileSha256": payload.get("fileSha256"),
+        "bytes": payload.get("bytes"),
+        "expectedBaseVersion": payload.get("expectedBaseVersion"),
+        "createdAt": job.created_at.isoformat(),
+        "updatedAt": job.updated_at.isoformat(),
+    }
+
+
+def _current_update_version() -> str | None:
+    root = get_settings().grype_db_dir.parent.parent / "current"
+    try:
+        return root.resolve().name if root.is_symlink() and root.resolve().is_dir() else None
+    except OSError:
+        return None
+
+
+@app.post("/api/v1/vulnerability-data-bundles/upload", status_code=202)
+async def upload_vulnerability_data_bundle(
+    request: Request,
+    kind: str = Query(...),
+    db: Session = Depends(get_db),
+    principal=Depends(require_admin),
+    _permission=Depends(require_permission("vulnerability.manage")),
+    _csrf=Depends(require_csrf),
+) -> dict:
+    archive, file_sha256, size = await _stage_data_update_request(request, kind=kind)
+    payload = {"action": "validate", "kind": kind, "archive": str(archive), "fileSha256": file_sha256, "bytes": size, "expectedBaseVersion": _current_update_version()}
+    job = Job(kind="vulnerability_data_update", run_id=None, payload=payload)
+    db.add(job)
+    db.flush()
+    audit(db, principal.username, "vuln_data.upload", "vulnerability_data_job", job.id, {"kind": kind, "bytes": size, "sha256": file_sha256})
+    db.commit()
+    return _data_job_payload(job)
+
+
+@app.get("/api/v1/vulnerability-data-bundles/jobs/{job_id}")
+def vulnerability_data_job(job_id: str, db: Session = Depends(get_db), _admin=Depends(require_admin), _=Depends(require_permission("vulnerability.manage"))) -> dict:
+    job = db.get(Job, job_id)
+    if job is None or job.kind != "vulnerability_data_update":
+        raise HTTPException(404, "취약점 데이터 작업을 찾을 수 없습니다")
+    return _data_job_payload(job)
+
+
+@app.post("/api/v1/vulnerability-data-bundles/jobs/{job_id}/apply", status_code=202)
+def apply_vulnerability_data_job(job_id: str, db: Session = Depends(get_db), principal=Depends(require_admin), _permission=Depends(require_permission("vulnerability.manage")), _csrf=Depends(require_csrf)) -> dict:
+    source = db.get(Job, job_id)
+    if source is None or source.kind != "vulnerability_data_update":
+        raise HTTPException(404, "취약점 데이터 작업을 찾을 수 없습니다")
+    if source.state != JobState.COMPLETED or (source.payload or {}).get("action") != "validate" or (source.payload or {}).get("phase") != "validated":
+        raise HTTPException(409, "검증 완료된 작업만 적용할 수 있습니다")
+    payload = dict(source.payload or {})
+    payload["action"] = "apply"
+    payload["sourceJobId"] = source.id
+    job = Job(kind="vulnerability_data_update", run_id=None, payload=payload)
+    db.add(job)
+    db.flush()
+    audit(db, principal.username, "vuln_data.apply", "vulnerability_data_job", source.id, {"kind": payload.get("kind")})
+    db.commit()
+    return _data_job_payload(job)
+
+
+@app.post("/api/v1/vulnerability-data-bundles/{kind}/rollback", status_code=202)
+def rollback_vulnerability_data_bundle(kind: str, version: str | None = Query(default=None), db: Session = Depends(get_db), principal=Depends(require_admin), _permission=Depends(require_permission("vulnerability.manage")), _csrf=Depends(require_csrf)) -> dict:
+    if kind not in {"grype-db", "vuln-data"}:
+        raise HTTPException(422, "데이터 종류는 grype-db 또는 vuln-data여야 합니다")
+    job = Job(kind="vulnerability_data_update", run_id=None, payload={"action": "rollback", "kind": kind, "version": version})
+    db.add(job)
+    db.flush()
+    audit(db, principal.username, "vuln_data.rollback", "vulnerability_data_job", job.id, {"kind": kind, "version": version})
+    db.commit()
+    return _data_job_payload(job)
 
 
 def _sync_bundle_records(db: Session, *, actor: str | None = None) -> tuple[list[VulnerabilityDataBundle], bool]:

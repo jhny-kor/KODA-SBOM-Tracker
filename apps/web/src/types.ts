@@ -121,11 +121,30 @@ export interface VulnerabilityBundle {
   nvdDataAsOf: string;
   kevDataAsOf: string;
   grypeDbSchema: string;
+  grypeDbVersion?: string | null;
+  vulnDataVersion?: string | null;
   aliasCount: number;
   kevCount: number;
   manifestSha256: string;
   active: boolean;
   importedAt: string;
+}
+
+export interface VulnerabilityDataJob {
+  id: string;
+  kind: "grype-db" | "vuln-data";
+  action?: "validate" | "apply" | "rollback";
+  state: JobState;
+  attempts: number;
+  error?: string | null;
+  version?: string | null;
+  dataAsOf?: string | null;
+  manifestSha256?: string | null;
+  fileSha256?: string | null;
+  bytes?: number | null;
+  expectedBaseVersion?: string | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface AuditEvent {

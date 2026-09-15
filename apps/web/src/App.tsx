@@ -1,5 +1,5 @@
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import { demoMode, previewMode, standaloneMode, activateVulnerabilityBundle, approveUser, archiveRun, createApiToken, createAnalysis, createEnvironment, createService, createUser, deleteRun, deleteUser, fetchAuditEvents, fetchApiTokens, fetchCatalogs, fetchComparison, fetchDependencyTrackStatus, fetchJob, fetchLdapSettings, fetchRun, fetchRunComponents, fetchRunFindings, fetchRuns, fetchUsers, fetchVulnerabilityBundles, login, patchEnvironment, patchService, patchUser, logout, register, resumeSession, retryDependencyTrack, revokeApiToken, updateLdapSettings, uploadRun, syncVulnerabilityBundles, fetchRolePolicies, updateRolePolicies, setForbiddenHandler } from "./api";
+import { demoMode, previewMode, standaloneMode, activateVulnerabilityBundle, approveUser, archiveRun, createApiToken, createAnalysis, createEnvironment, createService, createUser, deleteRun, deleteUser, fetchAuditEvents, fetchApiTokens, fetchCatalogs, fetchComparison, fetchDependencyTrackStatus, fetchJob, fetchLdapSettings, fetchRun, fetchRunComponents, fetchRunFindings, fetchRuns, fetchUsers, fetchVulnerabilityBundles, login, patchEnvironment, patchService, patchUser, logout, register, resumeSession, retryDependencyTrack, revokeApiToken, updateLdapSettings, uploadRun, syncVulnerabilityBundles, fetchRolePolicies, updateRolePolicies, setForbiddenHandler, uploadVulnerabilityData, fetchVulnerabilityDataJob, applyVulnerabilityDataJob, rollbackVulnerabilityData } from "./api";
 import { demoChanges, demoLdapSettings, demoRolePolicyCatalog, demoRuns } from "./demo";
 import { formatSeoulDateTime } from "./format";
 import { Icon } from "./icons";
@@ -263,16 +263,15 @@ function SelectFilter({ label, value, values, onChange, formatValue }: { label: 
     </label>
   );}
 
-function chartPoints(values: number[], width: number, height: number, padding = 4) {
-  const maximum = Math.max(1, ...values);
+function chartPoints(values: number[], width: number, height: number, padding = 4, maximum = Math.max(1, ...values)) {
   const plotWidth = width - padding * 2;
   const plotHeight = height - padding * 2;
   return values.map((value, index) => ({
     x: values.length === 1 ? width / 2 : padding + (index / (values.length - 1)) * plotWidth,
     y: padding + (1 - value / maximum) * plotHeight}));}
 
-function pathFor(values: number[], width: number, height: number) {
-  return chartPoints(values, width, height).map((point, index) => `${index ? "L" : "M"}${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" ");}
+function pathFor(values: number[], width: number, height: number, maximum?: number) {
+  return chartPoints(values, width, height, 4, maximum).map((point, index) => `${index ? "L" : "M"}${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" ");}
 
 type ChartTooltip = { x: number; y: number; text: string };
 
@@ -302,7 +301,7 @@ function PreviewBars({ items, emptyLabel }: { items: { label: string; value: num
     <span>{item.label}</span><div className="preview-bar-track"><i className={item.tone || ""} style={{ width: `${(item.value / maximum) * 100}%` }} /></div><strong>{item.value}</strong>
   </div>))}</div>);}
 
-function Dashboard({ runs, onUpload,
+export function Dashboard({ runs, onUpload,
   standalone,
   canUpload}: { runs: SbomRun[]; onUpload: () => void;
   standalone: boolean;
@@ -346,6 +345,7 @@ function Dashboard({ runs, onUpload,
   const series = [
     { label: "구성요소", color: "#32c6d1", values: chartRuns.map((run) => run.componentCount) },
     { label: "취약 구성요소", color: "#a970ff", values: chartRuns.map(vulnerableComponents) }];
+  const trendMaximum = Math.max(1, ...series.flatMap((item) => item.values));
   return (<section className="page preview-dashboard-page">
     <div className="page-heading"><div><p className="preview-eyebrow">{standalone ? "LOCAL" : "OPERATIONS"} SBOM PORTFOLIO
           </p><h1>대시보드</h1><p className="preview-dashboard-subtitle">등록된 SBOM {uploadedRuns.length}건의 분석 결과입니다.{" "}
@@ -366,7 +366,7 @@ function Dashboard({ runs, onUpload,
         <div className="preview-chart-scroll"><div className="preview-chart-canvas"><svg className="preview-chart" viewBox="0 0 760 250" role="img" aria-label="업로드별 구성요소와 취약 구성요소 추이">
           <title>업로드별 구성요소와 취약 구성요소 추이</title>
           {[50, 105, 160, 215].map((y) => (<line key={y} x1="36" x2="744" y1={y} y2={y} className="preview-grid-line" />))}
-          {series.map((item) => (<g key={item.label}><path d={pathFor(item.values, 708, 165)} transform="translate(36 45)" fill="none" stroke={item.color} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />{chartPoints(item.values, 708, 165).map((point, index) => { const run = chartRuns[index]; const x = point.x + 36; const y = point.y + 45; const text = `${item.label} · #${run.roundNumber} · ${run.service.name}/${run.environment.name} · ${item.values[index]} · CVE 기준일 ${cveBaseline(run)}`; const show = () => setTrendTooltip({ x: Math.max(14, Math.min(86, (x / 760) * 100)), y: (y / 250) * 100, text }); return (<circle className="preview-chart-point" key={`${item.label}-${index}`} cx={x} cy={y} r="4" fill={item.color} role="img" aria-label={text} tabIndex={0} onMouseEnter={show} onMouseLeave={() => setTrendTooltip(null)} onFocus={show} onBlur={() => setTrendTooltip(null)} />); })}</g>))}
+          {series.map((item) => (<g key={item.label}><path d={pathFor(item.values, 708, 165, trendMaximum)} transform="translate(36 45)" fill="none" stroke={item.color} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />{chartPoints(item.values, 708, 165, 4, trendMaximum).map((point, index) => { const run = chartRuns[index]; const x = point.x + 36; const y = point.y + 45; const text = `${item.label} · #${run.roundNumber} · ${run.service.name}/${run.environment.name} · ${item.values[index]} · CVE 기준일 ${cveBaseline(run)}`; const show = () => setTrendTooltip({ x: Math.max(14, Math.min(86, (x / 760) * 100)), y: (y / 250) * 100, text }); return (<circle className="preview-chart-point" key={`${item.label}-${index}`} cx={x} cy={y} r="4" fill={item.color} role="img" aria-label={text} tabIndex={0} onMouseEnter={show} onMouseLeave={() => setTrendTooltip(null)} onFocus={show} onBlur={() => setTrendTooltip(null)} />); })}</g>))}
           {chartRuns.map((run, index) => (<text key={run.id} x={chartRuns.length === 1 ? 390 : 36 + (index / (chartRuns.length - 1)) * 708} y="238" textAnchor="middle" className="preview-axis-label">#{uploadedRuns.length - chartRuns.length + index + 1}</text>))}
         </svg><ImmediateChartTooltip tooltip={trendTooltip} /></div></div>
       </article>
@@ -886,6 +886,32 @@ function VulnerabilityPage({ bundles, onSync, onActivate, canManage, embedded = 
   const [message, setMessage] = useState("");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
+  const [dataKind, setDataKind] = useState<"grype-db" | "vuln-data">("grype-db");
+  const [dataJob, setDataJob] = useState<Awaited<ReturnType<typeof fetchVulnerabilityDataJob>> | null>(null);
+  const activeBundle = bundles.find((bundle) => bundle.active);
+  async function uploadData(file: File) {
+    setBusy(true); setMessage("");
+    try { setDataJob(await uploadVulnerabilityData(dataKind, file)); setMessage("파일을 접수했습니다. 검증 작업이 대기 중입니다."); }
+    catch (error) { setMessage(error instanceof Error ? error.message : "데이터 업로드에 실패했습니다"); }
+    finally { setBusy(false); }
+  }
+  useEffect(() => {
+    if (!dataJob || dataJob.state === "completed" || dataJob.state === "failed") return;
+    const timer = window.setInterval(() => { void fetchVulnerabilityDataJob(dataJob.id).then((job) => { setDataJob(job); if (job.state === "completed" && job.action !== "validate") void onSync(); }).catch((error) => setMessage(error instanceof Error ? error.message : "작업 상태 조회에 실패했습니다")); }, 2000);
+    return () => window.clearInterval(timer);
+  }, [dataJob]);
+  async function applyData() {
+    if (!dataJob) return;
+    setBusy(true); try { setDataJob(await applyVulnerabilityDataJob(dataJob.id)); setMessage("적용 작업을 접수했습니다."); }
+    catch (error) { setMessage(error instanceof Error ? error.message : "적용에 실패했습니다"); }
+    finally { setBusy(false); }
+  }
+  async function rollbackData(kind: "grype-db" | "vuln-data") {
+    setBusy(true); setMessage("");
+    try { setDataJob(await rollbackVulnerabilityData(kind)); setMessage(`${kind === "grype-db" ? "Grype DB" : "vuln-data"} 복원 작업을 접수했습니다.`); }
+    catch (error) { setMessage(error instanceof Error ? error.message : "복원에 실패했습니다"); }
+    finally { setBusy(false); }
+  }
   async function sync() {
     setBusy(true); setMessage("");
     try { await onSync(); setMessage("파일시스템의 반입 상태를 동기화했습니다.");} catch (error) { setMessage(error instanceof Error ? error.message : "동기화에 실패했습니다");} finally { setBusy(false);}
@@ -899,13 +925,13 @@ function VulnerabilityPage({ bundles, onSync, onActivate, canManage, embedded = 
   const visibleBundles = bundles.slice((currentPage - 1) * pageSize, currentPage * pageSize);
   return (<section className={embedded ? "settings-panel generic-page" : "page generic-page"}><div className="page-heading"><div><h1>취약점 데이터</h1><p>폐쇄망에 반입한 Grype·NVD·CISA KEV 데이터의 무결성과 기준일을
             확인합니다.
-          </p></div>{canManage && (<button className="primary" onClick={() => void sync()} disabled={busy}>{busy ? "확인 중…" : "반입 상태 동기화"}</button>)}
-      </div>{message && (<p className="form-message" role="status">{message}</p>)}<div className="table-frame"><div className="table-scroll"><table><thead><tr><th>번들</th><th>Grype</th><th>NVD 기준일</th><th>KEV 기준일</th><th>별칭 / KEV</th><th>상태</th><th>반입 시각</th></tr></thead><tbody>{bundles.length ? (visibleBundles.map((item) => (<tr key={item.id}><td>{item.version}</td><td>{item.dataAsOf}<br /><small>schema {item.grypeDbSchema}</small></td><td>{item.nvdDataAsOf}</td><td>{item.kevDataAsOf}</td><td>{item.aliasCount} / {item.kevCount}</td><td>{item.active ? (<span className="state completed">활성</span> ): canManage ? (<button className="secondary compact" onClick={() => void activate(item.version)} disabled={busy}>활성 기록
+          </p></div>{canManage && (<div className="button-row"><button className="primary" onClick={() => void sync()} disabled={busy}>{busy ? "확인 중…" : "반입 상태 동기화"}</button><select value={dataKind} onChange={(event) => setDataKind(event.target.value as typeof dataKind)} aria-label="취약점 데이터 종류"><option value="grype-db">Grype DB</option><option value="vuln-data">vuln-data</option></select><label className="secondary compact">압축파일 업로드<input type="file" accept=".tar.gz,.tgz,application/gzip" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void uploadData(file); event.currentTarget.value = ""; }} /></label><button className="secondary compact" onClick={() => void rollbackData("grype-db")} disabled={busy}>Grype DB 복원</button><button className="secondary compact" onClick={() => void rollbackData("vuln-data")} disabled={busy}>vuln-data 복원</button></div>)}
+      </div><p className="form-message">현재 Grype DB: {activeBundle?.grypeDbVersion || activeBundle?.version || "확인 불가"} · vuln-data: {activeBundle?.vulnDataVersion || activeBundle?.version || "확인 불가"}</p>{message && (<p className="form-message" role="status">{message}</p>)}<div className="table-frame"><div className="table-scroll"><table><thead><tr><th>번들</th><th>Grype</th><th>NVD 기준일</th><th>KEV 기준일</th><th>별칭 / KEV</th><th>상태</th><th>반입 시각</th></tr></thead><tbody>{bundles.length ? (visibleBundles.map((item) => (<tr key={item.id}><td>{item.version}</td><td>{item.dataAsOf}<br /><small>schema {item.grypeDbSchema}</small></td><td>{item.nvdDataAsOf}</td><td>{item.kevDataAsOf}</td><td>{item.aliasCount} / {item.kevCount}</td><td>{item.active ? (<span className="state completed">활성</span> ): canManage ? (<button className="secondary compact" onClick={() => void activate(item.version)} disabled={busy}>활성 기록
                         </button>) : (
                         <span>보관</span>
                       )}</td><td>{formatSeoulDateTime(item.importedAt)}</td></tr>) )
               ): (<tr><td colSpan={7}>등록된 취약점 데이터 번들이 없습니다. 반입 후 동기화하세요.
-                  </td></tr>)}</tbody></table></div><DetailPagination total={bundles.length} page={currentPage} pageSize={pageSize} label="취약점 번들 페이지당 행 수" onPage={setPage} onPageSize={(size) => { setPageSize(size); setPage(1); }} /></div></section>);}
+                  </td></tr>)}</tbody></table></div><DetailPagination total={bundles.length} page={currentPage} pageSize={pageSize} label="취약점 번들 페이지당 행 수" onPage={setPage} onPageSize={(size) => { setPageSize(size); setPage(1); }} /></div>{dataJob && (<p className="form-message" role="status">데이터 작업 {dataJob.state} · {dataJob.kind} · {dataJob.version || "버전 검증 중"} · 기준일 {dataJob.dataAsOf || "확인 중"}{dataJob.error ? `: ${dataJob.error}` : ""}{dataJob.state === "completed" && dataJob.action === "validate" && <button className="primary compact" onClick={() => void applyData()} disabled={busy}>검증 결과 적용</button>}</p>)}</section>);}
 
 function AuditPage({ events, embedded = false }: { events: AuditEvent[]; embedded?: boolean }) {
   const [query, setQuery] = useState("");

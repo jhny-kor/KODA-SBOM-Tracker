@@ -415,8 +415,7 @@ def test_service_scoped_idempotency_concurrent_uploads_create_one_run() -> None:
             headers=headers,
         ).json()
 
-    def upload() -> tuple[int, str]:
-        with TestClient(app) as client:
+        def upload() -> tuple[int, str]:
             response = client.post(
                 "/api/v1/sbom-runs",
                 data={"serviceId": item["serviceId"], "environmentId": item["environmentId"], "releaseVersion": "main@concurrent"},
@@ -425,8 +424,8 @@ def test_service_scoped_idempotency_concurrent_uploads_create_one_run() -> None:
             )
             return response.status_code, response.json()["runId"]
 
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        results = list(executor.map(lambda _: upload(), range(2)))
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(lambda _: upload(), range(2)))
     assert [status for status, _ in results] == [202, 202]
     assert len({run_id for _, run_id in results}) == 1
 
