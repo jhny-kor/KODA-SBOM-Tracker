@@ -1,9 +1,9 @@
 server {
     listen 8080;
     server_name ${GATEWAY_SERVER_NAME};
-    # The API still limits the file itself to 100 MiB; this extra MiB covers
+    # The API limits the file itself to 500 MiB; this extra MiB covers
     # multipart form fields and boundaries.
-    client_max_body_size 101m;
+    client_max_body_size 501m;
 
     # Large offline datasets stream to the bounded API upload spool.
     location = /api/v1/vulnerability-data-bundles/upload {

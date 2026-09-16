@@ -182,7 +182,7 @@ docker compose --env-file .env "${COMPOSE_FILES[@]}" \
   exec gateway nginx -T 2>/dev/null | grep client_max_body_size
 ```
 
-정상값은 `UPLOAD_MAX_BYTES=104857600`, `client_max_body_size 101m;`입니다. API는
+정상값은 `UPLOAD_MAX_BYTES=524288000`, `client_max_body_size 501m;`입니다. API는
 파일 자체를 100MiB로 제한하고 gateway의 추가 1MiB는 multipart 요청 정보를 수용합니다.
 외부 Nginx·Apache·L7 장비가 있으면 그 제한도 101MiB 이상이어야 합니다.
 

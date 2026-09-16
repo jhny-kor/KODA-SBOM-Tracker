@@ -1261,7 +1261,7 @@ _SCHEDULE_SOURCE_METADATA_KEYS = frozenset({
     "targetId", "scheduleRunId", "server", "directory", "mode", "changedFiles", "changedFilesTruncated",
     "kodaRunId", "rulePolicyVersion",
 })
-_MAX_SCHEDULE_CHANGED_FILES = 2_000
+_MAX_SCHEDULE_CHANGED_FILES = 20_000
 
 
 def _validated_source_metadata(

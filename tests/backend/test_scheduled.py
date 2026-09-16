@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from koda_tracker.main import app, _prune_scheduled_runs, _scheduled_environment, _validated_source_metadata
-from koda_tracker.models import Environment, ProcessingState, Release, SbomRun, Service, User
+from koda_tracker.models import ApiToken, Environment, ProcessingState, Release, SbomRun, Service, User
 from koda_tracker.config import get_settings
 from koda_tracker.db import SessionLocal
 
@@ -38,6 +38,14 @@ def test_scheduled_metadata_requires_koda_token() -> None:
         assert admin is not None
         with pytest.raises(HTTPException, match="KODA 연동 토큰"):
             _validated_source_metadata(admin, "scheduled", _metadata())
+
+
+def test_scheduled_metadata_accepts_twenty_thousand_changed_files() -> None:
+    token = ApiToken(name="koda-gitlab:test", token_hash="a" * 64)
+    metadata = _metadata("changed") | {"changedFiles": [f"src/file-{index}.py" for index in range(20_000)]}
+    assert len(_validated_source_metadata(token, "scheduled", metadata)[1]["changedFiles"]) == 20_000
+    with pytest.raises(HTTPException, match="변경 파일 목록"):
+        _validated_source_metadata(token, "scheduled", metadata | {"changedFiles": metadata["changedFiles"] + ["extra.py"]})
 
 
 def test_scheduled_full_and_changed_use_distinct_environments() -> None:

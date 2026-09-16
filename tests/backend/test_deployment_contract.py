@@ -26,8 +26,8 @@ def test_dependency_track_is_part_of_linux_readiness() -> None:
     assert "proxy_pass http://${DTRACK_FRONTEND_UPSTREAM}${DTRACK_BASE_PATH}/;" not in gateway
     assert "location = /dependency-track/static/config.json" in gateway
     assert 'add_header Cache-Control "no-store" always;' in gateway
-    assert gateway.count("client_max_body_size 101m;") == 1
-    assert "UPLOAD_MAX_BYTES=104857600" in (ROOT / ".env.example").read_text()
+    assert gateway.count("client_max_body_size 501m;") == 1
+    assert "UPLOAD_MAX_BYTES=524288000" in (ROOT / ".env.example").read_text()
     assert all("AIRGAP_HEALTH_TIMEOUT:-420" in launcher for launcher in launchers)
 
 
@@ -35,9 +35,9 @@ def test_upload_limit_defaults_match_gateway_and_ui() -> None:
     config = (ROOT / "apps/api/koda_tracker/config.py").read_text()
     ui = (ROOT / "apps/web/src/App.tsx").read_text()
 
-    assert "max_upload_bytes: int = 100 * 1024 * 1024" in config
-    assert "최대 100 MiB" in ui
-    assert "client_max_body_size 101m;" in (ROOT / "deploy/nginx/gateway.conf.template").read_text()
+    assert "max_upload_bytes: int = 500 * 1024 * 1024" in config
+    assert 'standaloneMode ? "100 MiB" : "500 MiB"' in ui
+    assert "client_max_body_size 501m;" in (ROOT / "deploy/nginx/gateway.conf.template").read_text()
 
 
 def test_airgap_installer_retags_manifest_verified_remote_images() -> None:
