@@ -102,3 +102,55 @@ Chrome/Playwright로 회차 상세 → 점수·영역 기여도 → 과거 부�
 차단하므로 업그레이드 뒤 사용 회차는 재분석해야 합니다.
 실제 조직 CI 보호 규칙·LDAP·Windows 설치·폐쇄망 전체 복원·대규모 부하는 검증 범위 밖입니다.
 [운영 안내](sbom-quality-ko.md)를 참고하세요.
+
+
+## GitLab 보안 검사 대응과 재검증
+
+가중 점수 구현 커밋의 최초 GitLab push는 서버 pre-receive 보안 검사에서 거부됐습니다.
+기존 잠금 파일의 취약 의존성이 원인이었으며, 검사를 우회하지 않고 다음과 같이 갱신했습니다.
+
+| 패키지 | 이전 | 갱신 |
+| --- | --- | --- |
+| cryptography | 45.0.6 | 50.0.2 |
+| python-multipart | 0.0.20 | 0.0.32 |
+| FastAPI | 0.116.1 | 0.135.4 |
+| Starlette(전이) | 0.47.3 | 1.8.0 |
+| pytest(테스트) | 8.4.1 | 9.0.3 |
+| brace-expansion(웹 전이) | 1.1.18 / 2.1.4 | 1.1.21 / 2.1.7 |
+| source-map-js(웹 전이) | 1.2.1 | 1.2.2 |
+
+Python 전체 잠금 패키지는 `pip-audit` PyPI·OSV 양쪽에서 각각 44개·취약점 0건,
+웹은 `npm audit` 취약점 0건입니다. 이전 Python 감사의 39개 advisory 결과는 중복 식별자를
+포함하므로 고유 취약점 39개를 뜻하지 않습니다. 감사 결과는 조회 시점에 한정됩니다.
+[cryptography 배포 정보](https://pypi.org/project/cryptography/),
+[python-multipart 배포 정보](https://pypi.org/project/python-multipart/)와 패키지 잠금 파일을 참고하세요.
+
+Docker가 갱신한 전이 의존성도 고정 설치하도록 `uv.lock`에서 내보낸
+`apps/api/constraints.txt`를 `pip install -c`에 적용했습니다. API·worker·web을 모두 새로
+빌드했고 API 실제 설치 버전 네 가지가 위 표와 일치하며 `pip check`도 통과했습니다.
+백엔드 698개와 웹 103개, 타입 검사·웹 빌드가 재통과했습니다. lint 오류는 0건이며 기존
+App의 `onSync` 경고 1건이 남아 있습니다. 갱신한 Python 환경의 deprecation 경고는 3건입니다.
+
+동작 변화: FastAPI의 보안 기본값에 따라 JSON 본문에는 `Content-Type: application/json`을
+명시해야 합니다. 포털·제공 CI 실행기는 이를 사용하며 파일 업로드는 multipart를 유지합니다.
+
+
+보안 갱신 후 실제 Docker 검증도 다시 통과했습니다.
+
+- 가중 점수·상속 24개: `security-final/runtime-report.json`
+- 기존 품질 18개: `security-quality-regression/runtime-report.json`
+- 기존 native/Grype 통합 34개: `security-native/runtime-report.json`
+- 실제 Chrome 화면 9개: 페이지 오류·예상 밖 HTTP 오류 0건, 데스크톱/모바일 확인
+- 전체 서비스 재시작 전후 점수·품질 리비전·현재 기준·CI 판정 JSON 동일:
+  `security-restart-before.json`, `security-restart-proof.json`
+- API·worker 실제 의존성 버전: `security-installed-dependencies.json`
+
+위 JSON은 `output/quality-inheritance-20261018/` 아래의 로컬 검증 증거입니다.
+API·worker 실행 로그에 traceback/ERROR/CRITICAL은 없었습니다. 이 검증은 샘플과
+회귀 테스트 범위의 결과이며 모든 운영 환경에서 오류가 없다는 보장은 아닙니다.
+
+
+재검증 후에도 모든 컨테이너를 중지하고 빌드 캐시를 다시 삭제했습니다. 이번 추가 회수량은
+Docker 보고값 **2.94GB**, 최종 빌드 캐시는 **0건·0B**입니다. Docker Desktop 종료 명령이
+성공했고 daemon 접속 불가·Desktop/backend 프로세스 없음도 확인했습니다. 이미지·데이터
+볼륨은 보존했습니다. 최종 정리 증거는 로컬 `security-docker-cleanup.json`입니다.

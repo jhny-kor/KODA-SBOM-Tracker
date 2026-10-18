@@ -19,13 +19,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1
 WORKDIR /app
 COPY apps/api/pyproject.toml ./
+COPY apps/api/constraints.txt ./
 COPY apps/api/koda_tracker ./koda_tracker
 COPY --from=java_runtime /opt/java/openjdk /opt/koda-java
 COPY --from=java_build /classes/ /app/koda_tracker/java/
 COPY --from=grype /grype /usr/local/bin/grype
 COPY --from=koda_grype /grype /usr/local/bin/koda-grype
 COPY --from=cyclonedx /cyclonedx /usr/local/bin/cyclonedx
-RUN pip install --no-cache-dir ".[postgres]"
+RUN pip install --no-cache-dir -c constraints.txt ".[postgres]"
 COPY LICENSE NOTICE THIRD_PARTY_NOTICES.md /usr/share/doc/koda-sbom-tracker/
 RUN addgroup --system tracker && adduser --system --ingroup tracker tracker \
     && mkdir -p /var/lib/sbom-tracker/data-updates /var/lib/sbom-tracker/artifacts /var/lib/sbom-tracker/vuln-data \

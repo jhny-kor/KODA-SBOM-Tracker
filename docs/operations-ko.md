@@ -26,6 +26,18 @@ docker compose up -d
 docker compose ps
 ```
 
+Python 의존성은 `apps/api/uv.lock`으로 관리하고 Docker는 여기서 내보낸
+`apps/api/constraints.txt`를 사용합니다. 의존성을 변경하면 두 파일을 함께 갱신합니다.
+
+```bash
+uv lock --project apps/api
+uv export --project apps/api --locked --extra postgres --no-dev --no-emit-project --no-hashes --output-file apps/api/constraints.txt
+```
+
+보안 갱신 이후 JSON 요청은 `Content-Type: application/json`을 명시해야 합니다.
+파일 업로드에는 기존처럼 `multipart/form-data`를 사용합니다. 포털과 제공 CI 실행기는
+각 형식에 맞는 헤더를 전송합니다.
+
 `.env` 필수 수정 항목:
 
 | 항목 | 내용 |
