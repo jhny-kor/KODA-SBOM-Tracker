@@ -25,7 +25,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .config import get_settings
-from .legacy_policy import condition_spec
+from .legacy_policy import condition_spec, java_regex_spec
 from .project_catalog import upsert_source_projects
 from .migration_models import LegacyMigration, LegacyObjectMap
 from .models import AnalysisRevision, AuditEvent, Environment, Job, JobState, ProcessingState, Release, RunComponent, SbomPolicyRevision, SbomRun, Service, now
@@ -444,11 +444,28 @@ def _license_entries(condition: dict, bundle: dict) -> list[dict]:
 def _converted_conditions(conditions: list[dict], bundle: dict) -> tuple[list[str], list[dict]]:
     pieces, specs = [], []
     source = bundle.get("source") or {}
-    version = str(source.get("version") or "")
-    if not re.match(r"^[45]\.", version) and any(condition.get("subject") in {"AGE", "VERSION_DISTANCE", "VERSION", "LICENSE", "LICENSE_GROUP", "COORDINATES", "PACKAGE_URL", "CPE", "SWID_TAGID"} for condition in conditions):
+    source_version = str(source.get("version") or "")
+    if not re.match(r"^[45]\.", source_version) and any(condition.get("subject") in {"AGE", "VERSION_DISTANCE", "VERSION", "LICENSE", "LICENSE_GROUP", "COORDINATES", "PACKAGE_URL", "CPE", "SWID_TAGID"} for condition in conditions):
         raise MigrationError("버전별 정책 의미가 필요한 조건입니다. 원본 source.version(4.x 또는 5.x)을 확인해야 합니다")
     for condition in conditions:
-        if condition.get("subject") in {"AGE", "VERSION_DISTANCE", "VERSION", "LICENSE", "LICENSE_GROUP"}:
+        if source_version.startswith("4.") and condition.get("subject") in {"PACKAGE_URL", "CPE", "SWID_TAGID", "COORDINATES"}:
+            if not re.match(r"^4\.(?:[89]|[1-9][0-9]+)(?:\.|$)", source_version):
+                raise MigrationError("4.8 이전의 리터럴 문자열 조건은 Java 정규식으로 재해석하지 않습니다. 원본 조건의 별도 변환이 필요합니다")
+            if condition.get("subject") == "COORDINATES":
+                try: coordinates = json.loads(condition.get("value"))
+                except (ValueError,TypeError) as exc: raise MigrationError("좌표 조건 JSON이 올바르지 않습니다") from exc
+                if not isinstance(coordinates,dict) or set(coordinates)-{"group","name","version"}:
+                    raise MigrationError("지원하지 않는 좌표 조건입니다")
+                fields = [(field, coordinates.get(field), True) for field in ("group","name","version")]
+            else:
+                fields = [({"PACKAGE_URL":"purl","CPE":"cpe","SWID_TAGID":"swidTagId"}[condition["subject"]],condition.get("value"),False)]
+            parts=[]
+            for field, value, coordinate in fields:
+                spec = java_regex_spec(field,value,condition.get("operator"),coordinate=coordinate)
+                if not any(item["id"] == spec["id"] for item in specs): specs.append(spec)
+                parts.append(f"component.legacyConditions[{_literal(spec['id'])}]")
+            pieces.append("(" + " && ".join(parts) + ")")
+        elif condition.get("subject") in {"AGE", "VERSION_DISTANCE", "VERSION", "LICENSE", "LICENSE_GROUP"}:
             spec = condition_spec(condition, licenses=_license_entries(condition, bundle) if condition.get("subject") in {"LICENSE", "LICENSE_GROUP"} else None, source_version=source.get("version"), source_timezone=source.get("timeZone"))
             if not any(item["id"] == spec["id"] for item in specs):
                 specs.append(spec)
@@ -458,10 +475,10 @@ def _converted_conditions(conditions: list[dict], bundle: dict) -> tuple[list[st
             except (ValueError,TypeError) as exc:raise MigrationError("좌표 조건 JSON이 올바르지 않습니다") from exc
             expression=None
             if isinstance(coordinates,dict) and coordinates.get("version") is not None:
-                version=str(coordinates["version"])
-                match=re.match(r"^(>=|<=|==|!=|>|<)\s*(.*)$",version)
+                coordinate_version=str(coordinates["version"])
+                match=re.match(r"^(>=|<=|==|!=|>|<)\s*(.*)$",coordinate_version)
                 operators={">":"NUMERIC_GREATER_THAN",">=":"NUMERIC_GREATER_THAN_OR_EQUAL","==":"NUMERIC_EQUAL","!=":"NUMERIC_NOT_EQUAL","<=":"NUMERIC_LESSER_THAN_OR_EQUAL","<":"NUMERIC_LESS_THAN"}
-                spec=condition_spec({"subject":"VERSION","operator":operators[match[1]] if match else "NUMERIC_EQUAL","value":match[2] if match else version},source_version=source.get("version"))
+                spec=condition_spec({"subject":"VERSION","operator":operators[match[1]] if match else "NUMERIC_EQUAL","value":match[2] if match else coordinate_version},source_version=source.get("version"))
                 if not any(item["id"]==spec["id"] for item in specs):specs.append(spec)
                 expression=f"component.legacyConditions[{_literal(spec['id'])}]"
             pieces.append(_condition(condition,source_timezone=source.get("timeZone"),source_version=source.get("version"),version_expression=expression))

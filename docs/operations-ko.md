@@ -537,7 +537,21 @@ AND/OR/WITH/PLUS/or-later, 달력 AGE와 단위별 버전 거리입니다.
   직접 의존성은 원본 directDependencies 또는 CycloneDX 루트 dependency graph로 확인합니다.
   그래프가 없으면 추정하지 않고 데이터 부족 경고를 기록합니다.
 - 5.x PURL·CPE·SWID는 원본과 같은 RE2 표현식을 사용합니다. 잘못된 패턴은 적용 전에 차단합니다.
-  4.x Java 전용 lookbehind·backreference 등의 전체 문법은 변환하지 않으며 차단 보고서로 남깁니다.
+  4.8~4.13의 Java Matcher 조건은 이미지에 포함한 Java 21 `java.util.regex.Pattern`으로
+  별도 평가합니다. lookbehind·번호/이름 역참조·문자 클래스 교집합/차집합·Unicode·atomic group·
+  possessive quantifier를 RE2로 축약하지 않습니다. 원본의 `*` 치환·앞뒤 wildcard·전체 일치를 보존합니다.
+  실제 원본 4.13.4 PolicyEngine과 샘플 정책 19종을 대조한 기록은
+  [Java 정규식 검증](verification-java-regex-20261018-ko.md)에 있습니다.
+- 4.x 좌표의 `NO_MATCH`는 group·name·version을 각각 반전한 뒤 AND합니다. 실제 group/name의
+  ASCII trim·null·빈 문자열, 비교 연산자가 없는 버전의 정규식도 원본 기준으로 처리합니다.
+  원본 4.0~4.7의 별도 리터럴 문자열 조건을 Java 문법으로 재해석하지 않고 적용을 차단합니다.
+- Java 정규식은 패턴 2,048자·종류 200개·대상 문자열 64KiB·평가 100,000회,
+  배치 입력 4MiB·출력 1MiB·wall time 6초·CPU 5초·heap 64MiB·stack 256KiB·Linux
+  주소 공간 2GiB 한도를 적용합니다. 문법 오류는 저장/이관 전에 차단하며 시간 초과·stack 고갈·
+  JVM 부재·입출력 한도 초과는 정책 평가 **실패**입니다. 불일치나 정상 통과로 바꾸지 않습니다.
+  Docker/오프라인 이미지는 JRE와 컴파일된 adapter를 포함하므로 호스트에 Java를 설치할 필요가 없습니다.
+  별도 Python 개발 실행은 JDK 21로 `RegexMatcher.java`를 컴파일한 후 신뢰된 실행 환경의
+  `KODA_JAVA_BINARY`·`KODA_JAVA_CLASSPATH`를 지정합니다. 정책 데이터로 경로·JVM 옵션을 지정할 수 없습니다.
   원본에 유효하지 않은 조건이나 버전을 확인할 수 없는 조건을 의미가 다른 규칙으로 바꾸지 않습니다.
 
 프로젝트·태그·하위 프로젝트·최신 표시 범위는 `projectScope`로 저장합니다.

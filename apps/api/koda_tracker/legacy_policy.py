@@ -1,7 +1,8 @@
 """Bounded value helpers for imported calendar, SPDX and version-distance rules.
 
 These produce JSON booleans consumed by ordinary CEL. They do not expose host
-callbacks, perform I/O, execute user-supplied regexes, or evaluate arbitrary policy code.
+callbacks or evaluate arbitrary policy code. Java compatibility regexes use a
+separate bounded JVM; all other helpers are pure value calculations.
 Semantics checked against the 5.0.3 upstream policy compatibility tests:
 https://github.com/DependencyTrack/dependency-track/tree/5.0.3/apiserver/src/main/java/org/dependencytrack/policy
 Generic version token rules checked against versatile v0.18.3 ComponentVersion:
@@ -138,11 +139,92 @@ def condition_spec(condition, *, licenses=None, source_version=None, source_time
     return spec
 
 
+_JAVA_FIELDS = {"purl", "cpe", "swidTagId", "group", "name", "version"}
+_JAVA_VERSION_OPERATOR = re.compile(r"^(>=|<=|==|!=|>|<)\s*(.*)$", re.DOTALL)
+_JAVA_OPERATORS = {">":"NUMERIC_GREATER_THAN", ">=":"NUMERIC_GREATER_THAN_OR_EQUAL", "==":"NUMERIC_EQUAL", "!=":"NUMERIC_NOT_EQUAL", "<":"NUMERIC_LESS_THAN", "<=":"NUMERIC_LESSER_THAN_OR_EQUAL"}
+
+
+def java_regex_spec(field, value, operator, *, coordinate=False):
+    """Declarative 4.8+ Matcher input; never executable Java source."""
+    spec = {"subject":"JAVA_REGEX", "field":field, "value":value, "operator":operator,
+            "coordinate":coordinate, "regexDialect":"java21-legacy4"}
+    spec["id"] = "compat-" + hashlib.sha256(json.dumps(spec,sort_keys=True,ensure_ascii=False).encode()).hexdigest()[:24]
+    validate_legacy_conditions([spec])
+    return spec
+
+
+def validate_java_conditions(rules):
+    patterns = set()
+    for rule in rules:
+        specs = rule.get('legacyConditions', []) if isinstance(rule, dict) else rule.legacyConditions
+        for spec in specs:
+            if spec['subject'] == 'JAVA_REGEX' and spec['value'] is not None:
+                if spec['coordinate'] and spec['field'] == 'version' and _JAVA_VERSION_OPERATOR.match(spec['value']):
+                    continue
+                patterns.add(spec['value'])
+    if patterns:
+        from .java_regex import validate_patterns
+        validate_patterns(sorted(patterns))
+
+
+def _java_match_input(spec, component):
+    # Preserve source nulls even when ordinary CEL supplies empty CPE/SWID values.
+    original = component.get('legacyRegexFields') or component
+    actual, pattern = original.get(spec['field']), spec['value']
+    if actual is not None and not isinstance(actual, str):
+        raise ValueError('Java 정규식 대상은 문자열 또는 null이어야 합니다')
+    if spec['coordinate']:
+        if actual is None and pattern is None:
+            return True, None
+        if spec['field'] == 'version' and (actual is None or pattern is None):
+            return False, None
+        comparison = _JAVA_VERSION_OPERATOR.match(pattern or '') if spec['field'] == 'version' else None
+        if comparison:
+            value = _compare(_generic_version_compare(actual, comparison[2]), 0, _JAVA_OPERATORS[comparison[1]])
+            return (not value if spec['operator'] == 'NO_MATCH' else value), None
+        actual = actual.strip(''.join(chr(i) for i in range(33))) if actual is not None else None
+        if not actual:
+            return False, None
+    if actual is None or pattern is None:
+        value = actual is None and pattern is None
+        return (not value if spec['operator'] == 'NO_MATCH' else value), None
+    return None, actual
+
+
+def _prepare_java_results(rules, contexts):
+    """Deduplicate and batch requests; regex work never runs in the API process."""
+    specs = {s['id']:s for rule in rules for s in (rule.get('legacyConditions', []) if isinstance(rule, dict) else rule.legacyConditions) if s['subject'] == 'JAVA_REGEX'}
+    results, queries, indexes = {}, [], {}
+    evaluations = 0
+    for spec in specs.values():
+        for index, activation in enumerate(contexts.get('component', [])):
+            evaluations += 1
+            if evaluations > 100_000:
+                raise ValueError('Java 정규식 평가 횟수가 100,000회 한도를 초과했습니다')
+            fixed, actual = _java_match_input(spec, activation.get('component') or {})
+            identity = (spec['id'], index)
+            if fixed is not None:
+                results[identity] = fixed
+            else:
+                key = (spec['value'], actual)
+                if key not in indexes:
+                    indexes[key] = len(queries)
+                    queries.append({'pattern':spec['value'], 'value':actual, 'mode':'legacy'})
+                results[identity] = (indexes[key], spec['operator'] == 'NO_MATCH')
+    if queries:
+        from .java_regex import evaluate_matches
+        matched = evaluate_matches(queries)
+        for key, value in results.items():
+            if isinstance(value, tuple):
+                results[key] = not matched[value[0]] if value[1] else matched[value[0]]
+    return results
+
+
 def validate_legacy_conditions(values):
     if not isinstance(values, list) or len(values) > 200: raise ValueError("legacyConditions는 최대 200개 목록입니다")
     ids=set()
     for value in values:
-        if not isinstance(value,dict) or set(value)-{"id","subject","operator","value","timeZone","publicationField","directOnly","licenses"}: raise ValueError("고급 조건 구조가 올바르지 않습니다")
+        if not isinstance(value,dict) or set(value)-{"id","subject","operator","value","timeZone","publicationField","directOnly","licenses","field","coordinate","regexDialect"}: raise ValueError("고급 조건 구조가 올바르지 않습니다")
         if not re.fullmatch(r"compat-[a-f0-9]{24}", str(value.get("id", ""))) or value["id"] in ids: raise ValueError("고급 조건 ID가 올바르지 않거나 중복입니다")
         ids.add(value["id"])
         canonical={key:item for key,item in value.items() if key!='id'}
@@ -162,6 +244,13 @@ def validate_legacy_conditions(values):
             if value.get("operator") not in {"IS","IS_NOT"}:raise ValueError("라이선스 연산자가 올바르지 않습니다")
             entries=value.get("licenses")
             if not isinstance(entries,list) or len(entries)>500 or any(not isinstance(e,dict) or set(e)-{"id","name"} or any(not isinstance(v,str) or len(v)>4096 for v in e.values()) for e in entries):raise ValueError("라이선스 정의가 올바르지 않습니다")
+        elif subject == "JAVA_REGEX":
+            if set(value) != {"id","subject","operator","value","field","coordinate","regexDialect"} or value.get("field") not in _JAVA_FIELDS or type(value.get("coordinate")) is not bool or value.get("regexDialect") != "java21-legacy4":
+                raise ValueError("Java 정규식 helper 구조가 올바르지 않습니다")
+            if value.get("operator") not in {"MATCHES","NO_MATCH"} or (value.get("value") is not None and (not isinstance(value["value"],str) or len(value["value"])>2048)):
+                raise ValueError("Java 정규식은 2048자 이하 문자열이어야 합니다")
+            if value["coordinate"] != (value["field"] in {"group","name","version"}) or (value["value"] is None and not value["coordinate"]):
+                raise ValueError("Java 정규식 좌표 필드가 올바르지 않습니다")
         else:raise ValueError("지원하지 않는 고급 조건입니다")
     return values
 
@@ -321,14 +410,20 @@ def prepare_legacy_contexts(rules,contexts,evaluated_at=None):
     """Populate shared component activations and return explicit data warnings."""
     at=evaluated_at or datetime.now(UTC);warnings=[];seen=set();evaluations=0
     for rule in rules:
+        validate_legacy_conditions(rule.get("legacyConditions",[]) if isinstance(rule,dict) else rule.legacyConditions)
+    java_results = _prepare_java_results(rules, contexts)
+    for rule in rules:
         specs=getattr(rule,'legacyConditions',[]) if not isinstance(rule,dict) else rule.get('legacyConditions',[])
         validate_legacy_conditions(specs)
         rule_id=rule.id if not isinstance(rule,dict) else rule['id']
-        for activation in contexts.get('component',[]):
+        for component_index, activation in enumerate(contexts.get('component',[])):
             component=activation.get('component') or {};component.setdefault('legacyConditions',{})
             for spec in specs:
                 evaluations+=1
                 if evaluations>100_000:raise ValueError('고급 조건 평가 횟수가 100,000회 한도를 초과했습니다')
+                if spec['subject'] == 'JAVA_REGEX':
+                    component['legacyConditions'][spec['id']] = java_results[(spec['id'], component_index)]
+                    continue
                 try:component['legacyConditions'][spec['id']]=evaluate_condition(spec,component,at)
                 except LegacyDataUnavailable as exc:
                     component['legacyConditions'][spec['id']]=False

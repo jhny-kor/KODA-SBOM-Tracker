@@ -16,7 +16,7 @@ from .models import AnalysisRevision, JobState, SbomPolicyRevision, SbomRun
 from .vulnerability import cvss_score, project_cve_findings
 from .vulnerability_intelligence import enrich_findings, enqueue_findings
 from .project_catalog import catalog_context_for_run, project_scope_matches
-from .legacy_policy import validate_legacy_conditions, prepare_legacy_contexts
+from .legacy_policy import validate_legacy_conditions, prepare_legacy_contexts, validate_java_conditions
 
 
 class ProjectScope(BaseModel):
@@ -287,6 +287,7 @@ def component_identity(component: dict) -> str:
 def validate_policy_expressions(document: PolicyDocument) -> None:
     rules = [rule.model_dump(mode="json") for rule in document.rules if rule.kind == "cel"]
     if rules:
+        validate_java_conditions(rules)
         execute_cel({"expressions": rules, "compileOnly": True})
 
 
@@ -318,6 +319,8 @@ def _rule_applies(rule: PolicyRule, context: dict) -> bool:
 
 def _cel_component(component: dict, at: datetime) -> dict:
     result = {key: component[key] for key in ("type", "name", "group", "version", "purl", "legacyLicense", "isDirectDependency") if component.get(key) is not None}
+    result["legacyRegexFields"] = {key: component.get(key) for key in ("purl","cpe","group","name","version")}
+    result["legacyRegexFields"]["swidTagId"] = (component.get("swid") or {}).get("tagId")
     result["metadataStatus"] = component.get("metadataStatus", "missing")
     cached_metadata = component.get("packageMetadata") or {}
     result["packageMetadata"] = cached_metadata if component.get("metadataStatus") == "fresh" else {key: cached_metadata[key] for key in ("status", "ecosystem", "sourceUrls", "fetchedAt", "expiresAt", "error", "fieldStatus") if key in cached_metadata}
@@ -562,6 +565,9 @@ def evaluate_document(document: PolicyDocument, components: list[dict], findings
         "policyStatus": "fail" if any(row["action"] == "fail" for row in active) else "warn" if any(row["action"] == "warn" for row in active) else "info" if active else "pass",
         "evaluatedAt": evaluated_at.isoformat(),
     }
+    if any(spec.get("subject") == "JAVA_REGEX" for rule in cel_rules for spec in rule.legacyConditions):
+        metrics["policyCompatibilityRuntimes"] = [{"runtime":"java.util.regex.Pattern", "javaMajor":21,
+            "adapterProtocol":"KODA_REGEX_V1", "dialect":"java21-legacy4", "isolated":True}]
     return policies, metrics
 
 

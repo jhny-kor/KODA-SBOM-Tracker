@@ -2,6 +2,12 @@ ARG PYTHON_BASE_IMAGE=python:3.12-slim@sha256:57cd7c3a7a273101a6485ba99423ee5681
 ARG GRYPE_IMAGE=anchore/grype:v0.109.1@sha256:5db068d57d48ee251726e6e2d4903f47a909371ed83b96ee4812d84a10288c65
 ARG CYCLONEDX_CLI_IMAGE=cyclonedx/cyclonedx-cli:0.30.0@sha256:8475ecf6c09d17dbb3b039d6999334d3ecf3aaed13395b3413007e568d52a9e3
 ARG KODA_GRYPE_IMAGE=anchore/grype:v0.115.0@sha256:decd87500a90c1e4faa1706f77b0b2cbc1d2f9364e976f1898ce9037de09cc3a
+ARG JAVA_BUILD_IMAGE=eclipse-temurin:21-jdk-jammy@sha256:742daacb9316be4b6fc60258f6e4ac2a11882f6c597373c92290a57bfad0d2e0
+ARG JAVA_RUNTIME_IMAGE=eclipse-temurin:21-jre-jammy@sha256:affcab5356e1270ac35d2361ee83135af2f03e8d580eca78a6d5d6fdbf048db0
+FROM ${JAVA_BUILD_IMAGE} AS java_build
+COPY apps/api/koda_tracker/java/RegexMatcher.java /src/RegexMatcher.java
+RUN javac --release 21 -d /classes /src/RegexMatcher.java
+FROM ${JAVA_RUNTIME_IMAGE} AS java_runtime
 FROM ${KODA_GRYPE_IMAGE} AS koda_grype
 FROM ${GRYPE_IMAGE} AS grype
 FROM ${CYCLONEDX_CLI_IMAGE} AS cyclonedx
@@ -14,6 +20,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 COPY apps/api/pyproject.toml ./
 COPY apps/api/koda_tracker ./koda_tracker
+COPY --from=java_runtime /opt/java/openjdk /opt/koda-java
+COPY --from=java_build /classes/ /app/koda_tracker/java/
 COPY --from=grype /grype /usr/local/bin/grype
 COPY --from=koda_grype /grype /usr/local/bin/koda-grype
 COPY --from=cyclonedx /cyclonedx /usr/local/bin/cyclonedx

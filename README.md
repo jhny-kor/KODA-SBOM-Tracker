@@ -70,7 +70,7 @@ KEV 데이터가 없으면 KEV 정책은 데이터 부족 경고를 남깁니다
 의미를 확인한 뒤 이관 결과를 검증합니다. 이전 결과가 있다는 사실만으로 현재 정책
 평가가 완료된 것으로 표시하지 않습니다. 기능 범위와 확인 기준은
 [기능 지원 범위](docs/feature-coverage-ko.md)를 따릅니다.
-현재 Docker 인수 결과와 미지원·미검증 범위는 [검증 기록](docs/verification-complete-20261018-ko.md)에 정리했습니다.
+현재 Docker 인수 결과와 미지원·미검증 범위는 [고급 기능 검증](docs/verification-complete-20261018-ko.md)과 [Java 정규식 추가 검증](docs/verification-java-regex-20261018-ko.md)에 정리했습니다.
 
 ## 배포 방식
 
