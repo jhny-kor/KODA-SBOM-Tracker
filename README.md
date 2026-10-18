@@ -207,3 +207,5 @@ KODA SBOM Tracker 자체 코드는 Apache License 2.0으로 배포합니다. 라
   `TRACKER_PUBLIC_ORIGIN=https://<동일-오리진-호스트>`와 TLS 종료 프록시를 사용합니다.
 
 SBOM 품질 진단과 프로젝트별 기준·CEL·CI 게이트: [사용 안내](docs/sbom-quality-ko.md) · [Docker 검증](docs/verification-quality-20261018-ko.md)
+
+가중 품질 점수·부모/태그 기준 상속: [실제 Docker 검증](docs/verification-quality-inheritance-20261018-ko.md)

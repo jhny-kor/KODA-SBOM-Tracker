@@ -4,6 +4,9 @@ from __future__ import annotations
 from collections import Counter
 from datetime import UTC, datetime
 import re
+import hashlib
+import json
+import copy
 from urllib.parse import unquote
 
 from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func, select
@@ -13,10 +16,12 @@ from .db import Base
 from .models import SbomRun, new_id, now
 from .project_catalog_models import NativeProject, ProjectRunLink
 from .sbom import normalized_identity, parse_sbom_file
+from .quality_scoring import DEFAULT_SCORE_WEIGHTS
 
-ENGINE_VERSION = '1'
+ENGINE_VERSION = '2'
 DEFAULT_PROFILE = {'name': '기본 품질 기준', 'mode': 'warn', 'maxErrors': 0, 'maxWarnings': None,
-                   'maxMissingIdentityRatio': 0.0, 'maxUnresolvedRefs': 0, 'maxAgeDays': 365}
+                   'maxMissingIdentityRatio': 0.0, 'maxUnresolvedRefs': 0, 'maxAgeDays': 365,
+                   'scoreWeights': DEFAULT_SCORE_WEIGHTS, 'minScore': None, 'inherit': False, 'priority': 0}
 
 
 class QualityProfile(Base):
@@ -63,23 +68,105 @@ def iso(value):
     return value.replace(tzinfo=UTC).isoformat() if value.tzinfo is None else value.isoformat()
 
 
-def profile_payload(row: QualityProfile | None, project_id=None):
-    return {**(row.document if row else DEFAULT_PROFILE), 'id': row.id if row else None,
-            'projectId': project_id, 'version': row.version if row else 0,
-            'createdAt': iso(row.created_at) if row else None}
+def profile_scope_key(project_id: str | None = None, *, source_id: str | None = None, tag: str | None = None):
+    if project_id and (source_id is not None or tag is not None):
+        raise ValueError('프로젝트 기준과 태그 기준 범위는 함께 지정할 수 없습니다')
+    if (source_id is None) != (tag is None):
+        raise ValueError('태그 기준에는 sourceId와 tag가 모두 필요합니다')
+    if source_id is not None:
+        if not re.fullmatch(r'[A-Za-z0-9_.:-]{1,128}', source_id) or not isinstance(tag, str) or not tag.strip() or tag != tag.strip() or len(tag) > 255:
+            raise ValueError('원본 ID 또는 태그 형식이 올바르지 않습니다')
+        identity = json.dumps([source_id, tag], ensure_ascii=False, separators=(',', ':'))
+        return 'tag:' + hashlib.sha256(identity.encode()).hexdigest()[:60]
+    return project_id or 'default'
 
 
-def current_profile(db: Session, project_id: str | None = None):
-    key = project_id or 'default'
+def profile_payload(row: QualityProfile | None, project_id=None, *, source_id=None, tag=None):
+    document = {**copy.deepcopy(DEFAULT_PROFILE), **copy.deepcopy(row.document if row else {})}
+    return {**document, 'id': row.id if row else None,
+            'scopeKey': row.scope_key if row else profile_scope_key(project_id, source_id=source_id, tag=tag),
+            'projectId': project_id, 'sourceId': source_id, 'tag': tag,
+            'version': row.version if row else 0, 'createdAt': iso(row.created_at) if row else None}
+
+
+def current_profile(db: Session, project_id: str | None = None, *, source_id: str | None = None, tag: str | None = None):
+    key = profile_scope_key(project_id, source_id=source_id, tag=tag)
     row = db.scalar(select(QualityProfile).where(QualityProfile.scope_key == key).order_by(QualityProfile.version.desc()).limit(1))
-    return profile_payload(row, project_id)
+    return profile_payload(row, project_id, source_id=source_id, tag=tag)
+
+
+def quality_write_lock(db: Session) -> None:
+    """Serialize profile/catalog decisions before selecting affected runs.
+
+    A child override and its ancestor/tag rules must not independently compare
+    different committed snapshots and lose the final reanalysis request.
+    PostgreSQL's transaction lock also covers the first profile version.
+    """
+    if db.get_bind().dialect.name == 'postgresql':
+        db.execute(select(func.pg_advisory_xact_lock(0x4B4F44415155414C)))
+
+
+def _project_chain(db: Session, project: NativeProject):
+    chain = []; seen = set(); current = project
+    while current is not None:
+        if current.id in seen or len(chain) >= 1000:
+            raise ValueError('품질 기준 프로젝트 계층에 순환 또는 과도한 깊이가 있습니다')
+        seen.add(current.id); chain.append(current)
+        parent = current.parent_project_id
+        if parent is None:
+            break
+        current = db.scalar(select(NativeProject).where(NativeProject.source_id == project.source_id,
+                                                       NativeProject.source_project_id == parent))
+        if current is None:
+            raise ValueError('품질 기준을 상속할 같은 원본의 부모 프로젝트가 없습니다')
+    return chain
+
+
+def _profile_for_project(db: Session, project: NativeProject):
+    chain = _project_chain(db, project)
+    evidence = []; matched = []
+    for depth, node in enumerate(chain):
+        direct = current_profile(db, node.id)
+        tags = sorted(set(node.tags or []))
+        evidence.append({'projectId': node.id, 'sourceProjectId': node.source_project_id,
+                         'parentProjectId': node.parent_project_id, 'tags': tags,
+                         'active': node.active, 'profileVersion': direct['version'],
+                         'profileInherited': direct['inherit']})
+        if direct['version'] and not direct['inherit']:
+            return direct, {'kind': 'project' if depth == 0 else 'parent', 'depth': depth,
+                            'inheritedFrom': node.id, 'projectId': project.id, 'sourceId': project.source_id,
+                            'chain': evidence, 'matchedTags': matched, 'selectedScopeKey': direct['scopeKey']}
+        candidates = []
+        for tag in tags:
+            candidate = current_profile(db, source_id=node.source_id, tag=tag)
+            if candidate['version']:
+                matched.append({'tag': tag, 'sourceId': node.source_id, 'projectId': node.id,
+                                'version': candidate['version'], 'priority': candidate['priority'],
+                                'inherit': candidate['inherit'], 'scopeKey': candidate['scopeKey']})
+                if not candidate['inherit']:
+                    candidates.append(candidate)
+        if candidates:
+            priority = max(p['priority'] for p in candidates)
+            winners = [p for p in candidates if p['priority'] == priority]
+            if len(winners) > 1:
+                raise ValueError('같은 우선순위의 태그 품질 기준이 여러 개입니다. 태그 기준 우선순위를 조정하세요')
+            selected = winners[0]
+            return selected, {'kind': 'tag' if depth == 0 else 'parent_tag', 'depth': depth,
+                              'inheritedFrom': node.id, 'projectId': project.id, 'sourceId': project.source_id,
+                              'chain': evidence, 'matchedTags': matched, 'selectedScopeKey': selected['scopeKey']}
+    default = current_profile(db)
+    return default, {'kind': 'global', 'depth': None, 'inheritedFrom': None,
+                     'projectId': project.id, 'sourceId': project.source_id,
+                     'chain': evidence, 'matchedTags': matched, 'selectedScopeKey': 'default'}
 
 
 def effective_profile(db: Session, run: SbomRun):
     link = db.get(ProjectRunLink, run.id)
     if link:
         project = db.get(NativeProject, link.project_id)
-        candidates = [project] if project else []
+        if project is None:
+            raise ValueError('회차가 연결된 품질 기준 프로젝트가 없습니다')
+        candidates = [project]
     else:
         release = run.release
         candidates = list(db.scalars(select(NativeProject).where(
@@ -87,13 +174,64 @@ def effective_profile(db: Session, run: SbomRun):
             NativeProject.environment_id == release.environment_id,
             NativeProject.version == release.version)))
     if len(candidates) == 1:
-        candidate = current_profile(db, candidates[0].id)
-        if candidate['version']:
-            return candidate
-    elif len(candidates) > 1:
-        if any(current_profile(db, p.id)['version'] for p in candidates):
-            raise ValueError('프로젝트 품질 기준의 소유가 모호합니다. 회차를 프로젝트에 명시적으로 연결하세요')
-    return current_profile(db)
+        selected, resolution = _profile_for_project(db, candidates[0])
+        return {**selected, 'resolution': resolution}
+    if len(candidates) > 1:
+        # A source ambiguity must include inherited/tag rules, not just direct overrides.
+        for project in candidates:
+            _, resolution = _profile_for_project(db, project)
+            if resolution['kind'] != 'global':
+                raise ValueError('프로젝트 품질 기준의 소유가 모호합니다. 회차를 프로젝트에 명시적으로 연결하세요')
+        # Even an all-global result retains candidate identities, so introducing
+        # another ambiguous owner later invalidates an earlier CI decision.
+        resolutions = [{'projectId': p.id, 'sourceId': p.source_id,
+                        'chain': _profile_for_project(db, p)[1]['chain'],
+                        'matchedTags': _profile_for_project(db, p)[1]['matchedTags']} for p in sorted(candidates,key=lambda p:p.id)]
+        return {**current_profile(db), 'resolution': {'kind': 'global', 'depth': None,
+                'projectId': None, 'sourceId': None, 'inheritedFrom': None,
+                'chain': [], 'matchedTags': [], 'ambiguousCandidates': resolutions, 'selectedScopeKey': 'default'}}
+    return {**current_profile(db), 'resolution': {'kind': 'global', 'depth': None,
+            'projectId': None, 'sourceId': None, 'inheritedFrom': None,
+            'chain': [], 'matchedTags': [], 'selectedScopeKey': 'default'}}
+
+
+def queue_quality_changes(db: Session, *, source_id: str | None = None, project_id: str | None = None):
+    """Queue only runs whose evaluated inheritance snapshot no longer matches.
+
+    Called in the catalog/profile transaction after all edits are flushed.
+    Archived runs retain their historical evidence without generating work.
+    """
+    from .models import ProcessingState, Release
+    from .project_catalog import request_native_reanalysis
+    db.flush()
+    project = db.get(NativeProject, project_id) if project_id else None
+    if project_id and project is None:
+        raise ValueError('품질 기준 프로젝트가 없습니다')
+    if project:
+        source_id = project.source_id
+    projects = list(db.scalars(select(NativeProject).where(NativeProject.source_id == source_id))) if source_id else []
+    query = select(SbomRun).where(SbomRun.archived_at.is_(None), SbomRun.state != ProcessingState.ARCHIVED)
+    if source_id:
+        project_ids = [p.id for p in projects]
+        # Include every candidate in the affected source; a candidate appearing
+        # in another source may turn an ordinary upload's ownership ambiguous.
+        coordinates = [(p.service_id,p.environment_id,p.version) for p in projects]
+        from sqlalchemy import tuple_, or_
+        query = query.join(Release, Release.id == SbomRun.release_id).where(or_(
+            SbomRun.id.in_(select(ProjectRunLink.run_id).where(ProjectRunLink.project_id.in_(project_ids))),
+            tuple_(Release.service_id,Release.environment_id,Release.version).in_(coordinates)))
+    affected = []
+    for run in db.scalars(query):
+        prior = latest_revision(db, run.id)
+        try:
+            fresh = effective_profile(db, run)
+            changed = prior is None or prior.profile_snapshot != fresh
+        except ValueError:
+            changed = True
+        if changed:
+            affected.append(run.id)
+    source = 'quality-inheritance:' + hashlib.sha256((source_id or 'default').encode()).hexdigest()[:32]
+    return request_native_reanalysis(db, source, affected, reason='quality_criteria_changed')
 
 
 def revision_payload(row: QualityRevision):
@@ -289,12 +427,22 @@ def diagnose(bom: dict, profile: dict, evaluated_at: datetime):
     count = len(components); ratio = missing_identity/count if count else None
     violations = errors > profile['maxErrors'] or (profile['maxWarnings'] is not None and warnings > profile['maxWarnings']) or (ratio is not None and ratio > profile['maxMissingIdentityRatio']) or unresolved > profile['maxUnresolvedRefs']
     status = 'fail' if violations and profile['mode']=='enforce' else 'warn' if violations or issues else 'pass'
-    return issues, {'componentCount':count,'errorCount':errors,'warningCount':warnings,'missingIdentityCount':missing_identity,
+    summary = {'componentCount':count,'errorCount':errors,'warningCount':warnings,'missingIdentityCount':missing_identity,
                     'missingIdentityRatio':ratio,'missingLicenseCount':missing_license,'missingHashCount':missing_hash,
                     'unresolvedRefCount':unresolved,'edgeCount':edge_count,'score':None,'qualityStatus':status,'state':'completed',
                     'criteriaViolated':violations,'fieldStatus':{'identity':'available' if count else 'not_applicable',
                     'graph':'available' if dependencies else 'missing','timestamp':'available' if parsed else 'missing' if timestamp is None else 'invalid',
                     'integrity':'declared_only','license':'syntax_only'}}
+    from .quality_scoring import score_quality
+    summary.update(score_quality(bom, issues, summary, profile.get('scoreWeights')))
+    minimum = profile.get('minScore')
+    score_missed = minimum is not None and (summary['score'] is None or summary['score'] < minimum)
+    summary['minScore'] = minimum
+    summary['scoreThresholdViolated'] = score_missed
+    summary['criteriaViolated'] = violations or score_missed or summary['blockingIssueCount'] > 0
+    summary['qualityStatus'] = ('fail' if summary['criteriaViolated'] and profile['mode'] == 'enforce'
+                                else 'warn' if summary['criteriaViolated'] or issues else 'pass')
+    return issues, summary
 
 
 def evaluate_quality(db: Session, run: SbomRun, actor='worker', force=False):
@@ -325,6 +473,9 @@ def evaluate_quality(db: Session, run: SbomRun, actor='worker', force=False):
     except Exception as exc:
         issues = []; state = 'failed'; error = str(exc)[:2000]
         summary = {'state':'failed','qualityStatus':'failed','componentCount':None,'errorCount':None,'warningCount':None,'missingIdentityRatio':None,'unresolvedRefCount':None,'score':None}
+        from .quality_scoring import score_quality
+        summary.update(score_quality({}, [], summary))
+        summary['blockingIssueCount'] = None
     comparison = None
     comparison_prior = prior
     if comparison_prior is None:
@@ -332,6 +483,8 @@ def evaluate_quality(db: Session, run: SbomRun, actor='worker', force=False):
         comparison_prior = latest_revision(db, previous_run.id) if previous_run else None
     if comparison_prior and state == 'completed' and comparison_prior.state == 'completed':
         comparison = {'previousRevisionId':comparison_prior.id,'previousRunId':comparison_prior.run_id,'errorDelta':summary['errorCount']-comparison_prior.summary['errorCount'],'warningDelta':summary['warningCount']-comparison_prior.summary['warningCount']}
+        old_score = comparison_prior.summary.get('score')
+        comparison['scoreDelta'] = round(summary['score'] - old_score, 2) if summary['score'] is not None and old_score is not None else None
     row = QualityRevision(run_id=run.id, sequence=(prior.sequence if prior else 0)+1, state=state, original_sha256=run.sha256,
                           engine_version=ENGINE_VERSION,profile_snapshot=profile,summary=summary,comparison=comparison,error=error,created_by=actor)
     db.add(row);db.flush()

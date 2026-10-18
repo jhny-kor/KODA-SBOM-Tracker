@@ -69,12 +69,19 @@ def gate_result(db: Session, run: SbomRun) -> dict:
             reasons.append("quality_profile_ambiguous")
         summary = quality["summary"]
         result["qualityStatus"] = summary.get("qualityStatus")
+        result["qualityScore"] = summary.get("score")
+        result["qualityMinScore"] = summary.get("minScore")
+        result["qualityBlockingIssueCount"] = summary.get("blockingIssueCount")
         if summary.get("sourceBasis") != "verified_original_artifact":
             reasons.append("quality_original_unverified")
         if summary.get("qualityStatus") not in {"pass", "warn", "fail"}:
             reasons.append("quality_data_incomplete")
         if summary.get("qualityStatus") == "fail":
             reasons.append("quality_threshold_exceeded")
+            if summary.get("scoreThresholdViolated"):
+                reasons.append("quality_score_below_minimum")
+            if summary.get("blockingIssueCount"):
+                reasons.append("quality_structural_error")
     if not reasons:
         result["status"], result["allowed"] = "pass", True
     return result

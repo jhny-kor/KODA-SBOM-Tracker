@@ -8,7 +8,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -16,8 +16,9 @@ from sqlalchemy.orm import Session
 from .db import get_db
 from .models import ApiToken, AuditEvent, ProcessingState, Release, SbomRun
 from .project_catalog_models import NativeProject, ProjectRunLink
-from .quality import QualityIssue, QualityProfile, QualityRevision, current_profile, evaluate_quality, latest_revision, revision_payload
+from .quality import QualityIssue, QualityProfile, QualityRevision, current_profile, effective_profile, evaluate_quality, latest_revision, profile_scope_key, queue_quality_changes, revision_payload
 from .security import require_csrf, require_permission
+from .quality_scoring import DEFAULT_SCORE_WEIGHTS, validate_score_weights
 
 router = APIRouter(prefix='/api/v1', tags=['SBOM quality'])
 
@@ -101,62 +102,103 @@ class ProfileInput(BaseModel):
     maxMissingIdentityRatio: float=Field(default=0,ge=0,le=1,allow_inf_nan=False)
     maxUnresolvedRefs: int=Field(default=0,ge=0,le=1000000)
     maxAgeDays: int=Field(default=365,ge=1,le=36500)
+    scoreWeights: dict[str, int]=Field(default_factory=lambda: dict(DEFAULT_SCORE_WEIGHTS))
+    minScore: float | None=Field(default=None,ge=0,le=100,allow_inf_nan=False)
+    inherit: bool=False
+    priority: int=Field(default=0,ge=-1000000,le=1000000)
+
+    @field_validator('scoreWeights', mode='before')
+    @classmethod
+    def score_weights(cls, value):
+        return validate_score_weights(value)
 
 
-def check_project(db,project_id):
-    if project_id and db.get(NativeProject,project_id) is None:
-        raise HTTPException(404,'프로젝트가 없습니다')
+def check_scope(db, project_id, source_id, tag):
+    try:
+        key = profile_scope_key(project_id, source_id=source_id, tag=tag)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    if project_id and db.get(NativeProject, project_id) is None:
+        raise HTTPException(404, '프로젝트가 없습니다')
+    return key
 
 
 @router.get('/quality-profiles')
-def read_profile(projectId: str | None=None, db: Session=Depends(get_db),
-                 _=Depends(require_permission('policies.view','policies.manage'))):
-    check_project(db,projectId)
-    return current_profile(db,projectId)
+def read_profile(projectId: str | None=None, sourceId: str | None=None, tag: str | None=None,
+                 db: Session=Depends(get_db), _=Depends(require_permission('policies.view','policies.manage'))):
+    check_scope(db, projectId, sourceId, tag)
+    return current_profile(db, projectId, source_id=sourceId, tag=tag)
+
+
+@router.get('/quality-tag-profiles')
+def read_tag_profiles(sourceId: str | None=None, page: int=Query(1,ge=1), size: int=Query(25,ge=1,le=100),
+                      db: Session=Depends(get_db), _=Depends(require_permission('policies.view','policies.manage'))):
+    # Aggregate in SQL before pagination so a rule's old version never reappears.
+    latest = select(QualityProfile.scope_key, func.max(QualityProfile.version).label('version')).where(
+        QualityProfile.scope_key.like('tag:%')).group_by(QualityProfile.scope_key).subquery()
+    query = select(QualityProfile).join(latest, (QualityProfile.scope_key == latest.c.scope_key) & (QualityProfile.version == latest.c.version))
+    if sourceId:
+        query = query.where(QualityProfile.document['scopeSourceId'].as_string() == sourceId)
+    total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
+    rows = db.scalars(query.order_by(QualityProfile.scope_key).offset((page-1)*size).limit(size))
+    return {'items': [profile_payload_for_tag(row) for row in rows], 'total': total, 'page': page, 'size': size}
+
+
+def profile_payload_for_tag(row):
+    from .quality import profile_payload
+    return profile_payload(row, source_id=row.document.get('scopeSourceId'), tag=row.document.get('scopeTag'))
+
+
+@router.get('/sbom-runs/{run_id}/quality-profile')
+def resolved_run_profile(run_id: str, db: Session=Depends(get_db),
+                         principal=Depends(require_permission('runs.view',allow_service_token=True))):
+    run = checked_run(db, run_id, principal)
+    try:
+        profile = effective_profile(db, run)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    owner = (profile.get('resolution') or {}).get('projectId')
+    project = db.get(NativeProject, owner) if owner else None
+    return {'profile': profile, 'project': None if project is None else {
+        'id': project.id, 'sourceId': project.source_id, 'sourceProjectId': project.source_project_id,
+        'parentProjectId': project.parent_project_id, 'tags': project.tags}}
 
 
 @router.put('/quality-profiles')
-def write_profile(body: ProfileInput, projectId: str | None=None, db: Session=Depends(get_db),
-                  principal=Depends(require_permission('policies.manage')), _csrf=Depends(require_csrf)):
-    check_project(db,projectId)
-    # A stable parent row also serializes the first version where no profile row exists.
+def write_profile(body: ProfileInput, projectId: str | None=None, sourceId: str | None=None, tag: str | None=None,
+                  db: Session=Depends(get_db), principal=Depends(require_permission('policies.manage')), _csrf=Depends(require_csrf)):
+    from .quality import quality_write_lock
+    quality_write_lock(db)
+    key = check_scope(db, projectId, sourceId, tag)
+    if body.inherit and key == 'default':
+        raise HTTPException(422, '공통 기본 기준은 상속 모드로 해제할 수 없습니다')
+    if body.priority != 0 and tag is None:
+        raise HTTPException(422, '우선순위는 태그 기준에서만 지정할 수 있습니다')
+    # Stable parent locks serialize the first version as well as later updates.
     if projectId:
         db.scalar(select(NativeProject.id).where(NativeProject.id==projectId).with_for_update())
     else:
         from .models import RolePolicy, Role
         db.scalar(select(RolePolicy.role).where(RolePolicy.role==Role.ADMIN).with_for_update())
-    current=current_profile(db,projectId)
-    if current['version']!=body.expectedVersion:
-        raise HTTPException(409,'품질 기준이 변경되었습니다. 다시 조회하세요')
-    row=QualityProfile(scope_key=projectId or 'default',version=current['version']+1,document=body.model_dump(exclude={'expectedVersion'}),created_by=principal.username)
+    current = current_profile(db, projectId, source_id=sourceId, tag=tag)
+    if current['version'] != body.expectedVersion:
+        raise HTTPException(409, '품질 기준이 변경되었습니다. 다시 조회하세요')
+    document = body.model_dump(exclude={'expectedVersion'})
+    if tag is not None:
+        document.update(scopeSourceId=sourceId, scopeTag=tag)
+    row = QualityProfile(scope_key=key, version=current['version']+1, document=document, created_by=principal.username)
     db.add(row)
     try:
         db.flush()
     except IntegrityError as exc:
-        db.rollback();raise HTTPException(409,'품질 기준이 변경되었습니다. 다시 조회하세요') from exc
-    from .project_catalog import request_native_reanalysis
-    from .quality import effective_profile
-    # Rebind quality/policies to the new profile without rewriting old evidence.
-    run_query = select(SbomRun).where(SbomRun.archived_at.is_(None), SbomRun.state != ProcessingState.ARCHIVED)
-    if projectId:
-        project = db.get(NativeProject, projectId)
-        run_query = run_query.join(Release, Release.id == SbomRun.release_id).where(or_(
-            SbomRun.id.in_(select(ProjectRunLink.run_id).where(ProjectRunLink.project_id == projectId)),
-            (Release.service_id == project.service_id) & (Release.environment_id == project.environment_id) & (Release.version == project.version)))
-    active_runs = db.scalars(run_query)
-    affected = []
-    for run in active_runs:
-        try:
-            effective = effective_profile(db,run)
-            if effective['projectId'] == projectId:
-                affected.append(run.id)
-        except ValueError:
-            if projectId:
-                affected.append(run.id)
-    requested = request_native_reanalysis(db, 'quality-profile-' + (projectId or 'default'), affected, reason='quality_profile_changed')
-    db.add(AuditEvent(actor=principal.username,action='sbom_quality.profile',target_type='project' if projectId else 'quality_profile',target_id=projectId or 'default',detail={'version':row.version}))
+        db.rollback(); raise HTTPException(409, '품질 기준이 변경되었습니다. 다시 조회하세요') from exc
+    requested = queue_quality_changes(db, project_id=projectId, source_id=sourceId)
+    db.add(AuditEvent(actor=principal.username, action='sbom_quality.profile',
+                     target_type='project' if projectId else 'quality_tag' if tag else 'quality_profile',
+                     target_id=key, detail={'version': row.version, 'sourceId': sourceId, 'tag': tag,
+                                           'inherit': body.inherit, 'priority': body.priority}))
     try:
         db.commit()
     except IntegrityError as exc:
-        db.rollback();raise HTTPException(409,'품질 기준이 변경되었습니다. 다시 조회하세요') from exc
-    return {**current_profile(db,projectId), 'reanalysisRequested': requested}
+        db.rollback(); raise HTTPException(409, '품질 기준이 변경되었습니다. 다시 조회하세요') from exc
+    return {**current_profile(db, projectId, source_id=sourceId, tag=tag), 'reanalysisRequested': requested}

@@ -5,7 +5,7 @@ import * as api from "./quality-api";
 import { SbomQualityPanel } from "./SbomQuality";
 import type { QualityProfile, QualityRevision } from "./quality-api";
 vi.mock("./api", () => ({ previewMode: false, request: vi.fn() }));
-vi.mock("./quality-api", async original => ({ ...await original<typeof import("./quality-api")>(), fetchQualityRevisions: vi.fn(), createQualityRevision: vi.fn(), fetchQualityIssues: vi.fn(), fetchQualityProfile: vi.fn(), saveQualityProfile: vi.fn() }));
+vi.mock("./quality-api", async original => ({ ...await original<typeof import("./quality-api")>(), fetchQualityRevisions: vi.fn(), createQualityRevision: vi.fn(), fetchQualityIssues: vi.fn(), fetchQualityProfile: vi.fn(), saveQualityProfile: vi.fn(), fetchEffectiveQualityProfile: vi.fn(), fetchQualityTagProfiles: vi.fn() }));
 const profile: QualityProfile = { projectId: "project-native-id", name: "납품 기준", version: 4, mode: "enforce", maxErrors: 0, maxWarnings: null, maxMissingIdentityRatio: 0.1, maxUnresolvedRefs: 0, maxAgeDays: 90 };
 const revision: QualityRevision = { id: "quality-2", runId: "run", sequence: 2, state: "completed", profileSnapshot: profile, summary: { componentCount: 2, errorCount: 1, warningCount: 2, missingIdentityCount: 1, missingIdentityRatio: 0.5, unresolvedRefCount: 1, score: null, qualityStatus: "fail", fieldStatus: { identity: { missing: 1 } } }, createdAt: "2026-10-18T00:00:00Z", engineVersion: "1", originalSha256: "a".repeat(64), error: null, comparison: { previousRevisionId: "quality-1", errorDelta: -1, warningDelta: 2 } };
 const older = { ...revision, id: "quality-1", sequence: 1, profileSnapshot: { ...profile, version: 3, mode: "warn" as const }, comparison: null };
@@ -15,6 +15,8 @@ beforeEach(() => {
   vi.mocked(api.fetchQualityRevisions).mockResolvedValue({ items: [revision, older], total: 2, page: 1, size: 20 });
   vi.mocked(api.fetchQualityIssues).mockResolvedValue({ items: [issue], total: 1, page: 1, size: 20 });
   vi.mocked(api.fetchQualityProfile).mockResolvedValue(profile);
+  vi.mocked(api.fetchEffectiveQualityProfile).mockResolvedValue({ profile, project: { id: "project-native-id", sourceId: "native", sourceProjectId: "source-project", tags: ["production"] } });
+  vi.mocked(api.fetchQualityTagProfiles).mockResolvedValue({ items: [], total: 0, page: 1, size: 20 });
 });
 afterEach(cleanup);
 function mount(options: Partial<Parameters<typeof SbomQualityPanel>[0]> = {}) { return render(<SbomQualityPanel runId="run" canRerun canViewProfiles canManage {...options} />); }
@@ -91,4 +93,85 @@ it("shows non-applicable identity coverage instead of reporting zero percent for
   vi.mocked(api.fetchQualityRevisions).mockResolvedValue({ items: [{ ...revision, summary: { ...revision.summary, componentCount: 0, missingIdentityCount: 0, missingIdentityRatio: null } }], total: 1, page: 1, size: 20 });
   mount(); expect(await screen.findByText("0 (적용 불가)")).toBeInTheDocument();
   expect(screen.queryByText("0 (0.0%)")).not.toBeInTheDocument();
+});
+
+it("shows category numerators and contributions without representing a non-applicable domain as 100", async () => {
+  vi.mocked(api.fetchQualityRevisions).mockResolvedValue({ items: [{ ...revision, summary: { ...revision.summary, score: 83.75, blockingIssueCount: 1, scoreDetails: { domains: {
+    identity: { score: 75, applicable: true, numerator: 3, denominator: 4, weight: 30, weightedContribution: 22.5 },
+    graph: { score: 100, applicable: true, numerator: 4, denominator: 4, weight: 20, weightedContribution: 20 },
+    integrity: { score: null, applicable: false, numerator: 0, denominator: 0, weight: 10, weightedContribution: null },
+  } } } }], total: 1, page: 1, size: 20 });
+  mount(); expect(await screen.findByText("가중 품질 점수 83.75 / 100")).toBeInTheDocument();
+  expect(screen.getByText("3 / 4")).toBeInTheDocument(); expect(screen.getByText("22.50")).toBeInTheDocument();
+  expect(screen.getByText("적용 불가")).toBeInTheDocument(); expect(screen.getByText(/높은 점수로 필수 오류를 상쇄할 수 없습니다/)).toBeInTheDocument();
+});
+it("keeps old unscored revisions unscored rather than displaying zero", async () => {
+  mount(); expect(await screen.findByText("점수 없음 · 이전 엔진 또는 적용 불가")).toBeInTheDocument();
+  expect(screen.queryByText(/가중 품질 점수 0/)).not.toBeInTheDocument();
+});
+it("edits the child scope and shows immutable parent-tag inheritance provenance", async () => {
+  const inherited: QualityProfile = { ...profile, projectId: null, sourceId: "source-a", tag: "regulated", priority: 20, resolution: { kind: "parent_tag", projectId: "child-id", inheritedFrom: "parent-id", sourceId: "source-a", depth: 1, chain: [{ projectId: "child-id", sourceProjectId: "child", tags: [], active: true, profileVersion: 0, profileInherited: false }, { projectId: "parent-id", sourceProjectId: "parent", tags: ["regulated"], active: true, profileVersion: 0, profileInherited: false }] } };
+  vi.mocked(api.fetchQualityRevisions).mockResolvedValue({ items: [{ ...revision, profileSnapshot: inherited }], total: 1, page: 1, size: 20 });
+  vi.mocked(api.fetchEffectiveQualityProfile).mockResolvedValue({ profile: inherited, project: { id: "child-id", sourceId: "source-a", sourceProjectId: "child", tags: [] } });
+  mount(); expect(await screen.findByText(/적용 경로: 부모 태그 기준/)).toBeInTheDocument(); expect(screen.getByText(/태그 regulated \(우선순위 20\)/)).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("tab", { name: "프로젝트별 품질 기준" })); await screen.findByLabelText("품질 기준 이름");
+  expect(api.fetchQualityProfile).toHaveBeenCalledWith("child-id"); expect(api.fetchQualityProfile).not.toHaveBeenCalledWith("parent-id");
+});
+it("validates weight sum before saving and sends explicit score threshold", async () => {
+  vi.mocked(api.saveQualityProfile).mockResolvedValue({ ...profile, version: 5 });
+  mount(); await screen.findByText("nested-child"); fireEvent.click(screen.getByRole("tab", { name: "프로젝트별 품질 기준" })); await screen.findByLabelText("품질 기준 이름");
+  fireEvent.change(screen.getByLabelText("품질 식별 가중치"), { target: { value: "40" } });
+  expect(screen.getByText(/합계가 100이어야 합니다/)).toBeInTheDocument(); expect(screen.getByRole("button", { name: "품질 기준 새 버전 저장" })).toBeDisabled();
+  fireEvent.change(screen.getByLabelText("품질 의존성 관계 가중치"), { target: { value: "10" } });
+  fireEvent.change(screen.getByLabelText("품질 최소 점수"), { target: { value: "92.5" } });
+  fireEvent.click(screen.getByRole("button", { name: "품질 기준 새 버전 저장" }));
+  await waitFor(() => expect(api.saveQualityProfile).toHaveBeenCalledWith("project-native-id", expect.objectContaining({ minScore: 92.5, scoreWeights: { identity: 40, graph: 10, license: 20, provenance: 20, integrity: 10 } })));
+});
+it("edits a source-scoped tag criterion with priority and server version", async () => {
+  const tagged: QualityProfile = { ...profile, projectId: null, sourceId: "source-a", tag: "regulated", priority: 10 };
+  vi.mocked(api.fetchQualityProfile).mockResolvedValueOnce(profile).mockResolvedValue(tagged);
+  vi.mocked(api.fetchQualityTagProfiles).mockResolvedValue({ items: [tagged], total: 1, page: 1, size: 20 });
+  vi.mocked(api.saveQualityProfile).mockResolvedValue({ ...tagged, priority: 30, version: 5 });
+  mount(); await screen.findByText("nested-child"); fireEvent.click(screen.getByRole("tab", { name: "프로젝트별 품질 기준" })); await screen.findByLabelText("품질 기준 이름");
+  fireEvent.change(screen.getByLabelText("품질 기준 편집 범위"), { target: { value: "tag" } });
+  fireEvent.change(screen.getByLabelText("품질 기준 원본 ID"), { target: { value: "source-a" } }); fireEvent.change(screen.getByLabelText("품질 기준 태그"), { target: { value: "regulated" } });
+  expect(screen.getByRole("button", { name: "품질 기준 새 버전 저장" })).toBeDisabled(); fireEvent.click(screen.getByRole("button", { name: "기준 불러오기" }));
+  expect(await screen.findByLabelText("품질 태그 우선순위")).toHaveValue(10); expect(api.fetchQualityProfile).toHaveBeenLastCalledWith("", { sourceId: "source-a", tag: "regulated" });
+  expect(await screen.findByText("regulated · 우선순위 10 · v4")).toBeInTheDocument();
+  fireEvent.change(screen.getByLabelText("품질 태그 우선순위"), { target: { value: "30" } }); fireEvent.click(screen.getByRole("button", { name: "품질 기준 새 버전 저장" }));
+  await waitFor(() => expect(api.saveQualityProfile).toHaveBeenCalledWith("", expect.objectContaining({ priority: 30, version: 4 }), { sourceId: "source-a", tag: "regulated" }));
+});
+it("disables an override as a versioned inheritance choice", async () => {
+  vi.mocked(api.saveQualityProfile).mockResolvedValue({ ...profile, inherit: true, version: 5 });
+  mount(); await screen.findByText("nested-child"); fireEvent.click(screen.getByRole("tab", { name: "프로젝트별 품질 기준" })); await screen.findByLabelText("품질 기준 이름");
+  fireEvent.click(screen.getByLabelText("품질 기준 상속 사용")); expect(screen.getByLabelText("품질 기준 이름")).toBeDisabled();
+  fireEvent.click(screen.getByRole("button", { name: "품질 기준 새 버전 저장" }));
+  await waitFor(() => expect(api.saveQualityProfile).toHaveBeenCalledWith("project-native-id", expect.objectContaining({ inherit: true, version: 4 })));
+  expect(await screen.findByText(/품질 기준 v5을 저장했습니다/)).toBeInTheDocument();
+});
+it("serializes tag scope and score controls without widening the API target", async () => {
+  const actual = await vi.importActual<typeof import("./quality-api")>("./quality-api");
+  const transport = await import("./api");
+  vi.mocked(transport.request).mockResolvedValue(profile);
+  await actual.saveQualityProfile("unused-project", { ...profile, scoreWeights: { identity: 40, graph: 10, license: 20, provenance: 20, integrity: 10 }, minScore: 95, priority: 7, inherit: true }, { sourceId: "source/a", tag: "규제 & prod" });
+  const [url, init] = vi.mocked(transport.request).mock.calls.at(-1)!;
+  expect(url).toBe("/api/v1/quality-profiles?sourceId=source%2Fa&tag=%EA%B7%9C%EC%A0%9C+%26+prod");
+  expect(JSON.parse(String(init?.body))).toEqual(expect.objectContaining({ expectedVersion: 4, minScore: 95, priority: 7, inherit: true, scoreWeights: { identity: 40, graph: 10, license: 20, provenance: 20, integrity: 10 } }));
+  expect(JSON.parse(String(init?.body))).not.toHaveProperty("projectId");
+});
+it("does not alias distinct source/tag targets that contain colon separators", async () => {
+  vi.mocked(api.fetchQualityProfile).mockResolvedValue(profile);
+  mount(); await screen.findByText("nested-child"); fireEvent.click(screen.getByRole("tab", { name: "프로젝트별 품질 기준" })); await screen.findByLabelText("품질 기준 이름");
+  fireEvent.change(screen.getByLabelText("품질 기준 편집 범위"), { target: { value: "tag" } });
+  fireEvent.change(screen.getByLabelText("품질 기준 원본 ID"), { target: { value: "a:b" } }); fireEvent.change(screen.getByLabelText("품질 기준 태그"), { target: { value: "c" } });
+  fireEvent.click(screen.getByRole("button", { name: "기준 불러오기" })); await screen.findByLabelText("품질 태그 우선순위");
+  expect(screen.getByRole("button", { name: "품질 기준 새 버전 저장" })).toBeEnabled();
+  fireEvent.change(screen.getByLabelText("품질 기준 원본 ID"), { target: { value: "a" } }); fireEvent.change(screen.getByLabelText("품질 기준 태그"), { target: { value: "b:c" } });
+  expect(screen.getByRole("button", { name: "품질 기준 새 버전 저장" })).toBeDisabled();
+});
+it("allows a zero quality score and zero score threshold without treating them as absent", async () => {
+  vi.mocked(api.fetchQualityRevisions).mockResolvedValue({ items: [{ ...revision, summary: { ...revision.summary, score: 0, minScore: 0, scoreThresholdViolated: false }, comparison: { previousRevisionId: "quality-1", errorDelta: 0, warningDelta: 0, scoreDelta: 0 } }], total: 1, page: 1, size: 20 });
+  mount(); expect(await screen.findByText("가중 품질 점수 0.00 / 100")).toBeInTheDocument();
+  expect(screen.getByText("점수 하한 0.00점")).toBeInTheDocument(); expect(screen.getByText(/점수 0.00점/)).toBeInTheDocument();
+  expect(screen.queryByText("점수 없음 · 이전 엔진 또는 적용 불가")).not.toBeInTheDocument();
 });

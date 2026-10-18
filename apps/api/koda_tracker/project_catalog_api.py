@@ -62,6 +62,14 @@ def _parent_check(db: Session, source_id: str, identity: str, parent: str | None
     validate_hierarchy(values)
 
 
+def _refresh_quality_scope(db: Session, source_id: str) -> int:
+    # Parent/tag edits may change descendants and ordinary uploads in the same
+    # coordinates. Persist reanalysis in this transaction; keep old evidence.
+    from .quality import queue_quality_changes
+    db.flush()
+    return queue_quality_changes(db, source_id=source_id)
+
+
 @router.get("/project-catalog")
 def list_projects(sourceId: str | None = None, page: int = Query(1, ge=1), size: int = Query(50, ge=1, le=200), db: Session = Depends(get_db), _=Depends(require_permission("migrations.manage"))):
     query = select(NativeProject)
@@ -73,6 +81,8 @@ def list_projects(sourceId: str | None = None, page: int = Query(1, ge=1), size:
 
 @router.post("/project-catalog", status_code=201)
 def create_project(body: ProjectCreate, db: Session = Depends(get_db), principal=Depends(require_admin), _permission=Depends(require_permission("migrations.manage")), _csrf=Depends(require_csrf)):
+    from .quality import quality_write_lock
+    quality_write_lock(db)
     try:
         if db.get(Service, body.serviceId) is None or db.get(Environment, body.environmentId) is None:
             raise CatalogError("서비스 또는 환경이 없습니다")
@@ -89,6 +99,7 @@ def create_project(body: ProjectCreate, db: Session = Depends(get_db), principal
                 raise CatalogError("연결할 회차가 없습니다")
             link_run(db, p, run)
         audit(db, principal.username, "project_catalog.create", "project", p.id, body.model_dump())
+        _refresh_quality_scope(db, p.source_id)
         db.commit()
         return project_payload(p)
     except ValueError as exc:
@@ -97,6 +108,8 @@ def create_project(body: ProjectCreate, db: Session = Depends(get_db), principal
 
 @router.patch("/project-catalog/{project_id}")
 def update_project(project_id: str, body: ProjectUpdate, db: Session = Depends(get_db), principal=Depends(require_admin), _permission=Depends(require_permission("migrations.manage")), _csrf=Depends(require_csrf)):
+    from .quality import quality_write_lock
+    quality_write_lock(db)
     p = db.scalar(select(NativeProject).where(NativeProject.id == project_id).with_for_update())
     if p is None:
         raise HTTPException(404, "프로젝트가 없습니다")
@@ -126,6 +139,7 @@ def update_project(project_id: str, body: ProjectUpdate, db: Session = Depends(g
             configure_collection(p, logic, tag)
         p.revision += 1
         audit(db, principal.username, "project_catalog.update", "project", p.id, body.model_dump(exclude_unset=True))
+        _refresh_quality_scope(db, p.source_id)
         db.commit()
         return project_payload(p)
     except ValueError as exc:
@@ -134,6 +148,8 @@ def update_project(project_id: str, body: ProjectUpdate, db: Session = Depends(g
 
 @router.post("/project-catalog/{project_id}/runs")
 def attach_run(project_id: str, body: RunLinkRequest, db: Session = Depends(get_db), principal=Depends(require_admin), _permission=Depends(require_permission("migrations.manage")), _csrf=Depends(require_csrf)):
+    from .quality import quality_write_lock
+    quality_write_lock(db)
     p = db.scalar(select(NativeProject).where(NativeProject.id == project_id).with_for_update())
     if p is None:
         raise HTTPException(404, "프로젝트가 없습니다")
@@ -145,6 +161,7 @@ def attach_run(project_id: str, body: RunLinkRequest, db: Session = Depends(get_
     try:
         link_run(db, p, run); p.revision += 1
         audit(db, principal.username, "project_catalog.link_run", "project", p.id, body.model_dump())
+        _refresh_quality_scope(db, p.source_id)
         db.commit()
         return project_payload(p)
     except ValueError as exc:

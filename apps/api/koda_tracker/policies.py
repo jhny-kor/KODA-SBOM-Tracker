@@ -359,11 +359,26 @@ def _cel_component(component: dict, at: datetime) -> dict:
     return result
 
 
+def _cel_quality(evidence: dict) -> dict:
+    # Inheritance chains and scoring check rows are immutable evidence, stored
+    # once with the analysis. Repeating them per component can exceed CEL's
+    # bounded input even for an otherwise small SBOM.
+    result = {key: value for key, value in evidence.items() if not isinstance(value, (dict, list))}
+    if 'fieldStatus' in evidence:
+        result['fieldStatus'] = evidence['fieldStatus']
+    if 'profileSnapshot' in evidence:
+        result['profileSnapshot'] = {key: value for key, value in evidence['profileSnapshot'].items() if key != 'resolution'}
+    details = (evidence.get('scoreDetails') or {}).get('domains') or {}
+    if details:
+        result['domainScores'] = {key: value.get('score') for key, value in details.items()}
+    return result
+
+
 def build_cel_contexts(components: list[dict], findings: list[dict], project_context: dict | None = None, *, evaluated_at: datetime | None = None, targets: set[str] | None = None, include_peer_vulnerabilities: bool = True) -> dict[str, list[dict]]:
     at = evaluated_at or datetime.now(UTC)
     context = project_context or {}
     base = {key: context.get(key, {}) for key in ("project", "environment", "release", "run")}
-    base["sbomQuality"] = context.get("sbomQuality") or {"state": "not_evaluated"}
+    base["sbomQuality"] = _cel_quality(context.get("sbomQuality") or {"state": "not_evaluated"})
     base["now"] = at.isoformat()
     targets = targets or {"component", "vulnerability", "project"}
     result = {target: [] for target in targets}

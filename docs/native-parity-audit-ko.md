@@ -50,4 +50,4 @@
 [수정 및 Docker 검증](verification-sbom-corrections-20261018-ko.md)에 정리했습니다. 이 수정이
 위 미구현 기능 전체를 구현했다는 의미는 아닙니다.
 
-SBOM 품질 진단·프로젝트별 기준·CEL 연계·CI 게이트는 [사용 안내](sbom-quality-ko.md)와 [추가 실제 검증](verification-quality-20261018-ko.md)에 정리했습니다. 품질 점수·부모/태그 기준 상속 및 외부 CI 보호 규칙 자동 설정은 포함하지 않습니다.
+SBOM 품질 진단·프로젝트별 기준·CEL 연계·CI 게이트는 [사용 안내](sbom-quality-ko.md)와 [추가 실제 검증](verification-quality-20261018-ko.md)에 정리했습니다. 품질 점수·부모/태그 기준 상속은 [후속 구현·검증](verification-quality-inheritance-20261018-ko.md)에 반영했습니다. 외부 CI 보호 규칙 자동 설정은 포함하지 않습니다.

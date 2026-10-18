@@ -52,6 +52,8 @@ def validate_hierarchy(projects: list[dict]) -> None:
 
 def upsert_source_projects(db: Session, bundle: dict, plan: dict) -> list[NativeProject]:
     """Called before imported revisions are evaluated, inside import transaction."""
+    from .quality import quality_write_lock
+    quality_write_lock(db)
     source_id = bundle["source"]["id"]
     existing = {p.source_project_id: p for p in db.scalars(select(NativeProject).where(NativeProject.source_id == source_id))}
     incoming = {}
