@@ -14,7 +14,7 @@ MAX_INPUT_BYTES = 32 * 1024 * 1024
 MAX_OUTPUT_BYTES = 4 * 1024 * 1024
 MAX_EVALUATIONS = 100_000
 CEL_TIMEOUT_SECONDS = 10
-CONTEXT_VARIABLES = ["project", "environment", "release", "run", "component", "vulnerability", "now"]
+CONTEXT_VARIABLES = ["project", "environment", "release", "run", "component", "vulnerability", "sbomQuality", "now"]
 
 
 class CelPolicyError(ValueError):

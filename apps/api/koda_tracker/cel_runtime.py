@@ -35,7 +35,7 @@ def main() -> dict:
     expressions = payload.get("expressions", [])
     if len(expressions) > 200:
         raise ValueError("CEL 정책 수가 200개 한도를 초과했습니다")
-    env = cel.NewEnv(variables={**{name: cel.Type.DYN for name in ("project", "environment", "release", "run", "component", "vulnerability")}, "now": cel.Type.TIMESTAMP})
+    env = cel.NewEnv(variables={**{name: cel.Type.DYN for name in ("project", "environment", "release", "run", "component", "vulnerability", "sbomQuality")}, "now": cel.Type.TIMESTAMP})
     compiled = []
     for rule in expressions:
         expression = rule["expression"]

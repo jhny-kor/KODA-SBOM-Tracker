@@ -302,6 +302,10 @@ def policy_context_for_run(run: SbomRun, db: Session | None = None) -> dict:
             "release": {"version": release.version} if release is not None else {},
             "run": {key: value for key, value in {"id": getattr(run, "id", None), "source": getattr(run, "source", None), "roundNumber": getattr(run, "round_number", None)}.items() if value is not None}}
     if db is not None and isinstance(run, SbomRun):
+        from .quality import latest_quality
+        quality = latest_quality(db, run.id)
+        context["sbomQuality"] = ({**quality["summary"], "state": quality["state"], "revisionId": quality["id"]}
+                                  if quality else {"state": "not_evaluated"})
         catalog = catalog_context_for_run(db, run.id)
         context["sourceProject"] = catalog
         if catalog:
@@ -359,6 +363,7 @@ def build_cel_contexts(components: list[dict], findings: list[dict], project_con
     at = evaluated_at or datetime.now(UTC)
     context = project_context or {}
     base = {key: context.get(key, {}) for key in ("project", "environment", "release", "run")}
+    base["sbomQuality"] = context.get("sbomQuality") or {"state": "not_evaluated"}
     base["now"] = at.isoformat()
     targets = targets or {"component", "vulnerability", "project"}
     result = {target: [] for target in targets}
@@ -599,8 +604,13 @@ def evaluate_revision(db: Session, run: SbomRun, revision: AnalysisRevision) -> 
         kev_source = sources.get("cisaKev") or {}
         available_sources = {"kev"} if isinstance(kev_source, dict) and kev_source.get("available") is True else set()
         project_context = policy_context_for_run(run, db)
+        # An analysis uses the exact immutable quality evidence it evaluated;
+        # a later manual quality rerun must not change this policy snapshot.
+        quality_source = (revision.data_sources or {}).get("sbomQuality")
+        if quality_source:
+            project_context["sbomQuality"] = quality_source
         revision.policies, revision.metrics = evaluate_document(document, components, revision.findings or [], available_sources=available_sources, project_context=project_context)
-        revision.policy_snapshot = {**snapshot, "projectScopeSnapshot": project_context.get("sourceProject"),
+        revision.policy_snapshot = {**snapshot, "projectScopeSnapshot": project_context.get("sourceProject"), "sbomQualitySnapshot": project_context.get("sbomQuality"),
                                     "vulnerabilityIntelligenceSnapshot": [{"id": value.get("canonicalId") or value.get("id"), "cwes": value.get("cwes"), "epssEvidence": value.get("epssEvidence")} for value in revision.findings or []]}
         revision.metrics["packageMetadataSummary"] = metadata_summary(components)
         if any(rule.kind == "cel" and (any(field in rule.expression for field in ("ageDays", "latestVersion", "versionDistance", "packageMetadata")) or any(spec.get("subject") in {"AGE", "VERSION_DISTANCE"} for spec in rule.legacyConditions)) for rule in document.rules):

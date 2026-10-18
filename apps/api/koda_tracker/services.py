@@ -27,6 +27,7 @@ from . import workflow_models  # Register workflow tables before standalone crea
 from .private_vulnerability import match_private_vulnerabilities
 from .sbom_normalization import mark_current
 from .policies import evaluate_revision
+from .quality import evaluate_quality, revision_payload as quality_payload
 from .vulnerability import active_bundle, load_context, normalize_finding
 
 
@@ -82,11 +83,15 @@ def analyze_offline(db: Session, run: SbomRun) -> AnalysisRevision:
     if isinstance(run, SbomRun):
         enqueue_components(db, list(iter_components((run.normalized_bom or {}).get("components", []))))
     findings: list[dict] = []
+    quality = quality_payload(evaluate_quality(db, run, actor="worker", force=True))
+    quality_evidence = {**quality["summary"], "state": quality["state"], "revisionId": quality["id"],
+                        "profileSnapshot": quality["profileSnapshot"], "originalSha256": quality["originalSha256"]}
+    revision.data_sources = {"sbomQuality": quality_evidence}
     try:
         settings = get_settings()
         initial_bundle = active_bundle(settings)
         context = load_context(settings, release_path=initial_bundle.path) if initial_bundle else load_context(settings)
-        revision.data_sources = {**context.sources, "sbomNormalization": {"version": 2}}
+        revision.data_sources = {**context.sources, "sbomNormalization": {"version": 2}, "sbomQuality": quality_evidence}
         revision.data_as_of = context.bundle.data_as_of if context.bundle else "unknown"
         if context.bundle is None:
             metadata_path = settings.grype_db_dir.parent / "metadata.env"

@@ -158,11 +158,135 @@ def _local(tag: str) -> str:
     return tag.rsplit("}", 1)[-1]
 
 
-def _text(element, child: str) -> str:
-    for item in element:
-        if _local(item.tag) == child:
-            return item.text or ""
-    return ""
+def _xml_contact(node) -> dict:
+    result = {"bom-ref": node.attrib["bom-ref"]} if "bom-ref" in node.attrib else {}
+    for child in node:
+        if _local(child.tag) in {"name", "email", "phone"}:
+            result[_local(child.tag)] = child.text or ""
+    return result
+
+
+def _xml_entity(node) -> dict:
+    result = {"bom-ref": node.attrib["bom-ref"]} if "bom-ref" in node.attrib else {}
+    for child in node:
+        kind = _local(child.tag)
+        if kind == "name":
+            result[kind] = child.text or ""
+        elif kind == "url":
+            result.setdefault("url", []).append(child.text or "")
+        elif kind == "contact":
+            result.setdefault("contact", []).append(_xml_contact(child))
+    return result
+
+
+def _xml_hashes(node) -> list[dict]:
+    return [{"alg": value.attrib.get("alg", ""), "content": value.text or ""}
+            for value in node if _local(value.tag) == "hash"]
+
+
+def _xml_licenses(node) -> list[dict]:
+    result = []
+    for value in node:
+        kind = _local(value.tag)
+        if kind == "expression":
+            expression = {"expression": (value.text or "").strip()}
+            if "bom-ref" in value.attrib:
+                expression["bom-ref"] = value.attrib["bom-ref"]
+            result.append(expression)
+        elif kind == "license":
+            license_value = {"bom-ref": value.attrib["bom-ref"]} if "bom-ref" in value.attrib else {}
+            for child in value:
+                if _local(child.tag) in {"id", "name", "url"}:
+                    license_value[_local(child.tag)] = child.text or ""
+            # Retain an empty record as evidence rather than silently dropping it.
+            result.append({"license": license_value})
+    return result
+
+
+def _xml_properties(node) -> list[dict]:
+    return [{"name": value.attrib.get("name", ""), "value": value.text or ""}
+            for value in node if _local(value.tag) == "property"]
+
+
+def _xml_swid(node) -> dict:
+    result = {key: value for key, value in node.attrib.items()
+              if key in {"tagId", "name", "version", "tagVersion", "patch"}}
+    # Match JSON field types for valid attributes, but retain invalid source
+    # values for quality diagnostics when schema validation is not configured.
+    if "tagVersion" in result and result["tagVersion"].isdigit():
+        result["tagVersion"] = int(result["tagVersion"])
+    if result.get("patch") in {"true", "false", "1", "0"}:
+        result["patch"] = result["patch"] in {"true", "1"}
+    for child in node:
+        kind = _local(child.tag)
+        if kind == "url":
+            result[kind] = child.text or ""
+        elif kind == "text":
+            attachment = {"content": child.text or ""}
+            for xml_key, json_key in (("content-type", "contentType"), ("encoding", "encoding")):
+                if xml_key in child.attrib:
+                    attachment[json_key] = child.attrib[xml_key]
+            result[kind] = attachment
+    return result
+
+
+def _xml_component_fields(node) -> dict:
+    result = {key: node.attrib[key] for key in ("type", "bom-ref", "mime-type") if key in node.attrib}
+    for child in node:
+        kind = _local(child.tag)
+        if kind in {"group", "name", "version", "purl", "cpe", "description", "scope", "author", "publisher"}:
+            result[kind] = child.text or ""
+        elif kind in {"supplier", "manufacturer", "manufacture"}:
+            result[kind] = _xml_entity(child)
+        elif kind == "authors":
+            result[kind] = [_xml_contact(value) for value in child if _local(value.tag) == "author"]
+        elif kind == "hashes":
+            result[kind] = _xml_hashes(child)
+        elif kind == "licenses":
+            result[kind] = _xml_licenses(child)
+        elif kind == "properties":
+            result[kind] = _xml_properties(child)
+        elif kind == "swid":
+            result[kind] = _xml_swid(child)
+    return result
+
+
+def _xml_components(nodes) -> list[dict]:
+    result = []
+    pending = [(node, result) for node in reversed(list(nodes)) if _local(node.tag) == "component"]
+    while pending:
+        node, destination = pending.pop()
+        item = _xml_component_fields(node)
+        destination.append(item)
+        nested = next((child for child in node if _local(child.tag) == "components"), None)
+        if nested is not None:
+            item["components"] = []
+            pending.extend((child, item["components"]) for child in reversed(list(nested)) if _local(child.tag) == "component")
+    return result
+
+
+def _xml_tools(node):
+    legacy = [value for value in node if _local(value.tag) == "tool"]
+    if legacy:
+        result = []
+        for value in legacy:
+            tool = {}
+            for child in value:
+                kind = _local(child.tag)
+                if kind in {"vendor", "name", "version"}:
+                    tool[kind] = child.text or ""
+                elif kind == "hashes":
+                    tool[kind] = _xml_hashes(child)
+            result.append(tool)
+        return result
+    result = {}
+    for child in node:
+        kind = _local(child.tag)
+        if kind == "components":
+            result[kind] = _xml_components(child)
+        elif kind == "services":
+            result[kind] = [_xml_component_fields(value) for value in child if _local(value.tag) == "service"]
+    return result
 
 
 def _xml_payload(root) -> dict:
@@ -173,68 +297,39 @@ def _xml_payload(root) -> dict:
     payload: dict = {
         "bomFormat": "CycloneDX",
         "specVersion": version_match.group(1) if version_match else root.attrib.get("version", ""),
-        "serialNumber": root.attrib.get("serialNumber"),
         "components": [],
     }
-    metadata = next((node for node in root if _local(node.tag) == "metadata"), None)
-    if metadata is not None:
-        primary = next((node for node in metadata if _local(node.tag) == "component"), None)
-        if primary is not None:
-            payload["metadata"] = {"component": {"bom-ref": primary.attrib.get("bom-ref", ""), "name": _text(primary, "name"), "version": _text(primary, "version")}}
-    dependencies = next((node for node in root if _local(node.tag) == "dependencies"), None)
-    if dependencies is not None:
-        payload["dependencies"] = [{"ref": node.attrib.get("ref", ""), "dependsOn": [item.attrib.get("ref", "") for item in node if _local(item.tag) == "dependency"]}
-                                   for node in dependencies if _local(node.tag) == "dependency"]
-    components_node = next((node for node in root if _local(node.tag) == "components"), None)
-    if components_node is None:
-        return payload
-    pending = [(node, payload["components"]) for node in reversed(list(components_node)) if _local(node.tag) == "component"]
-    while pending:
-        node, destination = pending.pop()
-        item: dict = {
-            "type": node.attrib.get("type", "library"),
-            "bom-ref": node.attrib.get("bom-ref", ""),
-            "group": _text(node, "group"),
-            "name": _text(node, "name"),
-            "version": _text(node, "version"),
-            "purl": _text(node, "purl"),
-            "hashes": [],
-            "licenses": [],
-            "properties": [],
-        }
-        for child in node:
-            kind = _local(child.tag)
-            if kind == "cpe":
-                item["cpe"] = child.text or ""
-            elif kind == "swid":
-                item["swid"] = {key:value for key,value in child.attrib.items() if key in {"tagId","name","version","tagVersion","patch"}}
-                for entry in child:
-                    if _local(entry.tag) in {"text","url"}:
-                        item["swid"][_local(entry.tag)] = entry.text or ""
-            elif kind == "hashes":
-                for digest in child:
-                    item["hashes"].append({"alg": digest.attrib.get("alg", ""), "content": digest.text or ""})
-            elif kind == "licenses":
-                for license_node in child:
-                    if _local(license_node.tag) == "expression":
-                        item["licenses"].append({"expression": (license_node.text or "").strip()})
-                        continue
-                    identifier = _text(license_node, "id")
-                    name = _text(license_node, "name")
-                    if identifier or name:
-                        item["licenses"].append({"license": {"id": identifier} if identifier else {"name": name}})
-            elif kind == "properties":
-                for prop in child:
-                    item["properties"].append({"name": prop.attrib.get("name", ""), "value": prop.text or ""})
-        present = {_local(child.tag) for child in node}
-        for optional in ("group","version","purl"):
-            if optional not in present:
-                item.pop(optional,None)
-        destination.append(item)
-        nested = next((child for child in node if _local(child.tag) == "components"), None)
-        if nested is not None:
-            item["components"] = []
-            pending.extend((child, item["components"]) for child in reversed(list(nested)) if _local(child.tag) == "component")
+    if "serialNumber" in root.attrib:
+        payload["serialNumber"] = root.attrib["serialNumber"]
+    if "version" in root.attrib:
+        value = root.attrib["version"]
+        payload["version"] = int(value) if value.isdigit() else value
+    for node in root:
+        kind = _local(node.tag)
+        if kind == "metadata":
+            metadata = {}
+            for child in node:
+                field = _local(child.tag)
+                if field == "timestamp":
+                    metadata[field] = child.text or ""
+                elif field == "component":
+                    metadata[field] = _xml_components([child])[0]
+                elif field == "tools":
+                    metadata[field] = _xml_tools(child)
+                elif field == "authors":
+                    metadata[field] = [_xml_contact(value) for value in child if _local(value.tag) == "author"]
+                elif field in {"supplier", "manufacturer", "manufacture"}:
+                    metadata[field] = _xml_entity(child)
+                elif field == "licenses":
+                    metadata[field] = _xml_licenses(child)
+                elif field == "properties":
+                    metadata[field] = _xml_properties(child)
+            payload[kind] = metadata
+        elif kind == "dependencies":
+            payload[kind] = [{"ref": value.attrib.get("ref", ""), "dependsOn": [item.attrib.get("ref", "") for item in value if _local(item.tag) == "dependency"]}
+                             for value in node if _local(value.tag) == "dependency"]
+        elif kind == "components":
+            payload[kind] = _xml_components(node)
     return payload
 
 

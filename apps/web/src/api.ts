@@ -18,7 +18,7 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (standaloneMode) throw new ApiError("로컬 미리보기에서는 서버 API를 사용할 수 없습니다.", 0);
   const response = await fetch(path, {
     credentials: "include",

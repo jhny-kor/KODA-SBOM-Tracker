@@ -205,3 +205,5 @@ KODA SBOM Tracker 자체 코드는 Apache License 2.0으로 배포합니다. 라
 - 모든 서드파티 이미지는 digest까지 고정했습니다. 로컬 빌드 이미지도 오프라인 번들에서 `docker save` 결과와 SHA-256 manifest로 검증합니다.
 - 운영 전 `TRACKER_ENVIRONMENT=production`, `TRACKER_SECURE_COOKIES=true`,
   `TRACKER_PUBLIC_ORIGIN=https://<동일-오리진-호스트>`와 TLS 종료 프록시를 사용합니다.
+
+SBOM 품질 진단과 프로젝트별 기준·CEL·CI 게이트: [사용 안내](docs/sbom-quality-ko.md) · [Docker 검증](docs/verification-quality-20261018-ko.md)

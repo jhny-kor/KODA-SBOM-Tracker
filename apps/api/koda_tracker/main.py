@@ -85,6 +85,8 @@ from . import workflow_models
 from .reanalysis import ReanalysisSchedule, get_schedule
 from .reanalysis_api import router as reanalysis_router
 from .workflow_api import router as workflow_router
+from .quality_api import router as quality_router
+from .ci_gate import router as ci_gate_router
 from .vulnerability import active_bundle, cvss_score, project_cve_findings, scan_bundle_releases
 from .ldap_auth import LdapConfig, LdapConfigurationError, LdapInvalidCredentials, LdapUnavailable, authenticate_user
 
@@ -420,6 +422,8 @@ app.include_router(migration_router)
 app.include_router(vulnerability_intelligence_router)
 app.include_router(project_catalog_router)
 app.include_router(private_vulnerability_router)
+app.include_router(quality_router)
+app.include_router(ci_gate_router)
 app.add_middleware(RequestBodyLimitMiddleware)
 _upload_persist_lock = asyncio.Lock()
 
