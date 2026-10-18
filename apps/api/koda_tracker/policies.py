@@ -321,6 +321,7 @@ def _cel_component(component: dict, at: datetime) -> dict:
     result = {key: component[key] for key in ("type", "name", "group", "version", "purl", "legacyLicense", "isDirectDependency") if component.get(key) is not None}
     result["legacyRegexFields"] = {key: component.get(key) for key in ("purl","cpe","group","name","version")}
     result["legacyRegexFields"]["swidTagId"] = (component.get("swid") or {}).get("tagId")
+    result["legacyLiteralFields"] = component.get("legacyLiteralFields") or dict(result["legacyRegexFields"])
     result["metadataStatus"] = component.get("metadataStatus", "missing")
     cached_metadata = component.get("packageMetadata") or {}
     result["packageMetadata"] = cached_metadata if component.get("metadataStatus") == "fresh" else {key: cached_metadata[key] for key in ("status", "ecosystem", "sourceUrls", "fetchedAt", "expiresAt", "error", "fieldStatus") if key in cached_metadata}
@@ -379,7 +380,7 @@ def build_cel_contexts(components: list[dict], findings: list[dict], project_con
         component = indexed.get(name) or indexed.get(f"{name}@{version}")
         if component is None:
             component = {"name": name, "version": version, "purl": name} if name.startswith("pkg:") else {"name": name, "version": version}
-        vulnerability = {key: finding[key] for key in ("id", "severity", "kev", "fixedIn", "cwes", "cweStatus", "epssScore", "epssPercentile", "epssDate", "epssStatus") if finding.get(key) is not None}
+        vulnerability = {key: finding[key] for key in ("id", "severity", "kev", "fixedIn", "cwes", "cweStatus", "epssScore", "epssPercentile", "epssDate", "epssStatus", "legacyCwesNull") if finding.get(key) is not None}
         vulnerability["canonicalId"] = finding.get("canonicalId") or finding.get("id") or "unknown"
         vulnerability["suppressed"] = (finding.get("vex") or {}).get("suppressed") is True
         score = cvss_score(finding)
@@ -568,6 +569,9 @@ def evaluate_document(document: PolicyDocument, components: list[dict], findings
     if any(spec.get("subject") == "JAVA_REGEX" for rule in cel_rules for spec in rule.legacyConditions):
         metrics["policyCompatibilityRuntimes"] = [{"runtime":"java.util.regex.Pattern", "javaMajor":21,
             "adapterProtocol":"KODA_REGEX_V1", "dialect":"java21-legacy4", "isolated":True}]
+    literal_minors = {spec["sourceMinor"] for rule in cel_rules for spec in rule.legacyConditions if spec["subject"] in {"LEGACY_LITERAL","LEGACY_PRE48"}}
+    if literal_minors:
+        metrics.setdefault("policyCompatibilityRuntimes",[]).append({"runtime":"koda.pre48-literal", "sourceMinors":sorted(literal_minors), "allGate":"rawConditionViolationCount", "source40":"firstMatchPerSubject"})
     return policies, metrics
 
 

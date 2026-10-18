@@ -544,7 +544,9 @@ AND/OR/WITH/PLUS/or-later, 달력 AGE와 단위별 버전 거리입니다.
   [Java 정규식 검증](verification-java-regex-20261018-ko.md)에 있습니다.
 - 4.x 좌표의 `NO_MATCH`는 group·name·version을 각각 반전한 뒤 AND합니다. 실제 group/name의
   ASCII trim·null·빈 문자열, 비교 연산자가 없는 버전의 정규식도 원본 기준으로 처리합니다.
-  원본 4.0~4.7의 별도 리터럴 문자열 조건을 Java 문법으로 재해석하지 않고 적용을 차단합니다.
+  원본 4.0~4.7은 별도 리터럴 count helper로 자동이관합니다. PURL·CPE·SWID의 `*`는 일반 문자이며,
+  좌표의 정확한 `*`만 wildcard입니다. 원본 ALL의 원시 위반 개수 판정과 4.0 Optional/4.1 목록,
+  4.2 버전 비교의 차이를 보존합니다. [실제 4.7.1 대조 기록](verification-literal-20261018-ko.md)을 참조하세요.
 - Java 정규식은 패턴 2,048자·종류 200개·대상 문자열 64KiB·평가 100,000회,
   배치 입력 4MiB·출력 1MiB·wall time 6초·CPU 5초·heap 64MiB·stack 256KiB·Linux
   주소 공간 2GiB 한도를 적용합니다. 문법 오류는 저장/이관 전에 차단하며 시간 초과·stack 고갈·

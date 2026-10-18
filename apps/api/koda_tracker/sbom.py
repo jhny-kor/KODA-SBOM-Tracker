@@ -174,7 +174,14 @@ def _xml_payload(root) -> dict:
         }
         for child in node:
             kind = _local(child.tag)
-            if kind == "hashes":
+            if kind == "cpe":
+                item["cpe"] = child.text or ""
+            elif kind == "swid":
+                item["swid"] = {key:value for key,value in child.attrib.items() if key in {"tagId","name","version","tagVersion","patch"}}
+                for entry in child:
+                    if _local(entry.tag) in {"text","url"}:
+                        item["swid"][_local(entry.tag)] = entry.text or ""
+            elif kind == "hashes":
                 for digest in child:
                     item["hashes"].append({"alg": digest.attrib.get("alg", ""), "content": digest.text or ""})
             elif kind == "licenses":
@@ -189,6 +196,10 @@ def _xml_payload(root) -> dict:
             elif kind == "properties":
                 for prop in child:
                     item["properties"].append({"name": prop.attrib.get("name", ""), "value": prop.text or ""})
+        present = {_local(child.tag) for child in node}
+        for optional in ("group","version","purl"):
+            if optional not in present:
+                item.pop(optional,None)
         payload["components"].append(item)
     return payload
 

@@ -57,6 +57,7 @@ def test_missing_cpe_is_null_rather_than_empty_match(db, operator, expected):
     ('NO_MATCH',{'group':'wrong','name':'wrong'}, {'group':'org.acme','name':'sample','version':'1'},False),
     ('MATCHES',{'name':'sample'}, {'name':'sample'},True),
     ('MATCHES',{'name':'sample','version':'>= 1.2'}, {'name':'sample','version':'1.3'},True),
+    ('MATCHES',{'group':' org.example ','name':' sample ','version':' 1 '}, {'group':'org.example','name':'sample','version':'1'},True),
     ('MATCHES',{'name':'sample','version':'==foo'}, {'name':'sample','version':'foo '},False),
     ('NO_MATCH',{'name':'wrong','version':'>= 1.2'}, {'name':'sample','version':'1.1'},True),
 ])
@@ -92,7 +93,10 @@ def test_java_component_work_is_deduplicated_and_batched(db,monkeypatch):
 def test_pre_java_literal_source_is_not_reinterpreted_as_regex(db):
     raw=bundle([policy('PACKAGE_URL','MATCHES',r'(?<=pkg:)pypi')]);raw['source']['version']='4.7.1'
     report=make_report(db,raw)
-    assert not report['canApply'] and '리터럴' in report['blockers'][0]['reason']
+    assert report['canApply']
+    document=PolicyDocument(rules=[report['convertedPolicies'][0]['rule']])
+    assert document.rules[0].legacyConditions[0]['subject']=='LEGACY_LITERAL'
+    assert not evaluate_document(document,[{'name':'sample','purl':'pkg:pypi/sample@1'}],[])[0]
 
 
 @pytest.mark.parametrize('coordinate_version', ['4.13.4','4.7.1'])

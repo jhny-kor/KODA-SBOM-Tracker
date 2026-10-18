@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session
 
 from .config import get_settings
 from .legacy_policy import condition_spec, java_regex_spec
+from .legacy_literal import literal_spec, source_minor, supported_subjects, coordinates_purl, ASCII_TRIM
 from .project_catalog import upsert_source_projects
 from .migration_models import LegacyMigration, LegacyObjectMap
 from .models import AnalysisRevision, AuditEvent, Environment, Job, JobState, ProcessingState, Release, RunComponent, SbomPolicyRevision, SbomRun, Service, now
@@ -447,6 +448,22 @@ def _converted_conditions(conditions: list[dict], bundle: dict) -> tuple[list[st
     source_version = str(source.get("version") or "")
     if not re.match(r"^[45]\.", source_version) and any(condition.get("subject") in {"AGE", "VERSION_DISTANCE", "VERSION", "LICENSE", "LICENSE_GROUP", "COORDINATES", "PACKAGE_URL", "CPE", "SWID_TAGID"} for condition in conditions):
         raise MigrationError("버전별 정책 의미가 필요한 조건입니다. 원본 source.version(4.x 또는 5.x)을 확인해야 합니다")
+    old_profile = re.match(r"^4\.([0-7])(?:[.-]|$)", source_version)
+    if old_profile:
+        minor = source_minor(source_version)
+        for condition in conditions:
+            subject = condition.get("subject")
+            if subject not in supported_subjects(minor):
+                raise MigrationError("해당 원본 버전에 등록되지 않은 정책 조건입니다: " + str(subject))
+            if subject in {"PACKAGE_URL","CPE","SWID_TAGID","COORDINATES"}:
+                spec = literal_spec(subject, condition.get("value"), condition.get("operator"), source_version)
+            else:
+                from .legacy_pre48_counts import prepare_condition
+                spec = {"subject":"LEGACY_PRE48", "sourceMinor":minor, "condition":prepare_condition(condition,bundle,minor)}
+                spec["id"] = "compat-" + hashlib.sha256(json.dumps(spec,sort_keys=True,ensure_ascii=False).encode()).hexdigest()[:24]
+            if not any(item["id"] == spec["id"] for item in specs): specs.append(spec)
+            pieces.append(f"component.legacyConditions[{_literal(spec['id'])}]")
+        return pieces, specs
     for condition in conditions:
         if source_version.startswith("4.") and condition.get("subject") in {"PACKAGE_URL", "CPE", "SWID_TAGID", "COORDINATES"}:
             if not re.match(r"^4\.(?:[89]|[1-9][0-9]+)(?:\.|$)", source_version):
@@ -456,7 +473,7 @@ def _converted_conditions(conditions: list[dict], bundle: dict) -> tuple[list[st
                 except (ValueError,TypeError) as exc: raise MigrationError("좌표 조건 JSON이 올바르지 않습니다") from exc
                 if not isinstance(coordinates,dict) or set(coordinates)-{"group","name","version"}:
                     raise MigrationError("지원하지 않는 좌표 조건입니다")
-                fields = [(field, coordinates.get(field), True) for field in ("group","name","version")]
+                fields = [(field, (coordinates.get(field).strip(ASCII_TRIM) or None) if isinstance(coordinates.get(field),str) else coordinates.get(field), True) for field in ("group","name","version")]
             else:
                 fields = [({"PACKAGE_URL":"purl","CPE":"cpe","SWID_TAGID":"swidTagId"}[condition["subject"]],condition.get("value"),False)]
             parts=[]
@@ -666,7 +683,18 @@ def make_report(db: Session, bundle: dict) -> dict:
             rule = {"id": "legacy-" + _id(source_id, "policy", policy_id), "name": str(policy.get("name") or policy_id)[:255], "action": action, "enabled": True}
             rule["projectScope"] = {"sourceId": source_id, "projectIds": sorted({_uuid(value.get("uuid") if isinstance(value, dict) else value) for value in policy.get("projects") or []}), "tags": sorted({str(value.get("name") if isinstance(value, dict) else value) for value in policy.get("tags") or []}), "includeChildren": policy.get("includeChildren") is True, "onlyLatest": policy.get("onlyLatestProjectVersion") is True}
             pieces, specs = _converted_conditions(conditions, bundle)
-            rule.update({"kind": "cel", "target": "component", "expression": "(" + (" && " if operator == "ALL" else " || ").join(f"({part})" for part in pieces) + ")"})
+            if re.match(r"^4\.([0-7])(?:[.-]|$)", str((bundle.get("source") or {}).get("version") or "")):
+                minor = source_minor(bundle["source"]["version"])
+                if minor == 0:
+                    grouped = {}
+                    for condition, piece in zip(conditions,pieces):
+                        grouped.setdefault(condition["subject"],[]).append(piece)
+                    pieces = ["((" + " + ".join(f"({part})" for part in group) + ") > 0 ? 1 : 0)" for group in grouped.values()]
+                count = "(" + " + ".join(f"({part})" for part in pieces) + ")"
+                expression = count + (" == " + str(len(conditions)) if operator == "ALL" else " > 0")
+            else:
+                expression = "(" + (" && " if operator == "ALL" else " || ").join(f"({part})" for part in pieces) + ")"
+            rule.update({"kind":"cel", "target":"component", "expression":expression})
             if specs:
                 rule["legacyConditions"] = specs
             validated = PolicyDocument(rules=[rule])
@@ -739,6 +767,7 @@ def _finding(raw: dict) -> dict:
         finding["cvssScore"] = score
     from .vulnerability_intelligence import extract_cwes
     finding["cwes"] = extract_cwes(vulnerability)
+    finding["legacyCwesNull"] = vulnerability.get("cwes") is None and not finding["cwes"]
     finding["cweStatus"] = "available" if finding["cwes"] else "missing"
     epss = vulnerability.get("epss") if isinstance(vulnerability.get("epss"), dict) else {}
     for target, candidates in (("epssScore", (vulnerability.get("epssScore"), epss.get("score"))), ("epssPercentile", (vulnerability.get("epssPercentile"), epss.get("percentile")))):
@@ -883,6 +912,11 @@ def apply_migration(db: Session, migration_id: str, *, expected_digest: str, exp
                     source_components = {value.get("uuid"): value for value in source_item.get("components", [])}
                     for component in normalized.get("components") or []:
                         source_component = source_components.get(str(component.get("bom-ref", "")).removeprefix("urn:uuid:")) or next((value for value in source_components.values() if value.get("purl") and value.get("purl") == component.get("purl")), {})
+                        literal_fields = {key:source_component.get(key, component.get(key)) for key in ("purl","cpe","group","name","version")}
+                        literal_fields["swidTagId"] = source_component.get("swidTagId", (component.get("swid") or {}).get("tagId"))
+                        literal_fields["purlCoordinates"] = source_component.get("purlCoordinates", coordinates_purl(literal_fields["purl"]) if isinstance(literal_fields["purl"],str) else None)
+                        literal_fields["resolvedLicenseUuid"] = (source_component.get("resolvedLicense") or {}).get("uuid")
+                        component["legacyLiteralFields"] = literal_fields
                         if "isInternal" in source_component:
                             component["isInternal"] = source_component["isInternal"] is True
                         if source_component.get("swidTagId"):

@@ -224,7 +224,7 @@ def validate_legacy_conditions(values):
     if not isinstance(values, list) or len(values) > 200: raise ValueError("legacyConditions는 최대 200개 목록입니다")
     ids=set()
     for value in values:
-        if not isinstance(value,dict) or set(value)-{"id","subject","operator","value","timeZone","publicationField","directOnly","licenses","field","coordinate","regexDialect"}: raise ValueError("고급 조건 구조가 올바르지 않습니다")
+        if not isinstance(value,dict) or set(value)-{"id","subject","operator","value","timeZone","publicationField","directOnly","licenses","field","coordinate","regexDialect","sourceSubject","sourceMinor","condition"}: raise ValueError("고급 조건 구조가 올바르지 않습니다")
         if not re.fullmatch(r"compat-[a-f0-9]{24}", str(value.get("id", ""))) or value["id"] in ids: raise ValueError("고급 조건 ID가 올바르지 않거나 중복입니다")
         ids.add(value["id"])
         canonical={key:item for key,item in value.items() if key!='id'}
@@ -244,6 +244,16 @@ def validate_legacy_conditions(values):
             if value.get("operator") not in {"IS","IS_NOT"}:raise ValueError("라이선스 연산자가 올바르지 않습니다")
             entries=value.get("licenses")
             if not isinstance(entries,list) or len(entries)>500 or any(not isinstance(e,dict) or set(e)-{"id","name"} or any(not isinstance(v,str) or len(v)>4096 for v in e.values()) for e in entries):raise ValueError("라이선스 정의가 올바르지 않습니다")
+        elif subject == "LEGACY_LITERAL":
+            from .legacy_literal import validate_spec
+            validate_spec(value)
+        elif subject == "LEGACY_PRE48":
+            from .legacy_pre48_counts import validate_condition
+            if set(value) != {"id","subject","condition","sourceMinor"} or type(value["sourceMinor"]) is not int or not 0 <= value["sourceMinor"] <= 7:
+                raise ValueError("구버전 조건 구조가 올바르지 않습니다")
+            validate_condition(value["condition"])
+            if value["condition"]["sourceMinor"] != value["sourceMinor"]:
+                raise ValueError("구버전 조건의 원본 minor 버전이 일치하지 않습니다")
         elif subject == "JAVA_REGEX":
             if set(value) != {"id","subject","operator","value","field","coordinate","regexDialect"} or value.get("field") not in _JAVA_FIELDS or type(value.get("coordinate")) is not bool or value.get("regexDialect") != "java21-legacy4":
                 raise ValueError("Java 정규식 helper 구조가 올바르지 않습니다")
@@ -365,6 +375,12 @@ def _generic_version_compare(actual, expected):
 
 def evaluate_condition(spec,component,at):
     subject=spec['subject']
+    if subject=='LEGACY_LITERAL':
+        from .legacy_literal import evaluate_count
+        return evaluate_count(spec,component)
+    if subject=='LEGACY_PRE48':
+        from .legacy_pre48_counts import evaluate_count
+        return evaluate_count(spec['condition'],component)
     if subject=='VERSION':
         if not isinstance(component.get('version'),str):raise LegacyDataUnavailable('구성요소 버전 확인 필요')
         return _compare(_generic_version_compare(component['version'],spec['value']),0,spec['operator'])
@@ -420,6 +436,8 @@ def prepare_legacy_contexts(rules,contexts,evaluated_at=None):
             component=activation.get('component') or {};component.setdefault('legacyConditions',{})
             for spec in specs:
                 evaluations+=1
+                if spec["subject"] == "LEGACY_PRE48" and spec["condition"].get("subject") in {"SEVERITY","CWE"}:
+                    evaluations += len(component.get("vulnerabilities") or [])
                 if evaluations>100_000:raise ValueError('고급 조건 평가 횟수가 100,000회 한도를 초과했습니다')
                 if spec['subject'] == 'JAVA_REGEX':
                     component['legacyConditions'][spec['id']] = java_results[(spec['id'], component_index)]
