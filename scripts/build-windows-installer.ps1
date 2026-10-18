@@ -135,14 +135,15 @@ if (-not $SkipDockerBuild) {
 }
 
 $remoteImageKeys = @(
-    "DTRACK_APISERVER_IMAGE",
-    "DTRACK_FRONTEND_IMAGE",
     "POSTGRES_IMAGE",
     "NGINX_IMAGE",
     "GRYPE_IMAGE",
     "CYCLONEDX_CLI_IMAGE",
     "ALPINE_BASE_IMAGE"
 )
+if ($env:KODA_INCLUDE_DEPENDENCY_TRACK -match '^(?i:true|1)$') {
+    $remoteImageKeys += @("DTRACK_APISERVER_IMAGE", "DTRACK_FRONTEND_IMAGE")
+}
 $remoteImages = foreach ($key in $remoteImageKeys) {
     $value = Get-DotEnvValue -Path $envExample -Name $key
     if ([string]::IsNullOrWhiteSpace($value)) { throw "$key 값이 .env.example에 없습니다." }

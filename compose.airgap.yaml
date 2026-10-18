@@ -7,6 +7,8 @@ services:
     pull_policy: never
   portal-worker:
     pull_policy: never
+  portal-metadata-collector:
+    pull_policy: never
   portal-data-updater:
     pull_policy: never
   postgres:

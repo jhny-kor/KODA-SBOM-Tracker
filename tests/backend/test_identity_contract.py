@@ -2,17 +2,20 @@ from __future__ import annotations
 
 import base64
 import uuid
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi import HTTPException, Request
 from fastapi.testclient import TestClient
-from sqlalchemy import delete
+from sqlalchemy import create_engine, delete, func, select
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 
 from koda_tracker.config import get_settings
-from koda_tracker.db import SessionLocal
-from koda_tracker.main import RegistrationRequest, _client_address, _consume_rate_limit, app, register
+from koda_tracker.db import Base, SessionLocal
+from koda_tracker.main import RegistrationRequest, _client_address, _consume_login_rate_limit, _consume_rate_limit, _ensure_bootstrap_admin, _is_loopback_bind, app, register
 from koda_tracker.models import AuthAttempt, Role, User
+from koda_tracker.security import hash_password, verify_password
 
 
 def _login(client: TestClient) -> None:
@@ -147,6 +150,14 @@ def test_forwarded_client_ip_is_used_only_for_trusted_proxy(monkeypatch) -> None
         get_settings.cache_clear()
 
 
+def test_only_loopback_bind_values_are_treated_as_local() -> None:
+    assert _is_loopback_bind("127.0.0.1")
+    assert _is_loopback_bind("::1")
+    assert _is_loopback_bind("localhost")
+    assert not _is_loopback_bind("0.0.0.0")
+    assert not _is_loopback_bind("192.0.2.10")
+
+
 def test_existing_usernames_are_normalized_on_startup() -> None:
     user_id = str(uuid.uuid4())
     with TestClient(app):
@@ -164,6 +175,27 @@ def test_existing_usernames_are_normalized_on_startup() -> None:
             db.commit()
 
 
+def test_bootstrap_admin_rejects_known_password_and_rotates_legacy_hash() -> None:
+    database = create_engine("sqlite://")
+    Base.metadata.create_all(database)
+    with Session(database) as db:
+        with pytest.raises(RuntimeError, match="invalid bootstrap"):
+            _ensure_bootstrap_admin(db, "admin", "change-me-admin-password")
+        assert db.scalar(select(func.count()).select_from(User)) == 0
+
+        user = User(
+            username="admin",
+            password_hash=hash_password("change-me-admin-password"),
+            role=Role.ADMIN,
+        )
+        db.add(user)
+        db.commit()
+        _ensure_bootstrap_admin(db, "admin", "new-bootstrap-password")
+        db.commit()
+        assert verify_password(user.password_hash, "new-bootstrap-password")
+        assert not verify_password(user.password_hash, "change-me-admin-password")
+
+
 def test_auth_rate_limit_is_shared_between_database_sessions() -> None:
     bucket = f"test-{uuid.uuid4()}"
     try:
@@ -178,6 +210,69 @@ def test_auth_rate_limit_is_shared_between_database_sessions() -> None:
         with SessionLocal() as db:
             db.execute(delete(AuthAttempt).where(AuthAttempt.kind == "test"))
             db.commit()
+
+
+def test_auth_rate_limit_prunes_expired_rows_across_rotated_buckets() -> None:
+    expired = datetime.now(UTC) - timedelta(hours=2)
+    with SessionLocal() as db:
+        db.add_all(
+            AuthAttempt(kind="rotating-test", bucket_hash=f"stale-{index}", created_at=expired)
+            for index in range(20)
+        )
+        db.commit()
+    try:
+        with SessionLocal() as db:
+            _consume_rate_limit(db, "rotating-test", "fresh", 5, 60)
+        with SessionLocal() as db:
+            assert db.query(AuthAttempt).filter(AuthAttempt.kind == "rotating-test").count() == 1
+    finally:
+        with SessionLocal() as db:
+            db.execute(delete(AuthAttempt).where(AuthAttempt.kind == "rotating-test"))
+            db.commit()
+
+
+def test_login_address_limit_cannot_be_evaded_by_rotating_usernames(monkeypatch) -> None:
+    settings = get_settings()
+    monkeypatch.setattr(settings, "login_address_limit", 2)
+    monkeypatch.setattr(settings, "login_account_limit", 10)
+    address = f"198.51.100.{uuid.uuid4().int % 200 + 1}"
+    try:
+        with SessionLocal() as db:
+            _consume_login_rate_limit(db, address, "first-user")
+        with SessionLocal() as db:
+            _consume_login_rate_limit(db, address, "second-user")
+        with SessionLocal() as db, pytest.raises(HTTPException) as blocked:
+            _consume_login_rate_limit(db, address, "third-user")
+        assert blocked.value.status_code == 429
+    finally:
+        with SessionLocal() as db:
+            db.execute(delete(AuthAttempt).where(AuthAttempt.kind.in_(("login-address", "login-account"))))
+            db.commit()
+
+
+def test_oversized_unauthenticated_json_is_rejected_before_validation() -> None:
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/auth/login",
+            content=b'{"username":"user","password":"' + (b"x" * (70 * 1024)) + b'"}',
+            headers={"Content-Type": "application/json"},
+        )
+    assert response.status_code == 413
+
+
+def test_oversized_chunked_json_without_content_length_is_rejected() -> None:
+    def chunks():
+        yield b'{"username":"user","password":"'
+        yield b"x" * (70 * 1024)
+        yield b'"}'
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/auth/login",
+            content=chunks(),
+            headers={"Content-Type": "application/json"},
+        )
+    assert response.status_code == 413
 
 
 def test_registration_does_not_hide_unrelated_integrity_errors(monkeypatch) -> None:

@@ -31,7 +31,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from .config import get_settings, session_cookie_name
 from .comparison import compare_components, compare_records
-from .db import Base, SessionLocal, engine, ensure_component_search_support, ensure_environment_active_column, ensure_ldap_subject_attribute_column, ensure_postgres_manager_enum, ensure_sbom_source_metadata_column, ensure_user_approval_state_column, ensure_user_identity_columns, get_db
+from .db import Base, SessionLocal, engine, ensure_component_search_support, ensure_environment_active_column, ensure_ldap_subject_attribute_column, ensure_native_policy_columns, ensure_postgres_manager_enum, ensure_sbom_source_metadata_column, ensure_user_approval_state_column, ensure_user_identity_columns, get_db
 from .dtrack import DependencyTrackClient
 from .models import (
     AnalysisRevision,
@@ -39,6 +39,7 @@ from .models import (
     AuthAttempt,
     AuditEvent,
     Environment,
+    FeatureUpgrade,
     Job,
     JobState,
     LdapSettings,
@@ -48,12 +49,13 @@ from .models import (
     RolePolicy,
     RunComponent,
     SbomRun,
+    SbomPolicyRevision,
     Service,
     User,
     UserSession,
     VulnerabilityDataBundle,
 )
-from .sbom import SbomValidationError, parse_sbom_file, store_artifact_file, validate_file_with_cyclonedx_cli
+from .sbom import SbomValidationError, parse_sbom_file, store_artifact_file, validate_component_count, validate_file_with_cyclonedx_cli
 from .security import (
     current_principal,
     digest,
@@ -68,16 +70,142 @@ from .security import (
     PERMISSION_CATALOG,
 )
 from .services import audit, create_components, enqueue
+from .policies import PolicyDocument, get_policy_document, validate_policy_expressions, validate_expression, preview_expression, policy_context_for_run
+from . import package_metadata_models, migration_models
+from .package_metadata_api import router as package_metadata_router
+from .migration_api import router as migration_router
+from .package_metadata import enrich_components
+from . import workflow_models
+from .reanalysis import ReanalysisSchedule, get_schedule
+from .reanalysis_api import router as reanalysis_router
+from .workflow_api import router as workflow_router
 from .vulnerability import active_bundle, cvss_score, project_cve_findings, scan_bundle_releases
 from .ldap_auth import LdapConfig, LdapConfigurationError, LdapInvalidCredentials, LdapUnavailable, authenticate_user
 
 
 logger = logging.getLogger(__name__)
+KNOWN_PASSWORD_PLACEHOLDERS = {
+    "change-me-admin-password",
+    "change-me",
+    "password",
+    "admin",
+}
+
+
+class RequestBodyTooLarge(Exception):
+    pass
+
+
+class RequestBodyLimitMiddleware:
+    """Reject oversized bodies before JSON or multipart parsing allocates them."""
+
+    def __init__(self, app):
+        self.app = app
+
+    @staticmethod
+    def _limit(scope: dict) -> int:
+        settings = get_settings()
+        path = scope.get("path", "")
+        method = scope.get("method", "GET")
+        if method == "POST" and path == "/api/v1/sbom-runs":
+            return settings.max_upload_bytes + (2 * 1024 * 1024)
+        if method == "POST" and path == "/api/v1/vulnerability-data-bundles/upload":
+            return (2 * 1024 * 1024 * 1024) + (2 * 1024 * 1024)
+        if method == "POST" and path in {"/api/v1/legacy-migrations/stage", "/api/v1/package-metadata/import"}:
+            return 64 * 1024 * 1024 + 1024
+        if method == "PUT" and path == "/api/v1/sbom-policies":
+            return 1024 * 1024
+        return settings.max_request_body_bytes
+
+    @staticmethod
+    def _response(path: str) -> JSONResponse:
+        return JSONResponse(
+            status_code=413,
+            content={
+                "type": "about:blank",
+                "title": "요청을 처리할 수 없습니다",
+                "status": 413,
+                "detail": "요청 본문이 허용된 크기를 초과했습니다",
+                "instance": path,
+            },
+            media_type="application/problem+json",
+        )
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+        limit = self._limit(scope)
+        headers = {key.lower(): value for key, value in scope.get("headers", [])}
+        raw_length = headers.get(b"content-length", b"")
+        if raw_length:
+            try:
+                if int(raw_length) > limit:
+                    await self._response(scope.get("path", ""))(scope, receive, send)
+                    return
+            except ValueError:
+                await self._response(scope.get("path", ""))(scope, receive, send)
+                return
+
+        # For small control-plane routes, pre-read at most 64 KiB so a client
+        # cannot bypass the 413 response by omitting Content-Length. Large
+        # upload routes keep streaming to disk and retain their own bounds.
+        if (
+            not raw_length
+            and scope.get("method") in {"POST", "PUT", "PATCH", "DELETE"}
+            and limit == get_settings().max_request_body_bytes
+        ):
+            buffered: list[dict] = []
+            total = 0
+            while True:
+                message = await receive()
+                buffered.append(message)
+                if message.get("type") == "http.request":
+                    total += len(message.get("body", b""))
+                    if total > limit:
+                        await self._response(scope.get("path", ""))(scope, receive, send)
+                        return
+                    if not message.get("more_body", False):
+                        break
+                elif message.get("type") == "http.disconnect":
+                    break
+
+            async def buffered_receive():
+                if buffered:
+                    return buffered.pop(0)
+                return {"type": "http.disconnect"}
+
+            await self.app(scope, buffered_receive, send)
+            return
+
+        received = 0
+        response_started = False
+
+        async def limited_receive():
+            nonlocal received
+            message = await receive()
+            if message.get("type") == "http.request":
+                received += len(message.get("body", b""))
+                if received > limit:
+                    raise RequestBodyTooLarge
+            return message
+
+        async def tracked_send(message):
+            nonlocal response_started
+            if message.get("type") == "http.response.start":
+                response_started = True
+            await send(message)
+
+        try:
+            await self.app(scope, limited_receive, tracked_send)
+        except RequestBodyTooLarge:
+            if not response_started:
+                await self._response(scope.get("path", ""))(scope, receive, send)
 
 
 class LoginRequest(BaseModel):
-    username: str
-    password: str
+    username: str = Field(min_length=1, max_length=256)
+    password: str = Field(min_length=1, max_length=1024)
     useLdap: bool = False
 
 
@@ -102,9 +230,9 @@ class LdapSettingsRequest(BaseModel):
 
 
 class RegistrationRequest(BaseModel):
-    username: str
-    password: str
-    passwordConfirm: str
+    username: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=1, max_length=1024)
+    passwordConfirm: str = Field(min_length=1, max_length=1024)
 
 
 class ServiceRequest(BaseModel):
@@ -119,8 +247,8 @@ class EnvironmentRequest(BaseModel):
 
 
 class UserRequest(BaseModel):
-    username: str
-    password: str
+    username: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=1, max_length=1024)
     role: Role
 
 
@@ -164,6 +292,10 @@ class RolePoliciesRequest(BaseModel):
     roles: dict[Role, list[str]]
 
 
+class SbomPolicyRequest(PolicyDocument):
+    expectedVersion: int = Field(ge=1)
+
+
 def problem(status: int, title: str, detail: str, request: Request) -> JSONResponse:
     return JSONResponse(
         status_code=status,
@@ -181,6 +313,8 @@ def problem(status: int, title: str, detail: str, request: Request) -> JSONRespo
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     settings = get_settings()
+    if not _is_loopback_bind(settings.public_bind) and settings.environment.lower() != "production":
+        raise RuntimeError("non-loopback Tracker exposure requires production mode")
     if settings.environment.lower() == "production" and (
         not settings.secure_cookies or not settings.public_origin.startswith("https://")
     ):
@@ -193,6 +327,7 @@ async def lifespan(_: FastAPI):
     ensure_component_search_support(engine)
     ensure_environment_active_column(engine)
     ensure_sbom_source_metadata_column(engine)
+    ensure_native_policy_columns(engine)
     # v1 uses create_all for a fresh install, but keep the one additive field
     # introduced by the vulnerability-data lifecycle backward compatible with
     # an already initialized portal database.
@@ -201,6 +336,19 @@ async def lifespan(_: FastAPI):
             connection.execute(text("ALTER TABLE analysis_revisions ADD COLUMN data_sources JSON"))
     _prune_scheduled_runs()
     with SessionLocal() as db:
+        first_extensions = db.get(FeatureUpgrade, "metadata-migration-v1") is None
+        if first_extensions:
+            db.add(FeatureUpgrade(name="metadata-migration-v1"))
+        first_workflows = db.get(ReanalysisSchedule, "default") is None
+        get_schedule(db)
+        first_native_policy = db.scalar(select(SbomPolicyRevision.version).limit(1)) is None
+        get_policy_document(db)
+        db.execute(
+            delete(AuthAttempt).where(
+                AuthAttempt.created_at
+                < datetime.now(UTC) - timedelta(seconds=settings.auth_attempt_retention_seconds)
+            )
+        )
         normalized_usernames: dict[str, str] = {}
         for user in db.scalars(select(User)):
             try:
@@ -225,26 +373,42 @@ async def lifespan(_: FastAPI):
                 db.add(RolePolicy(role=role, permissions=sorted(permissions)))
                 continue
             granted = set(policy.permissions or [])
+            if first_extensions:
+                if "runs.view" in granted:
+                    granted.add("metadata.view")
+                if "roles.manage" in granted:
+                    granted.update({"metadata.view", "metadata.manage", "migrations.manage"})
+            if first_workflows:
+                if "runs.view" in granted:
+                    granted.update({"vex.view", "notifications.view", "reanalysis.view"})
+                if "roles.manage" in granted:
+                    granted.update({"vex.manage", "vex.approve", "notifications.manage", "reanalysis.manage"})
+            if first_native_policy:
+                if "runs.view" in granted:
+                    granted.add("policies.view")
+                if "roles.manage" in granted:
+                    granted.update({"policies.view", "policies.manage"})
             if role == Role.ADMIN:
                 granted.add("sbom.delete")
             else:
                 granted.discard("sbom.delete")
             policy.permissions = sorted(granted)
-        bootstrap_username = _normalize_username(settings.bootstrap_admin_username)
-        if settings.bootstrap_admin_password and not db.scalar(select(User).where(func.lower(User.username) == bootstrap_username)):
-            db.add(
-                User(
-                    username=bootstrap_username,
-                    password_hash=hash_password(settings.bootstrap_admin_password),
-                    role=Role.ADMIN,
-                )
-            )
+        _ensure_bootstrap_admin(
+            db,
+            settings.bootstrap_admin_username,
+            settings.bootstrap_admin_password,
+        )
         db.commit()
     yield
 
 
 app = FastAPI(title="KODA SBOM Tracker API", version="0.1.0", lifespan=lifespan)
-_round_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+app.include_router(reanalysis_router)
+app.include_router(workflow_router)
+app.include_router(package_metadata_router)
+app.include_router(migration_router)
+app.add_middleware(RequestBodyLimitMiddleware)
+_upload_persist_lock = asyncio.Lock()
 
 
 def _prune_scheduled_runs(days: int = 90) -> int:
@@ -447,6 +611,66 @@ def _normalize_username(value: str) -> str:
     return username
 
 
+def _validate_local_password(value: str) -> str:
+    if len(value) < 12:
+        raise HTTPException(422, "비밀번호는 12자 이상이어야 합니다")
+    if len(value) > 1024:
+        raise HTTPException(422, "비밀번호는 1024자 이하여야 합니다")
+    if value.strip().casefold() in KNOWN_PASSWORD_PLACEHOLDERS:
+        raise HTTPException(422, "알려진 기본 비밀번호는 사용할 수 없습니다")
+    return value
+
+
+def _is_loopback_bind(value: str) -> bool:
+    candidate = value.strip().strip("[]")
+    if candidate.casefold() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(candidate).is_loopback
+    except ValueError:
+        return False
+
+
+def _ensure_bootstrap_admin(db: Session, username: str, password: str) -> None:
+    bootstrap_username = _normalize_username(username)
+    bootstrap_user = db.scalar(select(User).where(func.lower(User.username) == bootstrap_username))
+    if bootstrap_user is None:
+        if not password:
+            raise RuntimeError("fresh Tracker database requires an explicit TRACKER_BOOTSTRAP_ADMIN_PASSWORD")
+        try:
+            _validate_local_password(password)
+        except HTTPException as exc:
+            raise RuntimeError(f"invalid bootstrap administrator password: {exc.detail}") from exc
+        db.add(
+            User(
+                username=bootstrap_username,
+                password_hash=hash_password(password),
+                role=Role.ADMIN,
+            )
+        )
+        return
+    if not verify_password(bootstrap_user.password_hash, "change-me-admin-password"):
+        return
+    if not password:
+        raise RuntimeError(
+            "bootstrap administrator still uses the retired known password; set a strong "
+            "TRACKER_BOOTSTRAP_ADMIN_PASSWORD once to rotate it"
+        )
+    try:
+        _validate_local_password(password)
+    except HTTPException as exc:
+        raise RuntimeError(f"invalid bootstrap administrator replacement password: {exc.detail}") from exc
+    bootstrap_user.password_hash = hash_password(password)
+    audit(
+        db,
+        "system",
+        "user.bootstrap_password.rotate",
+        "user",
+        bootstrap_user.id,
+        {"username": bootstrap_user.username},
+    )
+
+
 def _client_address(request: Request) -> str:
     peer = request.client.host if request.client else "unknown"
     try:
@@ -478,7 +702,6 @@ def _consume_rate_limit(db: Session, kind: str, bucket: str, limit: int, window_
     db.execute(
         delete(AuthAttempt).where(
             AuthAttempt.kind == kind,
-            AuthAttempt.bucket_hash == bucket_hash,
             AuthAttempt.created_at < cutoff,
         )
     )
@@ -494,6 +717,28 @@ def _consume_rate_limit(db: Session, kind: str, bucket: str, limit: int, window_
         raise HTTPException(429, "인증 시도가 너무 많습니다. 잠시 후 다시 시도하세요")
     db.add(AuthAttempt(kind=kind, bucket_hash=bucket_hash))
     db.commit()
+
+
+def _consume_login_rate_limit(db: Session, address: str, username: str) -> None:
+    settings = get_settings()
+    _consume_rate_limit(
+        db,
+        "login-address",
+        address,
+        settings.login_address_limit,
+        settings.login_window_seconds,
+    )
+    _consume_rate_limit(
+        db,
+        "login-account",
+        f"{address}:{username.casefold()}",
+        settings.login_account_limit,
+        settings.login_window_seconds,
+    )
+
+
+def _clear_login_account_rate_limit(db: Session, address: str, username: str) -> None:
+    _clear_rate_limit(db, "login-account", f"{address}:{username.casefold()}")
 
 
 def _clear_rate_limit(db: Session, kind: str, bucket: str) -> None:
@@ -527,6 +772,81 @@ async def _stage_upload(upload: UploadFile, max_bytes: int) -> tuple[Path, str, 
         staged.close()
 
 
+def _consume_upload_rate_limit(db: Session, principal: User | ApiToken, service_id: str) -> None:
+    settings = get_settings()
+    bucket = f"service:{service_id}" if isinstance(principal, ApiToken) else f"user:{principal.id}"
+    _consume_rate_limit(
+        db,
+        "sbom-upload",
+        bucket,
+        settings.upload_rate_limit,
+        settings.upload_rate_window_seconds,
+    )
+
+
+def _enforce_upload_capacity(
+    db: Session,
+    service_id: str,
+    *,
+    raw_sha256: str | None = None,
+    size_bytes: int = 0,
+    component_count: int = 0,
+) -> None:
+    settings = get_settings()
+    queued = db.scalar(
+        select(func.count()).select_from(Job).where(Job.state.in_((JobState.QUEUED, JobState.RUNNING)))
+    ) or 0
+    if queued >= settings.max_queued_jobs:
+        raise HTTPException(429, "처리 대기열이 가득 찼습니다. 기존 작업 완료 후 다시 시도하세요")
+    if component_count > settings.max_sbom_components:
+        raise HTTPException(422, f"SBOM 구성요소 수가 제한({settings.max_sbom_components})을 초과했습니다")
+    service_run_count = db.scalar(
+        select(func.count())
+        .select_from(SbomRun)
+        .join(Release, SbomRun.release_id == Release.id)
+        .where(Release.service_id == service_id)
+    ) or 0
+    if service_run_count >= settings.max_service_runs:
+        raise HTTPException(507, "서비스별 SBOM 회차 보관 한도를 초과했습니다")
+    service_component_count = db.scalar(
+        select(func.count())
+        .select_from(RunComponent)
+        .join(SbomRun, RunComponent.run_id == SbomRun.id)
+        .join(Release, SbomRun.release_id == Release.id)
+        .where(Release.service_id == service_id)
+    ) or 0
+    if int(service_component_count) + component_count > settings.max_service_components:
+        raise HTTPException(507, "서비스별 누적 구성요소 보관 한도를 초과했습니다")
+    if not raw_sha256 or size_bytes <= 0:
+        return
+    ingested_bytes = db.scalar(
+        select(func.coalesce(func.sum(SbomRun.size_bytes), 0))
+        .select_from(SbomRun)
+        .join(Release, SbomRun.release_id == Release.id)
+        .where(Release.service_id == service_id)
+    ) or 0
+    if int(ingested_bytes) + size_bytes > settings.max_service_ingested_bytes:
+        raise HTTPException(507, "서비스별 누적 SBOM 데이터 한도를 초과했습니다")
+    already_stored = db.scalar(
+        select(SbomRun.id)
+        .join(Release, SbomRun.release_id == Release.id)
+        .where(Release.service_id == service_id, SbomRun.sha256 == raw_sha256)
+        .limit(1)
+    )
+    if already_stored:
+        return
+    unique_artifacts = (
+        select(SbomRun.sha256.label("sha256"), func.max(SbomRun.size_bytes).label("size_bytes"))
+        .join(Release, SbomRun.release_id == Release.id)
+        .where(Release.service_id == service_id)
+        .group_by(SbomRun.sha256)
+        .subquery()
+    )
+    stored_bytes = db.scalar(select(func.coalesce(func.sum(unique_artifacts.c.size_bytes), 0))) or 0
+    if int(stored_bytes) + size_bytes > settings.max_service_storage_bytes:
+        raise HTTPException(507, "서비스별 SBOM 저장 한도를 초과했습니다")
+
+
 @app.exception_handler(HTTPException)
 async def http_problem(request: Request, exc: HTTPException):
     return problem(exc.status_code, "요청을 처리할 수 없습니다", str(exc.detail), request)
@@ -546,7 +866,10 @@ def health() -> dict:
 async def dependency_track_status(
     _=Depends(require_permission("dtrack.settings")),
 ) -> dict:
-    return await DependencyTrackClient().status()
+    if not get_settings().dependency_track_enabled:
+        return {"enabled": False, "configured": False, "reachable": False, "authenticated": False,
+                "version": None, "team": None, "permissions": [], "missingPermissions": []}
+    return {**await DependencyTrackClient().status(), "enabled": True}
 
 
 @app.get("/api/v1/settings/ldap")
@@ -650,8 +973,8 @@ def login(body: LoginRequest, request: Request, response: Response, db: Session 
         username = body.username.strip()
         if not username or len(username) > 256:
             raise HTTPException(401, "사용자 이름 또는 비밀번호가 올바르지 않습니다")
-        bucket = f"{_client_address(request)}:{username.casefold()}"
-        _consume_rate_limit(db, "login", bucket, 10, 300)
+        address = _client_address(request)
+        _consume_login_rate_limit(db, address, username)
         row = db.get(LdapSettings, "default")
         if row is None or not row.enabled:
             return _ldap_error("ldap_not_configured", "LDAP 로그인이 구성되지 않았습니다")
@@ -708,41 +1031,40 @@ def login(body: LoginRequest, request: Request, response: Response, db: Session 
                 raise HTTPException(409, "LDAP 사용자 계정을 생성하는 중 충돌이 발생했습니다") from exc
             audit(db, "ldap", "user.provision", "user", user.id, {"username": user.username, "role": user.role.value})
         if user.approval_state == "pending":
-            _clear_rate_limit(db, "login", bucket)
+            _clear_login_account_rate_limit(db, address, username)
             db.commit()
             raise HTTPException(403, "계정이 관리자 승인 대기 중입니다")
         if not user.active or user.approval_state == "deleted":
-            _clear_rate_limit(db, "login", bucket)
+            _clear_login_account_rate_limit(db, address, username)
             db.commit()
             raise HTTPException(403, "비활성화된 계정입니다")
-        _clear_rate_limit(db, "login", bucket)
+        _clear_login_account_rate_limit(db, address, username)
         return _complete_login(db, response, user)
     try:
         username = _normalize_username(body.username)
     except HTTPException:
         username = body.username.strip().lower()
-    bucket = f"{_client_address(request)}:{username}"
-    _consume_rate_limit(db, "login", bucket, 10, 300)
+    address = _client_address(request)
+    _consume_login_rate_limit(db, address, username)
     user = db.scalar(select(User).where(func.lower(User.username) == username))
     if not user or not verify_password(user.password_hash, body.password):
         raise HTTPException(401, "사용자 이름 또는 비밀번호가 올바르지 않습니다")
     if user.approval_state == "pending":
-        _clear_rate_limit(db, "login", bucket)
+        _clear_login_account_rate_limit(db, address, username)
         db.commit()
         raise HTTPException(403, "계정이 관리자 승인 대기 중입니다")
     if not user.active:
-        _clear_rate_limit(db, "login", bucket)
+        _clear_login_account_rate_limit(db, address, username)
         db.commit()
         raise HTTPException(403, "비활성화된 계정입니다")
-    _clear_rate_limit(db, "login", bucket)
+    _clear_login_account_rate_limit(db, address, username)
     return _complete_login(db, response, user)
 
 
 @app.post("/api/v1/auth/register", status_code=202)
 def register(body: RegistrationRequest, request: Request, db: Session = Depends(get_db)) -> dict:
     username = _normalize_username(body.username)
-    if len(body.password) < 12:
-        raise HTTPException(422, "비밀번호는 12자 이상이어야 합니다")
+    _validate_local_password(body.password)
     if body.password != body.passwordConfirm:
         raise HTTPException(422, "비밀번호 확인이 일치하지 않습니다")
 
@@ -914,6 +1236,93 @@ def _validate_permissions(permissions: list[str], role: Role | None = None) -> l
         raise HTTPException(422, "sbom.delete 권한은 관리자 역할에만 부여할 수 있습니다")
     return sorted(permissions)
 
+def _sbom_policy_payload(item: SbomPolicyRevision) -> dict:
+    return {
+        **item.document,
+        "version": item.version,
+        "createdAt": (item.created_at.replace(tzinfo=UTC) if item.created_at.tzinfo is None else item.created_at).isoformat(),
+        "createdBy": item.created_by,
+    }
+
+
+@app.get("/api/v1/sbom-policies")
+def get_sbom_policies(
+    db: Session = Depends(get_db),
+    _=Depends(require_permission("policies.view", "policies.manage")),
+) -> dict:
+    return _sbom_policy_payload(get_policy_document(db))
+
+
+@app.get("/api/v1/sbom-policies/history")
+def get_sbom_policy_history(
+    page: int = Query(default=1, ge=1),
+    size: int = Query(default=20, ge=1, le=100),
+    db: Session = Depends(get_db),
+    _=Depends(require_permission("policies.view", "policies.manage")),
+) -> dict:
+    return {
+        "items": [
+            _sbom_policy_payload(item)
+            for item in db.scalars(select(SbomPolicyRevision).order_by(SbomPolicyRevision.version.desc()).offset((page - 1) * size).limit(size))
+        ],
+        "total": db.scalar(select(func.count()).select_from(SbomPolicyRevision)) or 0,
+        "page": page,
+        "size": size,
+    }
+
+
+@app.put("/api/v1/sbom-policies")
+def update_sbom_policies(
+    body: SbomPolicyRequest,
+    db: Session = Depends(get_db),
+    principal=Depends(require_permission("policies.manage")),
+    _csrf=Depends(require_csrf),
+) -> dict:
+    for rule in body.rules:
+        for ids, model in ((rule.serviceIds, Service), (rule.environmentIds, Environment), (rule.runIds, SbomRun)):
+            if ids and set(ids) != set(db.scalars(select(model.id).where(model.id.in_(ids)))):
+                raise HTTPException(422, "정책 범위에 존재하지 않는 서비스 또는 환경이 있습니다")
+    try:
+        validate_policy_expressions(body)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    current = db.scalar(select(SbomPolicyRevision).order_by(SbomPolicyRevision.version.desc()).limit(1).with_for_update())
+    if current is None or current.version != body.expectedVersion:
+        raise HTTPException(409, "다른 사용자가 정책을 변경했습니다. 최신 정책을 다시 불러오세요")
+    item = SbomPolicyRevision(
+        version=current.version + 1,
+        document=body.model_dump(mode="json", exclude={"expectedVersion"}),
+        created_by=_principal_actor(principal),
+    )
+    db.add(item)
+    audit(db, _principal_actor(principal), "sbom_policy.update", "sbom_policy", str(item.version), {"previousVersion": current.version, "version": item.version})
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(409, "정책이 동시에 변경됐습니다. 최신 정책을 다시 불러오세요") from exc
+    return _sbom_policy_payload(item)
+
+
+class CelValidationRequest(BaseModel):
+    expression: str = Field(min_length=1, max_length=16384)
+    target: Literal["component", "vulnerability", "project"] = "vulnerability"
+    runId: str | None = None
+
+
+@app.post("/api/v1/sbom-policies/validate")
+def validate_cel_policy(body: CelValidationRequest, db: Session = Depends(get_db), _=Depends(require_permission("policies.manage")), _csrf=Depends(require_csrf)):
+    try:
+        result = validate_expression(body.expression, body.target)
+        if body.runId:
+            run = _load_run(db, body.runId, include_components=True, include_analyses=True)
+            latest = max(run.analyses, key=lambda item: item.sequence, default=None)
+            result.update(preview_expression(body.expression, body.target, enrich_components(db, run.normalized_bom.get("components", [])), latest.findings if latest else [], policy_context_for_run(run)))
+        return result
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
 @app.get("/api/v1/role-policies")
 def list_role_policies(db: Session = Depends(get_db), _=Depends(require_permission("roles.manage"))) -> dict:
     return {"catalog": list(PERMISSION_CATALOG), "roles": [{"role": role.value, "permissions": sorted((db.get(RolePolicy, role) or RolePolicy(role=role, permissions=[])).permissions or [])} for role in Role]}
@@ -967,6 +1376,15 @@ def list_users(db: Session = Depends(get_db), _=Depends(require_permission("user
     ]
 
 
+def _require_privileged_role_management(db: Session, principal: User, *roles: Role | None) -> None:
+    if not any(role in {Role.ADMIN, Role.MANAGER} for role in roles):
+        return
+    policy = db.get(RolePolicy, principal.role)
+    granted = set(policy.permissions if policy else DEFAULT_ROLE_PERMISSIONS.get(principal.role, ()))
+    if "roles.manage" not in granted:
+        raise HTTPException(403, "관리자 또는 매니저 계정 변경에는 roles.manage 권한이 필요합니다")
+
+
 @app.post("/api/v1/users", status_code=201)
 def create_user(
     body: UserRequest,
@@ -975,13 +1393,9 @@ def create_user(
     _csrf=Depends(require_csrf),
 ) -> dict:
     username = _normalize_username(body.username)
-    if not body.password:
-        raise HTTPException(422, "비밀번호를 입력하세요")
+    _validate_local_password(body.password)
+    _require_privileged_role_management(db, principal, body.role)
     user = User(username=username, password_hash=hash_password(body.password), role=body.role)
-    if body.role in {Role.ADMIN, Role.MANAGER}:
-        policy = db.get(RolePolicy, principal.role)
-        if "roles.manage" not in set(policy.permissions if policy else DEFAULT_ROLE_PERMISSIONS.get(principal.role, ())):
-            raise HTTPException(403, "관리자 역할 변경에는 roles.manage 권한이 필요합니다")
     try:
         db.add(user)
         db.flush()
@@ -1011,10 +1425,7 @@ def patch_user(
         raise HTTPException(422, "현재 로그인한 관리자 계정은 비활성화할 수 없습니다")
     if user.approval_state == "deleted" and body.active is True:
         raise HTTPException(422, "삭제된 사용자 계정은 다시 활성화할 수 없습니다")
-    if user.role in {Role.ADMIN, Role.MANAGER} or body.role in {Role.ADMIN, Role.MANAGER}:
-        policy = db.get(RolePolicy, principal.role)
-        if "roles.manage" not in set(policy.permissions if policy else DEFAULT_ROLE_PERMISSIONS.get(principal.role, ())):
-            raise HTTPException(403, "관리자 계정 변경에는 roles.manage 권한이 필요합니다")
+    _require_privileged_role_management(db, principal, user.role, body.role)
     if body.role is not None:
         user.role = body.role
     if body.active is not None:
@@ -1040,11 +1451,7 @@ def delete_user(
         raise HTTPException(404, "사용자를 찾을 수 없습니다")
     if user.id == principal.id:
         raise HTTPException(422, "현재 로그인한 계정은 삭제할 수 없습니다")
-    if user.role in {Role.ADMIN, Role.MANAGER}:
-        policy = db.get(RolePolicy, principal.role)
-        granted = set(policy.permissions if policy else DEFAULT_ROLE_PERMISSIONS.get(principal.role, ()))
-        if "roles.manage" not in granted:
-            raise HTTPException(403, "관리자 계정 삭제에는 roles.manage 권한이 필요합니다")
+    _require_privileged_role_management(db, principal, user.role)
     receipt = {"id": user.id, "username": user.username, "role": user.role.value, "status": "deleted"}
     try:
         db.execute(delete(UserSession).where(UserSession.user_id == user.id))
@@ -1072,6 +1479,7 @@ def approve_user(
         raise HTTPException(404, "사용자를 찾을 수 없습니다")
     if user.approval_state != "pending":
         raise HTTPException(409, "가입 승인 대기 계정이 아닙니다")
+    _require_privileged_role_management(db, principal, user.role)
     user.approval_state = "approved"
     user.active = True
     db.flush()
@@ -1456,7 +1864,7 @@ def _persist_run(
     if len(json.dumps(metadata, ensure_ascii=False).encode("utf-8")) > 64 * 1024:
         raise HTTPException(422, "예약 점검 메타데이터가 너무 큽니다")
     if db.bind and db.bind.dialect.name == "postgresql":
-        lock_material = f"{service.id}:{environment.id}:{release_version}".encode()
+        lock_material = b"sbom-upload-admission"
         advisory_key = int.from_bytes(hashlib.sha256(lock_material).digest()[:8], "big", signed=True)
         db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": advisory_key})
     if idempotency_key:
@@ -1465,6 +1873,13 @@ def _persist_run(
         )
         if existing:
             return {"runId": existing.id, "state": existing.state, "idempotentReplay": True}
+    _enforce_upload_capacity(
+        db,
+        service.id,
+        raw_sha256=raw_sha256,
+        size_bytes=size_bytes,
+        component_count=len(payload.get("components", [])),
+    )
     release = db.scalar(
         select(Release).where(
             Release.service_id == service.id,
@@ -1525,6 +1940,14 @@ async def upload_sbom(
 ) -> dict:
     if isinstance(principal, ApiToken) and principal.service_id and principal.service_id != service_id:
         raise HTTPException(403, "이 토큰에는 해당 서비스 업로드 권한이 없습니다")
+    if not service_id or len(service_id) > 64 or not environment_id or len(environment_id) > 64:
+        raise HTTPException(422, "서비스 또는 환경 식별자가 올바르지 않습니다")
+    if not release_version.strip() or len(release_version) > 255:
+        raise HTTPException(422, "릴리스 버전은 1~255자여야 합니다")
+    if len(note) > 4096:
+        raise HTTPException(422, "업로드 메모가 너무 깁니다")
+    if idempotency_key is not None and len(idempotency_key) > 255:
+        raise HTTPException(422, "Idempotency-Key가 너무 깁니다")
     source_value = str(source or "").strip().lower()
     if source_value not in {"", "manual", "api", "scheduled"}:
         raise HTTPException(422, "SBOM 출처가 올바르지 않습니다")
@@ -1535,6 +1958,16 @@ async def upload_sbom(
         )
         if existing:
             return {"runId": existing.id, "state": existing.state, "idempotentReplay": True}
+    service = db.get(Service, service_id)
+    environment = db.get(Environment, environment_id)
+    if not service or not environment:
+        raise HTTPException(404, "서비스 또는 환경을 찾을 수 없습니다")
+    if not service.active:
+        raise HTTPException(409, "비활성 서비스에는 SBOM을 업로드할 수 없습니다")
+    if not environment.active:
+        raise HTTPException(409, "비활성 환경에는 SBOM을 업로드할 수 없습니다")
+    _consume_upload_rate_limit(db, principal, service_id)
+    _enforce_upload_capacity(db, service_id)
     parsed_source_metadata: dict = {}
     if source_metadata:
         try:
@@ -1548,6 +1981,7 @@ async def upload_sbom(
     try:
         try:
             payload, media_type = parse_sbom_file(staged_path)
+            validate_component_count(payload, get_settings().max_sbom_components)
             input_format = "json" if media_type.endswith("+json") else "xml"
             validate_file_with_cyclonedx_cli(
                 staged_path,
@@ -1556,20 +1990,11 @@ async def upload_sbom(
             )
         except SbomValidationError as exc:
             raise HTTPException(422, str(exc)) from exc
-        service = db.get(Service, service_id)
-        environment = db.get(Environment, environment_id)
-        if not service or not environment:
-            raise HTTPException(404, "서비스 또는 환경을 찾을 수 없습니다")
-        if not service.active:
-            raise HTTPException(409, "비활성 서비스에는 SBOM을 업로드할 수 없습니다")
-        if not environment.active:
-            raise HTTPException(409, "비활성 환경에는 SBOM을 업로드할 수 없습니다")
         if source_value == "scheduled":
             environment = _scheduled_environment(
                 db, service=service, requested=environment, metadata=parsed_source_metadata
             )
-        lock_key = f"{service.id}:{environment.id}:{release_version}"
-        async with _round_locks[lock_key]:
+        async with _upload_persist_lock:
             return _persist_run(
                 db,
                 principal=principal,
@@ -1590,6 +2015,35 @@ async def upload_sbom(
             )
     finally:
         staged_path.unlink(missing_ok=True)
+
+
+def _native_policy_result(analysis: AnalysisRevision | None, *, include_evidence: bool = False) -> dict:
+    state = analysis.policy_state if analysis else "not_evaluated"
+    status = state
+    if state == "completed":
+        status = (analysis.metrics or {}).get("policyStatus")
+        if status not in {"pass", "warn", "fail"}:
+            active = [record for record in analysis.policies or [] if not record.get("suppressed", False)]
+            status = "fail" if any(record.get("action") == "fail" for record in active) else "warn" if active else "pass"
+    payload = {
+        "analysisId": analysis.id if analysis else None,
+        "policyState": state,
+        "policyStatus": status,
+        "policyVersion": analysis.policy_version if analysis else None,
+        "policyError": analysis.policy_error if analysis else None,
+        "analysisMetrics": (analysis.metrics or {}) if analysis else {},
+    }
+    if include_evidence:
+        payload["policySnapshot"] = (analysis.policy_snapshot or {}) if analysis else {}
+    return payload
+
+
+def _policy_count(analysis: AnalysisRevision | None) -> int:
+    if analysis is None:
+        return 0
+    if analysis.policy_state == "completed" and "policyViolationCount" in (analysis.metrics or {}):
+        return int(analysis.metrics["policyViolationCount"])
+    return sum(not row.get("suppressed", False) for row in analysis.policies or [])
 
 
 def _run_payload(
@@ -1624,6 +2078,8 @@ def _run_payload(
         "source": item.source or "manual",
         "sourceMetadata": item.source_metadata or {},
         "analysisState": item.analysis_state,
+        **_native_policy_result(latest),
+        "dependencyTrackEnabled": get_settings().dependency_track_enabled,
         "dependencyTrackState": item.dtrack_state,
         "sha256": item.sha256,
         "sizeBytes": item.size_bytes,
@@ -1635,7 +2091,7 @@ def _run_payload(
         "vulnerableComponentCount": len(vulnerable_components),
         "severityCounts": dict(severity_counts),
         "kevCount": sum(1 for finding in findings if finding.get("kev") is True),
-        "policyViolationCount": len(latest.policies) if latest else 0,
+        "policyViolationCount": _policy_count(latest),
         "dataAsOf": latest.data_as_of if latest else None,
         "cveDataAsOf": _cve_data_as_of(latest),
         "analysisDataSources": (latest.data_sources or {}) if latest else {},
@@ -1681,6 +2137,7 @@ def koda_run_result(
             "cveDataAsOf": _cve_data_as_of(latest),
             "findings": project_cve_findings(latest.findings or []),
             "policyViolations": latest.policies or [],
+            **_native_policy_result(latest),
             "error": latest.error,
         },
     }
@@ -1701,7 +2158,7 @@ def list_runs(
     query = select(SbomRun).options(
         selectinload(SbomRun.release).selectinload(Release.service),
         selectinload(SbomRun.release).selectinload(Release.environment),
-        selectinload(SbomRun.analyses),
+        selectinload(SbomRun.analyses).defer(AnalysisRevision.policies).defer(AnalysisRevision.policy_snapshot),
     )
     if service_id:
         query = query.join(Release).where(Release.service_id == service_id)
@@ -1761,6 +2218,7 @@ def _load_run(
     *,
     include_components: bool = False,
     include_analyses: bool = False,
+    include_policy_records: bool = True,
     for_update: bool = False,
 ) -> SbomRun:
     options = [
@@ -1770,7 +2228,10 @@ def _load_run(
     if include_components:
         options.append(selectinload(SbomRun.components))
     if include_analyses:
-        options.append(selectinload(SbomRun.analyses))
+        analyses = selectinload(SbomRun.analyses)
+        if not include_policy_records:
+            analyses = analyses.defer(AnalysisRevision.policies)
+        options.append(analyses)
     query = select(SbomRun)
     if for_update:
         query = query.with_for_update()
@@ -1790,11 +2251,11 @@ def get_run(
     db: Session = Depends(get_db),
     _=Depends(require_permission("runs.view")),
 ) -> dict:
-    item = _load_run(db, run_id, include_analyses=True)
+    item = _load_run(db, run_id, include_analyses=True, include_policy_records=False)
     component_count = db.scalar(
         select(func.count()).select_from(RunComponent).where(RunComponent.run_id == run_id)
     ) or 0
-    payload = _run_payload(item, component_count=component_count)
+    payload = {**_run_payload(item, component_count=component_count), **_native_policy_result(max(item.analyses, key=lambda value: value.sequence, default=None), include_evidence=True)}
     payload["components"] = []
     payload["analyses"] = [
         {
@@ -1806,7 +2267,8 @@ def get_run(
             "toolVersion": analysis.tool_version,
             "dataSources": analysis.data_sources or {},
             "findingCount": len(project_cve_findings(analysis.findings)),
-            "policyCount": len(analysis.policies or []),
+            "policyCount": _policy_count(analysis),
+            **_native_policy_result(analysis, include_evidence=True),
             "error": analysis.error,
         }
         for analysis in sorted(item.analyses, key=lambda value: value.sequence, reverse=True)
@@ -1895,6 +2357,28 @@ def get_run_findings(
     }
 
 
+@app.get("/api/v1/sbom-runs/{run_id}/policy-violations")
+def get_run_policy_violations(
+    run_id: str,
+    analysis_id: str | None = Query(default=None, alias="analysisId"),
+    page: int = Query(default=1, ge=1),
+    size: int = Query(default=25, ge=1, le=100),
+    db: Session = Depends(get_db),
+    _=Depends(require_permission("runs.view")),
+) -> dict:
+    if db.get(SbomRun, run_id) is None:
+        raise HTTPException(404, "SBOM 회차를 찾을 수 없습니다")
+    query = select(AnalysisRevision).where(AnalysisRevision.run_id == run_id)
+    if analysis_id:
+        query = query.where(AnalysisRevision.id == analysis_id)
+    analysis = db.scalar(query.order_by(AnalysisRevision.sequence.desc()).limit(1))
+    if analysis_id and analysis is None:
+        raise HTTPException(404, "이 회차의 분석 리비전을 찾을 수 없습니다")
+    records = (analysis.policies or []) if analysis else []
+    start = (page - 1) * size
+    return {"analysisId": analysis.id if analysis else None, "items": records[start:start + size], "page": page, "size": size, "total": len(records)}
+
+
 @app.get("/api/v1/sbom-runs/{run_id}/artifact")
 def download_artifact(
     run_id: str,
@@ -1912,12 +2396,13 @@ def retry_dependency_track(
     principal=Depends(require_permission("dtrack.retry")),
     _csrf=Depends(require_csrf),
 ) -> dict:
+    if not get_settings().dependency_track_enabled:
+        raise HTTPException(409, "선택 연동 Dependency-Track이 비활성화돼 있습니다")
     run = _load_run(db, run_id, for_update=True)
     if run.archived_at is not None or run.state == ProcessingState.ARCHIVED:
         raise HTTPException(409, "보관된 회차는 다시 처리할 수 없습니다")
     run.dtrack_state = JobState.QUEUED
     run.dtrack_error = None
-    run.state = ProcessingState.PROCESSING
     job = enqueue(db, "sync_dependency_track", run.id)
     audit(db, _principal_actor(principal), "dtrack.retry", "sbom_run", run.id)
     db.commit()
@@ -1934,6 +2419,11 @@ def create_analysis(
     run = _load_run(db, run_id, for_update=True)
     if run.archived_at is not None or run.state == ProcessingState.ARCHIVED:
         raise HTTPException(409, "보관된 회차는 다시 분석할 수 없습니다")
+    existing = db.scalar(select(Job).where(Job.run_id == run.id, Job.kind.in_(["analyze", "process_run"]), Job.state.in_([JobState.QUEUED, JobState.RUNNING])).order_by(Job.created_at).limit(1))
+    if existing:
+        return {"jobId": existing.id, "runId": run.id}
+    if (db.scalar(select(func.count()).select_from(Job).where(Job.state.in_([JobState.QUEUED, JobState.RUNNING]))) or 0) >= get_settings().max_queued_jobs:
+        raise HTTPException(429, "처리 대기열이 가득 찼습니다. 기존 작업 완료 후 다시 시도하세요")
     run.analysis_state = JobState.QUEUED
     run.state = ProcessingState.PROCESSING
     job = enqueue(db, "analyze", run.id)
@@ -2080,11 +2570,11 @@ def compare_runs(
     policy_changes = compare_records(
         base_analysis.policies if base_analysis else [],
         target_analysis.policies if target_analysis else [],
-        keys=("rule", "component"),
+        keys=("policyId", "rule", "name", "component", "componentVersion", "vulnerabilityId"),
     )
     return {
-        "base": {"runId": base.id, "sha256": base.sha256, "dataAsOf": base_analysis.data_as_of if base_analysis else None, "cveDataAsOf": _cve_data_as_of(base_analysis), "artifactUrl": f"/api/v1/sbom-runs/{base.id}/artifact"},
-        "target": {"runId": target.id, "sha256": target.sha256, "dataAsOf": target_analysis.data_as_of if target_analysis else None, "cveDataAsOf": _cve_data_as_of(target_analysis), "artifactUrl": f"/api/v1/sbom-runs/{target.id}/artifact"},
+        "base": {"runId": base.id, "sha256": base.sha256, "dataAsOf": base_analysis.data_as_of if base_analysis else None, "cveDataAsOf": _cve_data_as_of(base_analysis), "policyState": base_analysis.policy_state if base_analysis else "not_evaluated", "policyVersion": base_analysis.policy_version if base_analysis else None, "dependencyTrackEnabled": get_settings().dependency_track_enabled, "artifactUrl": f"/api/v1/sbom-runs/{base.id}/artifact"},
+        "target": {"runId": target.id, "sha256": target.sha256, "dataAsOf": target_analysis.data_as_of if target_analysis else None, "cveDataAsOf": _cve_data_as_of(target_analysis), "policyState": target_analysis.policy_state if target_analysis else "not_evaluated", "policyVersion": target_analysis.policy_version if target_analysis else None, "dependencyTrackEnabled": get_settings().dependency_track_enabled, "artifactUrl": f"/api/v1/sbom-runs/{target.id}/artifact"},
         "summary": {
             "componentsAdded": sum(item["change"] == "added" for item in component_changes),
             "componentsRemoved": sum(item["change"] == "removed" for item in component_changes),

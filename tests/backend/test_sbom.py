@@ -13,6 +13,7 @@ from koda_tracker.sbom import (
     parse_sbom_file,
     store_artifact,
     store_artifact_file,
+    validate_component_count,
     validate_file_with_cyclonedx_cli,
     validate_with_cyclonedx_cli,
 )
@@ -102,3 +103,9 @@ def test_file_parser_and_store_keep_upload_on_disk(tmp_path) -> None:
     assert source.read_bytes() == raw
     assert stored.read_bytes() == raw
     assert digest == hashlib.sha256(raw).hexdigest()
+
+
+def test_component_count_is_bounded_before_rows_are_created() -> None:
+    payload = {"bomFormat": "CycloneDX", "specVersion": "1.6", "components": [{}, {}]}
+    with pytest.raises(SbomValidationError, match="구성요소"):
+        validate_component_count(payload, 1)

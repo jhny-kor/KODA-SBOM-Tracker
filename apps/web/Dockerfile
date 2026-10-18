@@ -19,6 +19,13 @@ COPY LICENSE NOTICE THIRD_PARTY_NOTICES.md /app/dist/legal/
 
 FROM ${NGINX_IMAGE}
 LABEL org.opencontainers.image.licenses="Apache-2.0"
+USER root
+# Compose may provide the standard nginx image as well as nginx-unprivileged.
+# Keep runtime non-root in either case, including cache creation and PID writes.
+RUN mkdir -p /var/cache/nginx /var/log/nginx \
+    && chown -R nginx:nginx /var/cache/nginx /var/log/nginx \
+    && sed -i -e '/^[[:space:]]*user[[:space:]]/d' \
+              -e 's#^[[:space:]]*pid[[:space:]].*;#pid /tmp/nginx.pid;#' /etc/nginx/nginx.conf
 COPY --from=build /app/dist /usr/share/nginx/html
 COPY apps/web/nginx.conf /etc/nginx/conf.d/default.conf
 USER nginx

@@ -502,7 +502,8 @@ def test_vulnerability_bundle_sync_registers_current_release(monkeypatch, tmp_pa
         get_settings.cache_clear()
 
 
-def test_run_retry_reanalysis_and_logical_archive_keep_artifact() -> None:
+def test_run_retry_reanalysis_and_logical_archive_keep_artifact(monkeypatch) -> None:
+    monkeypatch.setattr(get_settings(), "dependency_track_enabled", True)
     sbom = json.dumps({"bomFormat": "CycloneDX", "specVersion": "1.6", "components": []}).encode()
     with TestClient(app) as client:
         login = client.post(

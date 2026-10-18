@@ -21,6 +21,10 @@ from .models import (
     SbomRun,
 )
 from .sbom import licenses_for, normalized_identity, sha256_for
+from . import package_metadata_models
+from .package_metadata import enqueue_components
+from . import workflow_models  # Register workflow tables before standalone create_all callers.
+from .policies import evaluate_revision
 from .vulnerability import active_bundle, load_context, normalize_finding
 
 
@@ -28,6 +32,7 @@ def create_components(db: Session, run: SbomRun) -> None:
     if db.scalar(select(func.count()).select_from(RunComponent).where(RunComponent.run_id == run.id)):
         return
     raw_components = run.normalized_bom.get("components", [])
+    enqueue_components(db, raw_components)
     identities = [normalized_identity(raw)[0] for raw in raw_components]
     duplicates = Counter(identities)
     for index, raw in enumerate(raw_components):
@@ -66,19 +71,26 @@ def analyze_offline(db: Session, run: SbomRun) -> AnalysisRevision:
     revision = AnalysisRevision(run_id=run.id, sequence=sequence, state=JobState.RUNNING)
     db.add(revision)
     db.flush()
+    if isinstance(run, SbomRun):
+        enqueue_components(db, (run.normalized_bom or {}).get("components", []))
     findings: list[dict] = []
-    settings = get_settings()
-    initial_bundle = active_bundle(settings)
-    context = load_context(settings, release_path=initial_bundle.path) if initial_bundle else load_context(settings)
-    env = os.environ.copy()
-    # Pin the immutable composite release for this analysis.  A concurrent
-    # offline data update may switch ``current`` while Grype is running.
-    env["GRYPE_DB_CACHE_DIR"] = str(
-        context.bundle.path / "grype-db" if context.bundle is not None else settings.grype_db_dir
-    )
-    env["GRYPE_DB_AUTO_UPDATE"] = "false"
-    env["GRYPE_DB_VALIDATE_AGE"] = "false"
     try:
+        settings = get_settings()
+        initial_bundle = active_bundle(settings)
+        context = load_context(settings, release_path=initial_bundle.path) if initial_bundle else load_context(settings)
+        revision.data_sources = context.sources
+        revision.data_as_of = context.bundle.data_as_of if context.bundle else "unknown"
+        if context.bundle is None:
+            metadata_path = settings.grype_db_dir.parent / "metadata.env"
+            revision.data_as_of = _metadata_value(metadata_path, "DATASET_DATE") or "unknown"
+        env = os.environ.copy()
+        # Pin the immutable composite release for this analysis. A concurrent
+        # offline data update may switch ``current`` while Grype is running.
+        env["GRYPE_DB_CACHE_DIR"] = str(
+            context.bundle.path / "grype-db" if context.bundle is not None else settings.grype_db_dir
+        )
+        env["GRYPE_DB_AUTO_UPDATE"] = "false"
+        env["GRYPE_DB_VALIDATE_AGE"] = "false"
         process = subprocess.run(
             [settings.grype_binary, f"sbom:{run.artifact_path}", "-o", "json"],
             text=True,
@@ -94,7 +106,16 @@ def analyze_offline(db: Session, run: SbomRun) -> AnalysisRevision:
                 artifact = match.get("artifact", {})
                 findings.append(
                     {
-                        **normalize_finding(vuln, context),
+                        # Grype emits CVE aliases next to ``vulnerability``
+                        # for GHSA matches. Keep them before canonicalization
+                        # so CVE projection, KEV and NVD enrichment agree.
+                        **normalize_finding({
+                            **vuln,
+                            "relatedVulnerabilities": [
+                                *(vuln.get("relatedVulnerabilities") or []),
+                                *(match.get("relatedVulnerabilities") or []),
+                            ],
+                        }, context),
                         "component": artifact.get("purl") or artifact.get("name"),
                         "version": artifact.get("version"),
                         "fixedIn": [
@@ -109,16 +130,21 @@ def analyze_offline(db: Session, run: SbomRun) -> AnalysisRevision:
         else:
             revision.state = JobState.FAILED
             revision.error = process.stderr[-2000:] or "Grype 분석 실패"
-    except (FileNotFoundError, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
+    except Exception as exc:
         revision.state = JobState.FAILED
-        revision.error = str(exc)
+        revision.error = str(exc)[-2000:]
     revision.findings = findings
-    revision.data_sources = context.sources
-    revision.data_as_of = context.bundle.data_as_of if context.bundle else "unknown"
-    if context.bundle is None:
-        metadata_path = settings.grype_db_dir.parent / "metadata.env"
-        revision.data_as_of = _metadata_value(metadata_path, "DATASET_DATE") or "unknown"
     run.analysis_state = revision.state
+    # Feed aggregate CEL rules the approved effective vulnerability set while
+    # retaining every raw finding and applying ordinary rule suppression later.
+    from .workflows import approved_for_run, identity, review_dict, SUPPRESS_STATES
+    decisions = approved_for_run(db, run)
+    revision.findings = [{**finding, **({"vex": {**review_dict(decisions[identity(finding)]), "suppressed": decisions[identity(finding)].state in SUPPRESS_STATES}} if identity(finding) in decisions else {})} for finding in findings]
+    evaluate_revision(db, run, revision)
+    from .workflows import apply_vex_reviews, notify_analysis
+    apply_vex_reviews(db, run, revision)
+    notify_analysis(db, run, revision)
+    _derive_state(run, revision)
     db.flush()
     return revision
 
@@ -133,11 +159,12 @@ def _metadata_value(path: Path, key: str) -> str | None:
 
 
 async def sync_dependency_track(db: Session, run: SbomRun) -> None:
+    if not get_settings().dependency_track_enabled:
+        return
     client = DependencyTrackClient()
     if not client.configured:
         run.dtrack_state = JobState.FAILED
         run.dtrack_error = "Dependency-Track 연결이 구성되지 않았습니다"
-        _derive_state(run)
         return
     release = run.release
     try:
@@ -164,12 +191,8 @@ async def sync_dependency_track(db: Session, run: SbomRun) -> None:
             )
             run.dtrack_project_uuid = str(project["uuid"])
         run.dtrack_metrics, run.dtrack_policies = await client.project_snapshot(run.dtrack_project_uuid)
-        latest_analysis = max(run.analyses, key=lambda item: item.sequence, default=None)
-        if latest_analysis is not None:
-            latest_analysis.policies = run.dtrack_policies
         run.dtrack_state = JobState.COMPLETED
         run.dtrack_error = None
-        _derive_state(run)
         if run.state == ProcessingState.COMPLETED:
             latest_round = db.scalar(
                 select(func.max(SbomRun.round_number)).where(
@@ -184,16 +207,19 @@ async def sync_dependency_track(db: Session, run: SbomRun) -> None:
     except Exception as exc:
         run.dtrack_state = JobState.FAILED
         run.dtrack_error = str(exc)[-2000:]
-    _derive_state(run)
     db.flush()
 
 
-def _derive_state(run: SbomRun) -> None:
-    if run.analysis_state == JobState.COMPLETED and run.dtrack_state == JobState.COMPLETED:
-        run.state = ProcessingState.COMPLETED
-    elif run.analysis_state == JobState.FAILED and run.dtrack_state == JobState.FAILED:
+def _derive_state(run: SbomRun, revision: AnalysisRevision | None = None) -> None:
+    if getattr(run, "state", None) == ProcessingState.ARCHIVED:
+        return
+    if revision is None:
+        revision = max(run.analyses, key=lambda item: item.sequence, default=None)
+    if run.analysis_state == JobState.FAILED:
         run.state = ProcessingState.FAILED
-    elif JobState.FAILED in {run.analysis_state, run.dtrack_state}:
+    elif run.analysis_state == JobState.COMPLETED and revision is not None and revision.policy_state == "completed":
+        run.state = ProcessingState.COMPLETED
+    elif revision is not None and revision.policy_state == "failed":
         run.state = ProcessingState.PARTIAL
     else:
         run.state = ProcessingState.PROCESSING

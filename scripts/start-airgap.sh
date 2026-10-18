@@ -7,22 +7,27 @@ env_file="${1:-$root_dir/.env}"
 [[ -f "$env_file" ]] || { echo "env file not found: $env_file" >&2; exit 1; }
 
 "$script_dir/preflight-airgap.sh" "$env_file"
+set -a
+# shellcheck disable=SC1090
+source "$env_file"
+set +a
+source "$script_dir/lib.sh"
 compose_args=(--env-file "$env_file" -f "$root_dir/compose.yaml" -f "$root_dir/compose.airgap.yaml")
+dependency_track_enabled && compose_args+=(--profile dependency-track)
+if dependency_track_enabled; then
+  docker compose "${compose_args[@]}" up -d --no-build --pull never --wait --wait-timeout "${AIRGAP_HEALTH_TIMEOUT:-420}" postgres
+  docker compose "${compose_args[@]}" exec -T postgres sh /docker-entrypoint-initdb.d/10-init-multi-db.sh
+fi
 docker compose "${compose_args[@]}" up -d --no-build --pull never
 
 deadline=$((SECONDS + ${AIRGAP_HEALTH_TIMEOUT:-420}))
 while (( SECONDS < deadline )); do
-  ids="$(docker compose "${compose_args[@]}" ps -q 2>/dev/null || true)"
-  ready=1
-  for id in $ids; do
-    state="$(docker inspect -f '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{end}}' "$id")"
-    [[ "$state" == running* ]] || ready=0
-    [[ "$state" != *starting* && "$state" != *unhealthy* ]] || ready=0
-  done
-  if [[ -n "$ids" && "$ready" == 1 ]]; then
-    echo "Air-gap services are running; open the configured PUBLIC_HTTP_PORT on this server."
-    echo "Portal: http://<server>:<PUBLIC_HTTP_PORT>/"
-    echo "Dependency-Track: http://<server>:<PUBLIC_HTTP_PORT>/dependency-track/"
+  if compose_services_ready "${compose_args[@]}"; then
+    echo "Air-gap services are running behind the configured HTTPS origin."
+    echo "Portal: ${TRACKER_PUBLIC_ORIGIN%/}/"
+    if dependency_track_enabled; then
+      echo "Dependency-Track: ${TRACKER_PUBLIC_ORIGIN%/}/dependency-track/"
+    fi
     exit 0
   fi
   sleep 5

@@ -1,7 +1,50 @@
 export type RunState = "completed" | "processing" | "partial" | "failed" | "queued" | "archived";
 export type JobState = "completed" | "running" | "failed" | "queued";
 
-export interface SbomRun {
+export type PolicyState = "not_evaluated" | "completed" | "failed";
+export type PolicyStatus = "info" | "pass" | "warn" | "fail" | "not_evaluated" | "failed";
+export interface SbomPolicyRule {
+  id: string;
+  name: string;
+  kind: "severity" | "kev" | "license_denied" | "license_unknown" | "component_denied" | "cel";
+  enabled: boolean;
+  action: "fail" | "warn" | "info";
+  values: string[];
+  expression?: string;
+  target?: "component" | "vulnerability" | "project";
+  serviceIds?: string[];
+  environmentIds?: string[];
+  releaseVersions?: string[];
+  runIds?: string[];
+}
+export interface SbomPolicyException {
+  id: string;
+  ruleId: string;
+  runId?: string;
+  component: string;
+  vulnerabilityId?: string;
+  reason: string;
+  expiresAt: string | null;
+}
+export interface SbomPolicyDocument {
+  version: number;
+  rules: SbomPolicyRule[];
+  exceptions: SbomPolicyException[];
+  createdAt?: string;
+  createdBy?: string;
+}
+export interface NativePolicyFields {
+  analysisId?: string | null;
+  policyState?: PolicyState;
+  policyStatus?: PolicyStatus;
+  policyVersion?: number | null;
+  policyError?: string | null;
+  policyViolations?: Record<string, unknown>[];
+  analysisMetrics?: Record<string, unknown>;
+  policySnapshot?: Record<string, unknown>;
+}
+
+export interface SbomRun extends NativePolicyFields {
   id: string;
   service: { id: string; name: string; slug: string };
   environment: { id: string; name: string; slug: string };
@@ -22,6 +65,8 @@ export interface SbomRun {
   filename?: string;
   specVersion?: string;
   analysisState?: JobState;
+  dependencyTrackEnabled?: boolean;
+  dependencyTrackUrl?: string | null;
   dependencyTrackState?: JobState;
   dependencyTrackError?: string | null;
   analysisDataSources?: Record<string, unknown>;
@@ -31,7 +76,7 @@ export interface SbomRun {
   sourceMetadata?: Record<string, unknown>;
 }
 
-export interface AnalysisRevisionSummary {
+export interface AnalysisRevisionSummary extends NativePolicyFields {
   id: string;
   sequence: number;
   state: JobState;
@@ -91,8 +136,8 @@ export interface RecordChange {
 }
 
 export interface Comparison {
-  base: { runId: string; sha256: string; dataAsOf: string | null; cveDataAsOf?: string | null; artifactUrl?: string };
-  target: { runId: string; sha256: string; dataAsOf: string | null; cveDataAsOf?: string | null; artifactUrl?: string };
+  base: { runId: string; sha256: string; dataAsOf: string | null; cveDataAsOf?: string | null; artifactUrl?: string; dependencyTrackEnabled?: boolean; policyState?: PolicyState; policyVersion?: number | null };
+  target: { runId: string; sha256: string; dataAsOf: string | null; cveDataAsOf?: string | null; artifactUrl?: string; dependencyTrackEnabled?: boolean; policyState?: PolicyState; policyVersion?: number | null };
   summary: {
     componentsAdded: number;
     componentsRemoved: number;
@@ -189,6 +234,7 @@ export interface RolePolicyCatalog {
 }
 
 export interface DependencyTrackStatus {
+  enabled?: boolean;
   configured: boolean;
   reachable: boolean;
   authenticated: boolean;
@@ -219,3 +265,26 @@ export interface LdapSettings {
   hasBindPassword: boolean;
   encryptionReady: boolean;
 }
+
+export interface ReanalysisCycle {
+  id: string; reason: string; state: "queued" | "running" | "completed" | "partial";
+  createdAt: string; finishedAt?: string | null; totalCount: number; pendingCount: number;
+  enqueuedCount: number; completedCount: number; failedCount: number; skippedCount: number;
+}
+export interface ReanalysisSchedule {
+  version: number; enabled: boolean; intervalMinutes: number; nextRunAt?: string | null;
+  lastRunAt?: string | null; onDataUpdate: boolean; latestOnly: boolean;
+  serviceIds: string[]; environmentIds: string[]; activeCycle?: ReanalysisCycle | null;
+}
+export type VexState = "in_triage" | "exploitable" | "not_affected" | "false_positive" | "resolved" | "resolved_with_pedigree";
+export interface VexReviewInput {
+  component: string; vulnerabilityId: string; state: VexState; justification?: string;
+  detail: string; response: string[]; expiresAt?: string;
+}
+export interface VexReview extends VexReviewInput {
+  id: string; status: "submitted" | "approved" | "rejected"; author: string; reviewer?: string;
+  decisionReason?: string; createdAt: string; applied?: boolean; expired?: boolean;
+}
+export interface ReviewEvent { id: string; author?: string; actor?: string; type?: string; kind?: string; comment?: string; detail?: string; createdAt: string }
+export interface InboxNotification { id: string; title?: string; message?: string; eventType?: string; kind?: string; read?: boolean; createdAt: string; readAt?: string | null }
+export interface NotificationDelivery { id: string; status: string; attempts: number; error?: string | null; lastError?: string | null; createdAt: string; channel?: string; notificationId?: string }

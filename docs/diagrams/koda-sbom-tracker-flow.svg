@@ -92,7 +92,7 @@
   <rect x="588" y="626" width="188" height="82" class="focus"/>
   <text x="682" y="656" text-anchor="middle" class="node-title">분석 Worker</text>
   <text x="682" y="678" text-anchor="middle" class="node-note">Grype·정책 검사</text>
-  <text x="682" y="694" text-anchor="middle" class="node-note">Dependency-Track 연동</text>
+  <text x="682" y="694" text-anchor="middle" class="node-note">KODA 정책 평가</text>
 
   <rect x="836" y="626" width="188" height="82" class="node"/>
   <text x="930" y="656" text-anchor="middle" class="node-title">오프라인 기준 데이터</text>

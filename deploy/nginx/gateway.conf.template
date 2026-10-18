@@ -1,9 +1,37 @@
+limit_conn_zone $binary_remote_addr zone=sbom_upload_conn:10m;
+limit_req_zone $binary_remote_addr zone=sbom_upload_rate:10m rate=5r/s;
+
+# Resolve optional services only when a request reaches an enabled route.
+# Docker's embedded resolver avoids startup failures when DTrack is absent.
+map "${TRACKER_DEPENDENCY_TRACK_ENABLED}" $dtrack_disabled {
+    default 1;
+    ~*^(true|1|yes|on)$ 0;
+}
+
 server {
+    resolver 127.0.0.11 valid=10s ipv6=off;
     listen 8080;
     server_name ${GATEWAY_SERVER_NAME};
-    # The API limits the file itself to 500 MiB; this extra MiB covers
-    # multipart form fields and boundaries.
-    client_max_body_size 501m;
+    # Control-plane and authentication requests should stay small. Upload
+    # routes opt into narrowly scoped larger limits below.
+    client_max_body_size 64k;
+
+    location = /api/v1/sbom-runs {
+        # The API limits the file itself to 500 MiB; this extra MiB covers
+        # multipart form fields and boundaries.
+        client_max_body_size 501m;
+        limit_conn sbom_upload_conn 2;
+        limit_req zone=sbom_upload_rate burst=20 nodelay;
+        proxy_request_buffering off;
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Prefix /api;
+        proxy_pass http://${PORTAL_API_UPSTREAM};
+    }
 
     # Large offline datasets stream to the bounded API upload spool.
     location = /api/v1/vulnerability-data-bundles/upload {
@@ -24,6 +52,23 @@ server {
         add_header Content-Type text/plain;
     }
 
+    location ~ ^/api/v1/(legacy-migrations/stage|package-metadata/import)$ {
+        client_max_body_size 65m;
+        proxy_read_timeout 600s;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_pass http://${PORTAL_API_UPSTREAM};
+    }
+    location = /api/v1/sbom-policies {
+        client_max_body_size 1m;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_pass http://${PORTAL_API_UPSTREAM};
+    }
     location /api/ {
         proxy_http_version 1.1;
         proxy_set_header Host $host;
@@ -45,18 +90,26 @@ server {
     location /docs { return 404; }
     location /redoc { return 404; }
 
-    location = /dependency-track { return 308 /dependency-track/; }
+    location = /dependency-track {
+        if ($dtrack_disabled) { return 404; }
+        return 308 /dependency-track/;
+    }
 
     location /dependency-track/api/ {
+        if ($dtrack_disabled) { return 404; }
+        set $dtrack_api "${DTRACK_APISERVER_UPSTREAM}";
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_set_header X-Forwarded-For $remote_addr;
         proxy_set_header X-Forwarded-Prefix ${DTRACK_BASE_PATH};
-        proxy_pass http://${DTRACK_APISERVER_UPSTREAM}/api/;
+        rewrite ^/dependency-track(/.*)$ $1 break;
+        proxy_pass http://$dtrack_api;
     }
 
     location = /dependency-track/static/config.json {
+        if ($dtrack_disabled) { return 404; }
+        set $dtrack_web "${DTRACK_FRONTEND_UPSTREAM}";
         proxy_hide_header Cache-Control;
         add_header Cache-Control "no-store" always;
         proxy_http_version 1.1;
@@ -64,17 +117,21 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_set_header X-Forwarded-For $remote_addr;
         proxy_set_header X-Forwarded-Prefix ${DTRACK_BASE_PATH};
-        proxy_pass http://${DTRACK_FRONTEND_UPSTREAM}/static/config.json;
+        rewrite ^/dependency-track(/.*)$ $1 break;
+        proxy_pass http://$dtrack_web;
     }
 
     location /dependency-track/ {
+        if ($dtrack_disabled) { return 404; }
+        set $dtrack_web "${DTRACK_FRONTEND_UPSTREAM}";
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_set_header X-Forwarded-For $remote_addr;
         proxy_set_header X-Forwarded-Prefix ${DTRACK_BASE_PATH};
         # The frontend image serves static files at its container root.
-        proxy_pass http://${DTRACK_FRONTEND_UPSTREAM}/;
+        rewrite ^/dependency-track(/.*)$ $1 break;
+        proxy_pass http://$dtrack_web;
     }
 
     location / {

@@ -7,7 +7,7 @@ inventory for a specific build.
 
 | Component | Version | License | Source |
 | --- | --- | --- | --- |
-| Dependency-Track API server and frontend | 5.0.3 | Apache-2.0 | https://github.com/DependencyTrack/dependency-track |
+| CEL Python runtime | 0.1.3 | Apache-2.0 | https://github.com/cel-expr/cel-python |
 | Grype | 0.109.1 | Apache-2.0 | https://github.com/anchore/grype |
 | CycloneDX CLI | 0.30.0 | Apache-2.0 | https://github.com/CycloneDX/cyclonedx-cli |
 | React and React DOM | 19.2.3 | MIT | https://github.com/facebook/react |

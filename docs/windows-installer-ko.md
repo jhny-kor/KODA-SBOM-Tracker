@@ -12,7 +12,7 @@ Windows에서 KODA SBOM Tracker를 실행하는 방법은 셋이며, **기능 �
 | 빌드 PC | Docker Desktop(Linux containers) + Inno Setup 6 | Node.js LTS + Inno Setup 6 | — |
 | 대상 PC | Docker Desktop | 없음(Windows 10/11 기본 PowerShell) | Node.js LTS |
 | 접속 주소 | `http://127.0.0.1:8088/?page=dashboard` | `http://127.0.0.1:5173/?page=dashboard` | `http://127.0.0.1:5173/?page=dashboard` |
-| 취약점 분석 | Grype + Dependency-Track 전체 | 없음. SBOM 내장 레코드만 표시 | 없음. SBOM 내장 레코드만 표시 |
+| 취약점 분석 | Grype DB + KODA 자체 정책 | 없음. SBOM 내장 레코드만 표시 | 없음. SBOM 내장 레코드만 표시 |
 | 로그인·저장 | 로그인 있음, PostgreSQL 영구 저장 | 없음. 브라우저 메모리 | 없음. 브라우저 메모리 |
 | 배포 범위 | **내부 반입 전용** | `legal` 포함 시 배포 가능 | — |
 | 절 | [전체 설치파일](#전체-설치파일) | [Docker 없는 Windows 설치파일](#docker-없는-windows-설치파일) | [Docker 없는 개발용 UI 미리보기](#docker-없는-개발용-ui-미리보기) |
@@ -24,9 +24,8 @@ Docker Desktop 없이 전체 분석까지 수행하는 네이티브 단일 EXE�
 Windows x64에서 Docker Desktop의 Linux 컨테이너로 전체 스택을 실행합니다. 설치파일은 React
 포털만 담은 단일 EXE가 아니라 실행에 필요한 다음 이미지와 Compose 파일을 함께 담습니다.
 
-- gateway, portal-web, portal-api, portal-worker
+- gateway, portal-web, portal-api, portal-worker, portal-data-updater
 - PostgreSQL
-- Dependency-Track backend/frontend
 - Grype, CycloneDX CLI, Alpine 운영 이미지
 
 이 전체 설치파일은 컨테이너 이미지 재배포를 포함하므로 **KODA 내부 반입 전용**입니다.
@@ -103,17 +102,14 @@ dist\windows\KODA-SBOM-Tracker-Setup.exe
 `.env`에는 다음 값을 반드시 실제 값으로 바꿉니다.
 
 - `POSTGRES_PASSWORD`
-- `DTRACK_DB_PASSWORD`
 - `TRACKER_DB_PASSWORD`
 - `TRACKER_BOOTSTRAP_ADMIN_PASSWORD`
-- `TRACKER_DEPENDENCY_TRACK_API_KEY`
 - `TRACKER_DATABASE_URL`의 사용자·DB·비밀번호
 
 Windows 로컬 실행에서는 다음 기본값을 유지할 수 있습니다.
 
 ```dotenv
 PUBLIC_HTTP_PORT=8088
-DTRACK_API_BASE_URL=http://localhost:8088/dependency-track
 ```
 
 실제 비밀번호와 API 키는 설치파일이나 Git에 넣지 않습니다. 설치파일에는 `.env.example`만
@@ -138,9 +134,8 @@ DTRACK_API_BASE_URL=http://localhost:8088/dependency-track
 - Compose 설정
 - gateway `/healthz`
 - 포털 API `/api/v1/healthz`
-- Dependency-Track `/dependency-track/`
 
-`Stop`은 `docker compose down`만 실행하므로 PostgreSQL·Dependency-Track·SBOM artifact
+`Stop`은 `docker compose down`만 실행하므로 PostgreSQL·SBOM artifact·취약점 데이터
 named volume 데이터는 삭제하지 않습니다. 볼륨을 삭제하는 명령은 설치 스크립트에 포함하지
 않습니다.
 
@@ -155,7 +150,7 @@ named volume 데이터는 삭제하지 않습니다. 볼륨을 삭제하는 명�
 | 준비 시간 초과 | `docker compose ps`와 Docker Desktop의 컨테이너 로그를 확인합니다. |
 | 재빌드가 필요 없는 반복 패키징 | `-SkipDockerBuild`를 사용합니다. 소스나 Dockerfile을 바꿨다면 기본 빌드로 다시 실행합니다. |
 
-기동 후 발생하는 Dependency-Track 흰 화면·401·400·413 오류는
+기동 후 발생하는 흰 화면·인증·업로드·Grype 분석 오류는
 [폐쇄망 장애 대응](troubleshooting-ko.md)을 따릅니다.
 
 ## Docker 없는 Windows 설치파일
@@ -223,7 +218,7 @@ React, React DOM, Pretendard의 라이선스 전문을 함께 설치합니다. �
 배포하지 않습니다.
 
 이 경로는 화면·업로드·SBOM에 이미 포함된 취약점 표시를 확인하는 Preview입니다. Grype DB
-조회, 실제 취약점 재분석, Dependency-Track 연동, 로그인, PostgreSQL, 정책 판정, 영구 저장은
+조회, 실제 취약점 재분석, 로그인, PostgreSQL, 정책 판정, 영구 저장은
 수행하지 않습니다. 전체 분석 운영이 필요하면 위의 Docker 설치파일 또는 Linux 서버를
 사용해야 합니다.
 
@@ -251,7 +246,7 @@ Set-Location ..\..
 
 이 미리보기의 범위는 다음과 같습니다.
 
-- 로그인, API 서버, Docker, PostgreSQL, Grype, Dependency-Track 없이 브라우저에서 동작합니다.
+- 로그인, API 서버, Docker, PostgreSQL, Grype 없이 브라우저에서 동작합니다.
 - CycloneDX의 구성요소와 SBOM 안에 이미 들어 있는 `vulnerabilities` 레코드를 표시합니다.
 - 새로고침하면 업로드한 회차가 사라집니다. 로컬 브라우저 메모리에만 저장합니다.
 - Grype DB 조회·실제 취약점 재분석·정책 판정·원본 파일 내려받기는 수행하지 않습니다.

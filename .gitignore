@@ -28,3 +28,7 @@ volumes/
 docs/presentations/*.visual-check.*
 .hostmap
 docs/presentations/*.pdf
+
+# Local browser and live-runtime verification evidence
+output/
+.playwright-cli/

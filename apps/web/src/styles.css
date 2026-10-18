@@ -122,8 +122,8 @@ tbody tr:hover { background: #f4fbfb; }
 .compare-page { padding: 14px 20px 20px; }
 .compare-page > h1 { margin-bottom: 10px; }
 .compare-pickers { display: grid; grid-template-columns: minmax(260px, 1fr) 60px minmax(260px, 1fr) 142px; gap: 0; align-items: end; margin-bottom: 12px; }
-.compare-pickers label { display: grid; gap: 5px; font-size: 13px; font-weight: 650; }
-.compare-pickers select { height: 40px; background: white; border: 1px solid var(--border-dark); border-radius: 4px; padding: 0 12px; }
+.compare-pickers label { display: grid; min-width: 0; gap: 5px; font-size: 13px; font-weight: 650; }
+.compare-pickers select { width: 100%; min-width: 0; max-width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; height: 40px; background: white; border: 1px solid var(--border-dark); border-radius: 4px; padding: 0 12px; }
 .analysis-pickers { display: grid; grid-template-columns: minmax(260px, 1fr) 60px minmax(260px, 1fr) 142px; gap: 0; align-items: end; margin-bottom: 12px; }
 .analysis-pickers label { display: grid; gap: 5px; font-size: 13px; font-weight: 650; }
 .analysis-pickers label:nth-child(2) { grid-column: 3; }
@@ -416,3 +416,61 @@ button.danger.compact { min-height: 30px; padding: 0 10px; font-size: 12px; }
 .portal-link:hover { background: rgba(255,255,255,.06); }
 .portal-link svg { width: 22px; height: 22px; }
 .collapsed .portal-link { justify-content: center; padding: 0; }
+
+.sbom-policy-panel { display: grid; gap: 16px; }
+.sbom-policy-panel h2, .sbom-policy-panel h3 { margin: 0; }
+.sbom-policy-panel p { color: var(--text-secondary, #68758a); line-height: 1.65; margin: 0; }
+.policy-rules { display: grid; gap: 16px; }
+.policy-rule { display: grid; grid-template-columns: minmax(180px, 2fr) minmax(160px, 1fr) 120px auto; gap: 12px; padding: 16px; min-width: 0; }
+.policy-rule legend { padding: 0 6px; font-weight: 600; }
+.policy-rule label, .policy-exception-form label { display: grid; gap: 6px; font-size: 13px; }
+.policy-rule .checkbox-label { display: flex; align-items: center; gap: 8px; }
+.policy-rule .policy-values { grid-column: 1 / -2; }
+.policy-exception-form fieldset { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; border: 1px solid #dce3ed; border-radius: 10px; padding: 16px; }
+.native-policy-result { margin: 24px 0; }
+.native-policy-result p { font-size: 13px; line-height: 1.6; }
+@media (max-width: 900px) { .policy-rule, .policy-exception-form fieldset { grid-template-columns: 1fr; } .policy-rule .policy-values { grid-column: auto; } }
+
+.native-policy-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 12px; }
+.native-policy-metrics > div { border: 1px solid #dce3ed; border-radius: 8px; padding: 12px; }
+.native-policy-metrics dt { font-size: 12px; color: #68758a; }
+.native-policy-metrics dd { font-size: 20px; font-weight: 600; margin: 6px 0 0; }
+.sbom-policy-panel input:not([type="checkbox"]), .sbom-policy-panel select { min-width: 0; width: 100%; padding: 9px 10px; border: 1px solid #ccd7e4; border-radius: 6px; font: inherit; background: #fff; color: inherit; }
+.sbom-policy-panel fieldset:disabled input, .sbom-policy-panel fieldset:disabled select { background: #f6f8fa; }
+.analysis-policy-history { margin: 10px 0; }
+.analysis-policy-history summary { cursor: pointer; font-weight: 600; }
+@media (max-width: 650px) { .sbom-policy-panel .settings-panel-heading { display: grid; gap: 12px; } .sbom-policy-panel .settings-panel-heading .button-row { flex-wrap: wrap; } }
+.detail-modal .native-policy-metrics { grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); margin: 16px 20px; }
+.native-policy-result > p { padding: 0 20px; }
+
+.workflow-panel { display: grid; gap: 14px; margin-top: 20px; }
+.workflow-form, .workflow-scopes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.workflow-form { border: 1px solid var(--border, #dce2e9); padding: 16px; border-radius: 8px; }
+.workflow-panel label, .workflow-scopes label, .workflow-cel label { display: grid; gap: 6px; }
+.workflow-panel input, .workflow-panel select, .workflow-panel textarea, .workflow-cel textarea { min-width: 0; width: 100%; padding: 9px; border: 1px solid #cbd5e1; border-radius: 6px; font: inherit; background: var(--surface, #fff); color: inherit; }
+.workflow-panel input[type="checkbox"] { width: auto; }
+.workflow-panel .checkbox-label { display: flex; align-items: center; gap: 8px; }
+.workflow-scopes select { min-height: 74px; }
+.workflow-scopes small, .workflow-id { display: block; font-size: 11px; color: #64748b; }
+.workflow-cel { display: grid; gap: 10px; grid-column: 1 / -1; }
+.workflow-cel code { display: block; white-space: pre-wrap; overflow-wrap: anywhere; padding: 10px; background: #f1f5f9; color: #334155; }
+.workflow-review { padding: 15px; display: grid; gap: 10px; }
+.workflow-review h4, .workflow-review p { margin: 0; }
+.workflow-decision { display: flex; gap: 8px; align-items: end; flex-wrap: wrap; }
+.workflow-decision label { flex: 1; min-width: 160px; }
+@media (max-width: 720px) { .workflow-form, .workflow-scopes { grid-template-columns: 1fr; } }
+/* Keep package identities readable even when policy/CEL evidence is lengthy. */
+.native-policy-result table { min-width: 1040px; table-layout: fixed; }
+.native-policy-result th:nth-child(1) { width: 160px; }
+.native-policy-result th:nth-child(2) { width: 280px; }
+.native-policy-result th:nth-child(3) { width: 160px; }
+.native-policy-result th:nth-child(4) { width: 110px; }
+.native-policy-result td { white-space: normal; overflow-wrap: anywhere; vertical-align: top; padding: 10px 12px; }
+.native-policy-result > h3 { margin: 16px 20px; }
+.detail-modal > .workflow-panel { margin: 20px; min-width: 0; }
+
+.migration-report { max-height: 420px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: #f6f8fa; padding: 16px; }
+.metadata-table { min-width: 1240px; }
+.metadata-table td { vertical-align: top; white-space: normal; overflow-wrap: anywhere; min-width: 140px; }
+.metadata-table td:last-child { min-width: 260px; max-width: 380px; }
+.metadata-table details p { margin: 8px 0; }

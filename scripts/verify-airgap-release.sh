@@ -1,24 +1,41 @@
 #!/bin/bash
 set -euo pipefail
 source "$(cd "$(dirname "$0")" && pwd)/lib.sh"
-input="${1:-}"
-require_arg "$input" "usage: $0 <release.tar.gz|release-dir>"
+input=""
+public_key="${KODA_RELEASE_VERIFY_KEY:-}"
+signature=""
+usage() { local rc="${1:-2}"; echo "usage: $0 <release.tar.gz> [--public-key FILE] [--signature FILE]" >&2; exit "$rc"; }
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --public-key) public_key="${2:-}"; shift 2 ;;
+    --signature) signature="${2:-}"; shift 2 ;;
+    -h|--help) usage 0 ;;
+    -*) echo "unknown option: $1" >&2; usage 2 ;;
+    *) [[ -z "$input" ]] || usage 2; input="$1"; shift ;;
+  esac
+done
+require_arg "$input" "release archive is required"
+[[ -f "$input" && "$input" == *.tar.gz ]] || { echo "release must be a tar.gz archive" >&2; exit 1; }
 tmp=""
 cleanup() { [[ -n "$tmp" ]] && rm -rf "$tmp"; }
 trap cleanup EXIT
-if [[ -f "$input" ]]; then
-  [[ "$input" == *.tar.gz ]] || { echo "release must be a tar.gz archive" >&2; exit 1; }
-  if [[ -f "${input}.sha256" ]]; then
-    (cd "$(dirname "$input")" && { command -v sha256sum >/dev/null && sha256sum --check "$(basename "$input").sha256" || shasum -a 256 -c "$(basename "$input").sha256"; })
-  fi
-  while IFS= read -r name; do
-    [[ "$name" != /* && "$name" != ../* && "$name" != */../* && "$name" != .. && "$name" != */.. ]] || { echo "unsafe archive path: $name" >&2; exit 1; }
-  done < <(tar -tzf "$input")
-  tmp="$(mktemp -d)"
-  tar -xzf "$input" -C "$tmp"
-  input="$tmp"
+if [[ -n "$public_key" ]]; then
+  [[ -r "$public_key" ]] || { echo "release verification key is not readable: $public_key" >&2; exit 1; }
+  [[ -n "$signature" ]] || signature="${input}.sig"
+  verify_file_signature "$public_key" "$input" "$signature"
+else
+  require_unsigned_artifact_opt_in "air-gap release"
 fi
+if [[ -f "${input}.sha256" ]]; then
+  (cd "$(dirname "$input")" && { command -v sha256sum >/dev/null && sha256sum --check "$(basename "$input").sha256" || shasum -a 256 -c "$(basename "$input").sha256"; })
+fi
+validate_tar_archive "$input"
+tmp="$(mktemp -d)"
+chmod 700 "$tmp"
+tar -xzf "$input" -C "$tmp"
+input="$tmp"
 [[ -d "$input" && -f "$input/manifest.sha256" && -f "$input/metadata.env" ]] || { echo "invalid release directory" >&2; exit 1; }
+validate_manifest_paths "$input/manifest.sha256"
 verify_manifest "$input/manifest.sha256"
 for required_file in \
   LICENSE \
@@ -42,7 +59,7 @@ grep -q '^TRACKER_WORKTREE_DIRTY=false$' "$input/metadata.env" || { echo "releas
 [[ -d "$input/source/apps" ]] || { echo "application source missing" >&2; exit 1; }
 [[ ! -e "$input/config/.env" ]] || { echo "release must not contain a real .env" >&2; exit 1; }
 count="$(find "$input/images" -type f -name '*.tar' | wc -l | tr -d ' ')"
-[[ "$count" -ge 10 ]] || { echo "expected at least 10 image archives, found $count" >&2; exit 1; }
+[[ "$count" -ge 8 ]] || { echo "expected at least 8 image archives, found $count" >&2; exit 1; }
 for archive in "$input"/images/*.tar; do
   config_file="$(tar -xOf "$archive" manifest.json | sed -n 's/.*"Config":"\([^"]*\)".*/\1/p' | head -1)"
   [[ -n "$config_file" ]] || { echo "image manifest is missing: $archive" >&2; exit 1; }

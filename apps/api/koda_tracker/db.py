@@ -111,6 +111,24 @@ def ensure_sbom_source_metadata_column(bind=engine) -> None:
             connection.execute(text("ALTER TABLE sbom_runs ADD COLUMN source_metadata JSON"))
 
 
+def ensure_native_policy_columns(bind=engine) -> None:
+    """Preserve historical findings; old revisions remain explicitly unevaluated."""
+    if "analysis_revisions" not in inspect(bind).get_table_names():
+        return
+    columns = {column["name"] for column in inspect(bind).get_columns("analysis_revisions")}
+    definitions = {
+        "policy_state": "VARCHAR(32) NOT NULL DEFAULT 'not_evaluated'",
+        "policy_version": "INTEGER",
+        "policy_snapshot": "JSON",
+        "policy_error": "TEXT",
+        "metrics": "JSON",
+    }
+    with bind.begin() as connection:
+        for name, definition in definitions.items():
+            if name not in columns:
+                connection.execute(text(f"ALTER TABLE analysis_revisions ADD COLUMN {name} {definition}"))
+
+
 def get_db() -> Generator[Session, None, None]:
     with SessionLocal() as session:
         yield session

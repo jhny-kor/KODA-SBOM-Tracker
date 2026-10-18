@@ -10,8 +10,12 @@
 ## 무엇을 할 수 있나
 
 - **SBOM 회차 관리** — 서비스·환경·릴리스별로 CycloneDX JSON/XML을 업로드하고 분석 상태를 추적합니다.
-- **취약점·정책 분석** — Grype와 공식 Dependency-Track `5.0.3`으로 구성요소·CVE 취약점·정책 위반을 산출합니다. CVSS·KEV·제안 버전과 CVE 기준일을 함께 표시합니다.
+- **취약점·정책 분석** — Grype DB로 CVE를 분석하고 KODA가 구성요소·심각도·KEV 지표와 SBOM 정책 위반을 직접 산출합니다. CVSS·KEV·제안 버전과 CVE 기준일을 함께 표시합니다.
+- **고급 정책·검토** — 서비스·환경·릴리스 범위, 표준 CEL 조건, 독립 승인형 VEX와 검토 이력, CycloneDX VEX 가져오기/내보내기를 제공합니다.
+- **자동 재분석·알림** — 전체 보관 전 SBOM을 기본 매일 재분석하고 데이터 번들 변경 시 후속 분석을 접수합니다. 결과 변경 보관함과 선택적 서명 Webhook·전송 재시도를 제공합니다. [운영 설정](docs/operations-ko.md#고급-정책vex자동-재분석)을 참조하세요.
 - **회차 비교** — 두 회차를 골라 구성요소·취약점·정책 위반 변경점을 탭으로 확인합니다.
+- **기존 자료 이관** — 원본 API·번들에서 SBOM·분석·검토·정책을 읽어 변환 검사 후 원자적으로 적용합니다. 미지원 조건은 생략하지 않고 적용을 차단합니다.
+- **패키지 최신성** — npm·PyPI·Maven·NuGet·Go·Cargo의 최신 버전·공개 시각을 별도 수집하고 출처·유효기간과 함께 제공합니다. 폐쇄망에서는 캐시를 반입합니다.
 - **승인형 계정과 역할 정책** — `admin`·`manager`·`analyst`·`uploader`·`viewer` 역할, 화면 접근 권한과 기능 제어, 감사 로그 CSV를 제공합니다.
 - **폐쇄망 운영** — 오프라인 번들, 취약점 데이터 반입·롤백, 백업·복원 스크립트를 포함합니다.
 
@@ -25,21 +29,21 @@
 | `portal-web` | 포털 화면 | React 19 + Vite (`apps/web`) |
 | `portal-api` | 업로드·조회·인증 API | FastAPI / Python 3.12+ (`apps/api`) |
 | `portal-worker` | SBOM 분석 백그라운드 처리 | 동일 이미지의 worker 모드 |
-| `postgres` | `sbom_tracker`, `dtrack` 분리 DB | PostgreSQL |
-| `dtrack-apiserver`, `dtrack-frontend` | 취약점·정책 분석 엔진 | 공식 Dependency-Track `5.0.3` |
+| `postgres` | 계정·회차·정책·검토·알림을 보관하는 `sbom_tracker` DB | PostgreSQL |
+| `portal-data-updater` | 오프라인 취약점 데이터 검증·활성화·롤백 | 동일 API 이미지의 전용 worker |
+| `portal-metadata-collector` | 공식 패키지 저장소 메타데이터 수집·캐시 갱신 | 동일 API 이미지의 전용 수집기 |
 
 기본 공개 포트는 `8088`(`PUBLIC_HTTP_PORT`) 하나이며, 경로는 다음과 같습니다.
 
 | 경로 | 화면 |
 | --- | --- |
 | `/` | 포털 |
-| `/dependency-track/` | 공식 Dependency-Track UI |
 | `/api` | 포털 API (명세는 gateway에 공개하지 않고 `portal-api` 내부 `/docs`에서 확인) |
 
 ## 빠른 시작
 
 ```bash
-cp .env.example .env
+make env
 docker compose build portal-web portal-api portal-worker
 docker compose up -d
 ```
@@ -47,16 +51,25 @@ docker compose up -d
 기동 후 `http://127.0.0.1:8088/`을 엽니다. `make help`로 기동·번들·백업·검증
 타깃을 확인할 수 있습니다.
 
-처음 기동하기 전에 `.env`의 모든 `change-me-*` 값과 공개 URL을 교체합니다.
-Dependency-Track에서 전용 팀/API 키를 만든 뒤 BOM 업로드·프로젝트 생성·조회
-권한만 부여하여 `TRACKER_DEPENDENCY_TRACK_API_KEY`에 넣습니다. 키는 브라우저로
-전달되지 않습니다. team 사용자 멤버가 0명이어도 API 키 인증에는 문제가 없으며,
-현재 연결 검사는 `v1/team/self`가 반환한 team 권한을 확인합니다. 공개
-`DTRACK_API_BASE_URL`에는 `/api`를 붙이지 않고 관리자 자동화 주소에만 붙입니다.
+`make env`는 데이터베이스·최초 관리자·LDAP 암호화 키를 무작위로 생성하고 `.env`를
+권한 `0600`으로 저장합니다. 기본 gateway 바인딩은 `127.0.0.1`입니다. 다른 호스트에서
+접속하려면 외부 TLS reverse proxy를 구성한 뒤 `PUBLIC_HTTP_BIND`, HTTPS
+`TRACKER_PUBLIC_ORIGIN`, `TRACKER_ENVIRONMENT=production`, `TRACKER_SECURE_COOKIES=true`를
+함께 설정해야 합니다.
+Grype 분석, 지표 계산, 정책 평가와 회차 비교는 KODA 자체에서 처리합니다.
+설정의 **SBOM 정책**에서 심각도·KEV·금지/미확인 라이선스·금지 구성요소 규칙과
+만료일 또는 무기한 예외를 관리합니다. 정책 변경은 새 버전으로 저장되며 기존 분석 결과를
+덮어쓰지 않습니다. 기존 회차에 적용하려면 **새 분석 리비전**을 실행합니다.
+Grype DB와 NVD/KEV 오프라인 데이터의 반입·기준일·롤백 절차는 계속 사용합니다.
+정책 미평가·실패는 위반 0건과 구분합니다.
+KEV 데이터가 없으면 KEV 정책은 데이터 부족 경고를 남깁니다. 분석 완료와 정책 통과는
+별개이며, 기본 정책과 예외는 운영 기준에 맞춰 검토합니다.
 
-키 설정 후에는 `./scripts/verify-dtrack-connection.sh`로 v5 API와 최소 권한을
-확인할 수 있습니다. 관리자 API 키를 별도로 가진 초기 설치는
-`scripts/configure-dtrack-key.sh`로 전용 팀과 키를 자동 발급할 수 있습니다.
+기존 시스템의 분석 기록과 정책을 옮길 때는 원본을 보존하고, 식별자·조건·범위·예외의
+의미를 확인한 뒤 이관 결과를 검증합니다. 이전 결과가 있다는 사실만으로 현재 정책
+평가가 완료된 것으로 표시하지 않습니다. 기능 범위와 확인 기준은
+[기능 지원 범위](docs/feature-coverage-ko.md)를 따릅니다.
+현재 Docker 인수 결과와 미지원·미검증 범위는 [검증 기록](docs/verification-20261018-ko.md)에 정리했습니다.
 
 ## 배포 방식
 
@@ -68,12 +81,15 @@ Dependency-Track에서 전용 팀/API 키를 만든 뒤 BOM 업로드·프로젝
 | Windows Preview 설치파일 | Docker·Node.js 없는 PC (화면 확인용) | `.\scripts\build-windows-preview-installer.ps1` | [Windows 설치파일 가이드](docs/windows-installer-ko.md) |
 
 - 폐쇄망 압축파일에는 포털 소스, compose/deploy/운영 스크립트, 고정 이미지 tar와
-  SHA-256 manifest가 들어가며 실제 `.env`는 포함되지 않습니다.
+  SHA-256 manifest가 들어가며 실제 `.env`는 포함되지 않습니다. 생성 시
+  기본적으로 `KODA_RELEASE_SIGNING_KEY`가 필요하고, 설치 전에는 별도 경로로 배포한
+  공개키로 detached signature를 검증합니다. 신뢰된 매체에서만 운영자가 명시적으로
+  `KODA_ALLOW_UNSIGNED_ARTIFACTS=1`을 지정해 무서명 생성·검증·설치를 선택할 수 있습니다.
 - Windows 전체 설치파일(`dist\windows\KODA-SBOM-Tracker-Setup.exe`)은 Compose 스택
   전체를 설치하고 시작 메뉴에서 대시보드를 엽니다.
 - Windows Preview(`dist\windows\KODA-SBOM-Tracker-Preview-Setup.exe`)는 PowerShell
   정적 서버와 웹 대시보드만 실행합니다. CycloneDX 파일에 내장된 구성요소·취약점
-  레코드만 브라우저 메모리에서 표시하며 Grype·Dependency-Track 분석과 영구 저장은
+  레코드만 브라우저 메모리에서 표시하며 Grype·KODA 정책 분석과 영구 저장은
   하지 않습니다. 소스에서 바로 실행하는 개발용 경로는
   `.\scripts\start-windows-preview.ps1 -OpenBrowser`입니다.
 - 취약점 데이터만 따로 만들려면 `.\scripts\build-vuln-bundle.ps1`로 Grype DB·NVD·CISA
@@ -118,7 +134,7 @@ AI 서버와의 호환이 필요한 경우에만 설정 화면에서 `LDAP 평�
 - 서비스·환경의 `삭제`는 과거 회차 참조를 보존하는 비활성화입니다. 삭제한 항목은
   일반 목록과 새 업로드 선택지에서 숨기지만 기존 회차에는 이름을 계속 표시합니다.
 - 회차 `보관`은 목록 상태만 바꾸며, 관리자 전용 `영구 삭제`는 Tracker DB와 로컬
-  원본만 제거합니다. Dependency-Track 프로젝트는 삭제하지 않습니다.
+  원본만 제거합니다. 외부에 별도로 보관한 원본과 백업은 제거하지 않습니다.
 - 감사 로그는 검색 조건을 유지한 Excel 호환 UTF-8 BOM CSV로 내려받을 수 있습니다.
 
 ## KODA 통합
@@ -130,8 +146,7 @@ KODA Linux 통합본에서는 Tracker 로그인 세션을 gateway가 검증해 K
 전달합니다. Tracker에서 승인된 사용자는 KODA에도 자동 활성화되며 KODA 관리자는
 프로젝트 권한만 별도로 부여합니다. 이 공유 로그인은 통합
 suite의 동일 오리진 `/koda/` 경로에서만 적용되며, 이 저장소의 단독 Compose에는
-KODA가 포함되지 않습니다. Dependency-Track UI 로그인도 Tracker 세션과 공유하지
-않고 별도 계정·Team 권한을 사용합니다.
+KODA가 포함되지 않습니다.
 
 KODA와 Tracker에서 실행하는 로그아웃은 모두 현재 브라우저의 Tracker 세션을
 폐기합니다. 따라서 어느 한쪽에서 로그아웃해도 양쪽 보호 화면은 다시 로그인이

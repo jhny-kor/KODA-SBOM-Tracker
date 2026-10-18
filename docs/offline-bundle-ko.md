@@ -20,36 +20,75 @@
 고객·협력사·계열사·공개 배포는 대응 소스 제공 절차와 법무 검토가 승인되기 전까지 금지합니다.
 `KODA_DISTRIBUTION_SCOPE=external`로 실행하면 생성 스크립트가 즉시 실패합니다.
 
-- Dependency-Track backend/frontend `5.0.3`
 - PostgreSQL, nginx, 운영 스크립트용 Alpine
 - 포털 web/API/worker 로컬 이미지
 - Grype, CycloneDX CLI
 - compose/deploy/scripts/docs 설정
 - `LICENSE`, `NOTICE`, `THIRD_PARTY_NOTICES.md`
-- SHA-256 manifest
+- SHA-256 manifest와 릴리스 압축파일의 비대칭 detached signature
+
+KODA 자체 분석·정책 엔진과 Grype DB를 사용합니다. Grype/NVD/KEV 데이터 bundle의
+검증·반입·롤백 과정은 애플리케이션 이미지와 분리해 유지합니다. 정책·VEX·재분석 일정·알림은
+`sbom_tracker` DB에 저장하므로 버전 갱신 전 데이터베이스와 artifact volume을 함께 백업합니다.
 
 ## 2. 생성
 
 ### 단일 폐쇄망 릴리스 압축파일(권장)
 
 Docker Engine과 인터넷이 연결된 `linux/amd64` 빌드 PC에서 실행합니다. 포털 소스,
-compose, 운영 스크립트, 10개 이상의 이미지 tar, manifest를 하나의 `tar.gz`로 묶습니다.
+compose, 운영 스크립트, 기본 8개 이상의 이미지 tar, manifest를 하나의 `tar.gz`로 묶습니다.
 취약점 데이터 bundle은 선택적으로 함께 포함할 수 있습니다.
 
 ```bash
-./scripts/build-airgap-release.sh ./dist/koda-sbom-airgap.tar.gz
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out /secure/koda-release-signing.pem
+chmod 600 /secure/koda-release-signing.pem
+openssl pkey -in /secure/koda-release-signing.pem -pubout -out /secure/koda-release-public.pem
+
+KODA_RELEASE_SIGNING_KEY=/secure/koda-release-signing.pem \
+  ./scripts/build-airgap-release.sh ./dist/koda-sbom-airgap.tar.gz
 # 선택: --vuln-bundle ./dist/vuln-bundle/<version>
+```
+
+개인키는 빌드 시스템의 접근 제한 저장소에만 두고 폐쇄망 서버나 릴리스 매체에
+넣지 않습니다. 공개키는 릴리스 압축파일·`.sig`와 다른 신뢰 경로로 폐쇄망 서버에
+사전 배포합니다.
+
+키 운영이 불가능하고 전달 매체 자체를 신뢰할 수 있는 경우에만 다음처럼 무서명
+릴리스를 명시적으로 만들 수 있습니다.
+
+```bash
+KODA_ALLOW_UNSIGNED_ARTIFACTS=1 \
+  ./scripts/build-airgap-release.sh ./dist/koda-sbom-airgap.tar.gz
 ```
 
 폐쇄망 서버에서는 압축파일과 별도 운영 `.env`를 반입한 뒤 설치합니다. `.env`는
 압축파일에 포함되지 않으며 `change-me-*` 값을 사용할 수 없습니다.
 
 ```bash
+openssl dgst -sha256 -verify /etc/koda/trust/release-public.pem \
+  -signature ./koda-sbom-airgap.tar.gz.sig ./koda-sbom-airgap.tar.gz
 mkdir -p /tmp/koda-sbom-release
 tar -xzf ./koda-sbom-airgap.tar.gz -C /tmp/koda-sbom-release
 sudo /tmp/koda-sbom-release/scripts/install-airgap.sh ./koda-sbom-airgap.tar.gz /opt/koda-sbom \
+  --public-key /etc/koda/trust/release-public.pem \
+  --signature ./koda-sbom-airgap.tar.gz.sig \
   --env-file /tmp/koda-sbom.env
 ```
+
+첫 `tar -xzf`보다 먼저 독립 배포된 공개키로 `openssl` 검증이 성공해야 합니다.
+설치 스크립트도 압축파일·서명·공개키를 private staging에 복사해 다시 검증한 뒤
+압축을 풉니다. 서명이나 공개키가 없으면 기본적으로 설치는 중단됩니다. 무서명으로
+만든 파일은 아래처럼 같은 명시적 플래그를 설치에도 지정해야 합니다.
+
+```bash
+sudo env KODA_ALLOW_UNSIGNED_ARTIFACTS=1 \
+  /tmp/koda-sbom-release/scripts/install-airgap.sh \
+  ./koda-sbom-airgap.tar.gz /opt/koda-sbom \
+  --env-file /tmp/koda-sbom.env
+```
+
+무서명 모드에서도 SHA-256 manifest, 파일 목록, 압축 경로, 이미지 아키텍처 검사는
+계속 수행하지만 배포자의 신원과 파일의 진위는 증명하지 못합니다.
 
 `/tmp/koda-sbom.env`는 반입 전에 `.env.example`을 복사해 실제 비밀번호·키·서버 주소로
 수정한 파일입니다. 설치 스크립트가 이를 `/opt/koda-sbom/.env`로 복사합니다.
@@ -60,14 +99,19 @@ sudo /tmp/koda-sbom-release/scripts/install-airgap.sh ./koda-sbom-airgap.tar.gz 
 sudo /opt/koda-sbom/scripts/start-airgap.sh /opt/koda-sbom/.env
 ```
 
-기본 웹 주소는 `http://<폐쇄망 서버>:8088/`이며, KODA 화면의 SBOM Tracker 버튼은
-이 주소의 `/?page=runs`로 연결하면 로그인 후 회차 목록을 바로 엽니다.
+원격 폐쇄망 서버는 외부 TLS reverse proxy 뒤에서
+`TRACKER_PUBLIC_ORIGIN=https://<폐쇄망 호스트>`, `TRACKER_SECURE_COOKIES=true`,
+`TRACKER_ENVIRONMENT=production`으로 실행해야 합니다. KODA 화면의 SBOM Tracker 버튼은
+이 HTTPS 주소의 `/?page=runs`로 연결하면 로그인 후 회차 목록을 바로 엽니다.
 
-압축파일의 해시와 manifest는 설치 전에 확인합니다.
+SHA-256 파일은 전송 오류 확인용이며 신뢰 근거가 아닙니다. 기존에 신뢰된 설치
+디렉터리의 검증 스크립트를 사용할 때도 독립 배포 공개키를 반드시 지정합니다.
 
 ```bash
 sha256sum -c koda-sbom-airgap.tar.gz.sha256
-./scripts/verify-airgap-release.sh ./koda-sbom-airgap.tar.gz
+/opt/koda-sbom/scripts/verify-airgap-release.sh ./koda-sbom-airgap.tar.gz \
+  --public-key /etc/koda/trust/release-public.pem \
+  --signature ./koda-sbom-airgap.tar.gz.sig
 ```
 
 KODA와 Tracker를 같은 서버에 설치하는 최종 전달물은 KODA 저장소의
@@ -79,7 +123,14 @@ KODA와 Tracker를 같은 서버에 설치하는 최종 전달물은 KODA 저장
 ### 기존 디렉터리 번들
 
 ```bash
-./scripts/build-offline-bundle.sh
+KODA_RELEASE_SIGNING_KEY=/secure/koda-release-signing.pem \
+  ./scripts/build-offline-bundle.sh
+```
+
+무서명 생성이 필요한 경우:
+
+```bash
+KODA_ALLOW_UNSIGNED_ARTIFACTS=1 ./scripts/build-offline-bundle.sh
 ```
 
 출력:
@@ -87,13 +138,29 @@ KODA와 Tracker를 같은 서버에 설치하는 최종 전달물은 KODA 저장
 - `dist/offline-bundle/<UTC timestamp>/images/*.tar`
 - `metadata.env`
 - `manifest.sha256`
+- `manifest.sha256.sig`
 - `config/`
 
 ## 3. 검증과 반입
 
 ```bash
-./scripts/verify-offline-bundle.sh ./dist/offline-bundle/<timestamp>
-./scripts/import-offline-bundle.sh ./dist/offline-bundle/<timestamp>
+./scripts/verify-offline-bundle.sh ./dist/offline-bundle/<timestamp> \
+  --public-key /etc/koda/trust/release-public.pem
+./scripts/import-offline-bundle.sh ./dist/offline-bundle/<timestamp> \
+  --public-key /etc/koda/trust/release-public.pem
+```
+
+검증기는 서명된 manifest와 실제 파일 목록이 정확히 일치하는지 확인합니다. 반입기는
+번들과 공개키를 private staging에 복사해 다시 검증한 뒤 staging의 image tar만
+`docker load`하므로 서명 후 추가된 파일과 검증-사용 사이 교체를 허용하지 않습니다.
+
+무서명 번들은 공개키 없이 명시적 플래그로 검증·반입합니다.
+
+```bash
+KODA_ALLOW_UNSIGNED_ARTIFACTS=1 \
+  ./scripts/verify-offline-bundle.sh ./dist/offline-bundle/<timestamp>
+KODA_ALLOW_UNSIGNED_ARTIFACTS=1 \
+  ./scripts/import-offline-bundle.sh ./dist/offline-bundle/<timestamp>
 ```
 
 반입 후 `config/`를 운영 디렉터리로 복사하고 실제 비밀값을 넣은 `.env`를 준비합니다.
@@ -106,12 +173,9 @@ docker compose --env-file /path/to/.env \
   up -d --no-build --pull never
 ```
 
-`DTRACK_API_BASE_URL`은 브라우저가 접근할 수 있는 Dependency-Track의 공개 base
-주소여야 합니다(예: `http://sbom-server:8088/dependency-track`). 프론트엔드가
-여기에 `/api`를 붙여 호출하므로 값을 `/dependency-track/api`로 넣으면
-`/api/api/...`가 되어 화면이 비어 보일 수 있습니다. `dtrack-apiserver`,
-`localhost`, `127.0.0.1` 주소는 preflight에서 거부됩니다. 관리자 자동화 스크립트는
-`DTRACK_ADMIN_API_BASE_URL`에 `/api`가 포함된 주소를 사용합니다.
+브라우저에서 접근할 공개 주소는 `TRACKER_PUBLIC_ORIGIN`으로 설정합니다. 원격 공개는
+HTTPS와 secure cookie를 함께 사용하고, gateway와 API의 health 응답 및 실제 로그인·업로드를
+확인합니다. 비밀값을 브라우저 설정 파일이나 정적 이미지에 포함하지 않습니다.
 
 ## 4. 취약점 데이터 반입 규칙
 
@@ -351,7 +415,8 @@ ENV_FILE=/opt/koda-sbom/.env \
 환경에서 다음처럼 `--vuln-bundle`을 사용합니다.
 
 ```bash
-./scripts/build-airgap-release.sh \
+KODA_RELEASE_SIGNING_KEY=/secure/koda-release-signing.pem \
+  ./scripts/build-airgap-release.sh \
   ./dist/koda-sbom-airgap.tar.gz \
   --vuln-bundle ./vuln-bundle/20260806
 ```

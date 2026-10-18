@@ -12,7 +12,7 @@ $RootDir = Split-Path -Parent $PSScriptRoot
 $EnvFile = Join-Path $RootDir ".env"
 $ExampleEnvFile = Join-Path $RootDir ".env.example"
 $ComposeFiles = @(
-    "--env-file", $EnvFile,
+    "compose", "--env-file", $EnvFile,
     "-f", (Join-Path $RootDir "compose.yaml"),
     "-f", (Join-Path $RootDir "compose.airgap.yaml")
 )
@@ -66,6 +66,25 @@ function Test-HttpEndpoint {
     } catch {
         return $false
     }
+}
+
+function Test-ExpectedComposeServices {
+    param(
+        [Parameter(Mandatory = $true)][string[]]$Services,
+        [Parameter(Mandatory = $true)][string[]]$ComposeArguments
+    )
+
+    if ($Services.Count -eq 0) { return $false }
+    foreach ($service in $Services) {
+        $ids = @(& docker @($ComposeArguments + @("ps", "-a", "-q", $service)))
+        if ($LASTEXITCODE -ne 0 -or $ids.Count -eq 0) { return $false }
+        foreach ($containerId in $ids) {
+            if ([string]::IsNullOrWhiteSpace($containerId)) { return $false }
+            $state = & docker inspect -f '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{end}}' $containerId
+            if ($LASTEXITCODE -ne 0 -or $state -notmatch '^running(?:\s|$)' -or $state -match 'starting|unhealthy') { return $false }
+        }
+    }
+    return $true
 }
 
 function Import-BundledImages {
@@ -124,7 +143,10 @@ if ($Action -eq "Start" -and -not (Test-Path -LiteralPath $EnvFile)) {
 }
 
 $ComposeEnvFile = if (Test-Path -LiteralPath $EnvFile) { $EnvFile } else { $ExampleEnvFile }
-$ComposeFiles[1] = $ComposeEnvFile
+$ComposeFiles[2] = $ComposeEnvFile
+
+$dependencyTrackEnabled = (Get-DotEnvValue -Path $ComposeEnvFile -Name "TRACKER_DEPENDENCY_TRACK_ENABLED") -match '^(?i:true|1|yes|on)$'
+if ($dependencyTrackEnabled) { $ComposeFiles += @("--profile", "dependency-track") }
 
 Assert-DockerReady
 
@@ -141,12 +163,11 @@ if ($Action -eq "Stop") {
 
 $requiredNames = @(
     "POSTGRES_PASSWORD",
-    "DTRACK_DB_PASSWORD",
     "TRACKER_DB_PASSWORD",
     "TRACKER_BOOTSTRAP_ADMIN_PASSWORD",
-    "TRACKER_DEPENDENCY_TRACK_API_KEY",
     "TRACKER_DATABASE_URL"
 )
+if ($dependencyTrackEnabled) { $requiredNames += @("DTRACK_DB_PASSWORD", "TRACKER_DEPENDENCY_TRACK_API_KEY") }
 foreach ($name in $requiredNames) {
     $value = Get-DotEnvValue -Path $EnvFile -Name $name
     if ([string]::IsNullOrWhiteSpace($value) -or $value -match "(?i)(change-me-|your-|example|todo|<[^>]+>)") {
@@ -158,6 +179,10 @@ Import-BundledImages
 & docker @($ComposeFiles + @("config")) *> $null
 if ($LASTEXITCODE -ne 0) {
     throw "Docker Compose 설정이 올바르지 않습니다. $EnvFile 과 Compose 파일을 확인하세요."
+}
+if ($dependencyTrackEnabled) {
+    Invoke-Checked -Command "docker" -Arguments ($ComposeFiles + @("up", "-d", "--no-build", "--pull", "never", "--wait", "--wait-timeout", "$HealthTimeoutSeconds", "postgres"))
+    Invoke-Checked -Command "docker" -Arguments ($ComposeFiles + @("exec", "-T", "postgres", "sh", "/docker-entrypoint-initdb.d/10-init-multi-db.sh"))
 }
 Invoke-Checked -Command "docker" -Arguments ($ComposeFiles + @("up", "-d", "--no-build", "--pull", "never"))
 
@@ -175,11 +200,15 @@ if ($port -lt 1 -or $port -gt 65535) {
 }
 
 $baseUrl = "http://127.0.0.1:$port"
-$endpoints = @("$baseUrl/healthz", "$baseUrl/api/v1/healthz", "$baseUrl/dependency-track/")
+$endpoints = @("$baseUrl/healthz", "$baseUrl/api/v1/healthz")
+if ($dependencyTrackEnabled) { $endpoints += @("$baseUrl/dependency-track/", "$baseUrl/dependency-track/api/version") }
+$expectedServices = @(& docker @($ComposeFiles + @("config", "--services")))
+if ($LASTEXITCODE -ne 0 -or $expectedServices.Count -eq 0) { throw "기동할 Compose 서비스를 확인할 수 없습니다." }
+if (-not $dependencyTrackEnabled) { $expectedServices = @($expectedServices | Where-Object { $_ -notin @("dtrack-apiserver", "dtrack-frontend") }) }
 $deadline = (Get-Date).AddSeconds($HealthTimeoutSeconds)
 $ready = $false
 while ((Get-Date) -lt $deadline) {
-    $ready = ($endpoints | ForEach-Object { Test-HttpEndpoint -Url $_ }) -notcontains $false
+    $ready = (Test-ExpectedComposeServices -Services $expectedServices -ComposeArguments $ComposeFiles) -and (($endpoints | ForEach-Object { Test-HttpEndpoint -Url $_ }) -notcontains $false)
     if ($ready) {
         break
     }

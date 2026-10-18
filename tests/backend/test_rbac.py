@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from koda_tracker.db import Base, SessionLocal, ensure_environment_active_column, ensure_postgres_manager_enum, ensure_user_approval_state_column, ensure_user_identity_columns
 from koda_tracker.main import app
 from koda_tracker.models import Job, Role, RolePolicy, User
-from koda_tracker.security import DEFAULT_ROLE_PERMISSIONS, PERMISSION_CATALOG
+from koda_tracker.security import DEFAULT_ROLE_PERMISSIONS, PERMISSION_CATALOG, hash_password
 
 
 _names = itertools.count()
@@ -172,6 +172,60 @@ def test_manager_with_users_manage_only_can_manage_non_privileged_roles_but_not_
         with SessionLocal() as db:
             db.get(RolePolicy, Role.MANAGER).permissions = original
             db.commit()
+
+
+def test_users_manage_cannot_approve_privileged_pending_account() -> None:
+    pending_ids: list[str] = []
+    with SessionLocal() as db:
+        policy = db.get(RolePolicy, Role.MANAGER)
+        original = list(policy.permissions)
+        policy.permissions = ["users.manage"]
+        for role in (Role.ADMIN, Role.MANAGER, Role.VIEWER):
+            user = User(
+                username=_unique(f"pending-{role.value}"),
+                password_hash=hash_password("long-enough-password"),
+                role=role,
+                active=False,
+                approval_state="pending",
+            )
+            db.add(user)
+            db.flush()
+            pending_ids.append(user.id)
+        db.commit()
+    try:
+        with TestClient(app) as admin:
+            _, admin_headers = _login(admin)
+            manager = _create_user(admin, admin_headers, "manager", "approval-manager")
+        with TestClient(app) as client:
+            _, headers = _login(client, manager["username"])
+            assert client.post(f"/api/v1/users/{pending_ids[0]}/approve", headers=headers).status_code == 403
+            assert client.post(f"/api/v1/users/{pending_ids[1]}/approve", headers=headers).status_code == 403
+            assert client.post(f"/api/v1/users/{pending_ids[2]}/approve", headers=headers).status_code == 200
+    finally:
+        with SessionLocal() as db:
+            db.get(RolePolicy, Role.MANAGER).permissions = original
+            for user_id in pending_ids:
+                user = db.get(User, user_id)
+                if user is not None:
+                    db.delete(user)
+            db.commit()
+
+
+def test_administrative_user_creation_enforces_shared_password_policy() -> None:
+    with TestClient(app) as client:
+        _, headers = _login(client)
+        short = client.post(
+            "/api/v1/users",
+            json={"username": _unique("short-password"), "password": "tiny", "role": "viewer"},
+            headers=headers,
+        )
+        assert short.status_code == 422
+        accepted = client.post(
+            "/api/v1/users",
+            json={"username": _unique("valid-password"), "password": "twelve-chars", "role": "viewer"},
+            headers=headers,
+        )
+        assert accepted.status_code == 201
 
 
 def test_role_policy_put_requires_csrf_changes_next_request_and_audits_before_after_actor() -> None:

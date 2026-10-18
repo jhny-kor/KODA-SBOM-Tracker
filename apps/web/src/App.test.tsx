@@ -128,7 +128,7 @@ describe("KODA SBOM Tracker", () => {
     fireEvent.click(screen.getByRole("tab", { name: "연동 설정" }));
     expect(screen.getByRole("heading", { name: "KODA GitLab 자동 연동" })).toBeInTheDocument();
     expect(screen.getByText("GitLab 저장소 → KODA 점검·CycloneDX 생성 → Tracker 회차 수신·분석 → KODA가 GitLab 결과 MR·취약점 이슈 저장")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Dependency-Track 연결" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "기존 외부 시스템 연결" })).toBeInTheDocument();
     expect(screen.getByText("gitlab-source 환경이 자동 준비되었습니다.")).toBeInTheDocument();
     expect(screen.getByRole("row", { name: /group\/project.*활성/ })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "자동 생성 항목 보기" }));
@@ -169,7 +169,7 @@ describe("KODA SBOM Tracker", () => {
     />);
     expect(screen.getByRole("heading", { name: "사용자 1명" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: /API 토큰/ })).not.toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "Dependency-Track 연결" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "기존 외부 시스템 연결" })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "역할 정책" })).not.toBeInTheDocument();
     expect(screen.queryByRole("option", { name: "관리자" })).not.toBeInTheDocument();
     expect(screen.queryByRole("option", { name: "매니저" })).not.toBeInTheDocument();
@@ -259,7 +259,7 @@ describe("KODA SBOM Tracker", () => {
     expect(screen.queryByRole("link")).not.toBeInTheDocument();
     rerender(<ComponentInspector change={change} comparison={comparison} can={(permission) => permission === "artifact.download"} />);
     expect(screen.getAllByRole("link")).toHaveLength(2);
-    expect(screen.queryByRole("link", { name: /Dependency-Track/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /기존 외부 시스템/ })).not.toBeInTheDocument();
   });
 
   it("opens the KODA security analysis portal in a new browser context", () => {

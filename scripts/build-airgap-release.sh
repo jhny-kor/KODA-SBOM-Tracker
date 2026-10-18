@@ -8,6 +8,7 @@ source "$(cd "$(dirname "$0")" && pwd)/lib.sh"
 # local runtime .env.  The latter is intentionally supplied only on the
 # closed-network server.
 ENV_FILE="$EXAMPLE_ENV_FILE"
+include_dtrack="${KODA_INCLUDE_DEPENDENCY_TRACK:-false}"
 load_env "$EXAMPLE_ENV_FILE"
 usage() { local rc="${1:-2}"; echo "usage: $0 [output.tar.gz] [--vuln-bundle DIR]" >&2; exit "$rc"; }
 distribution_scope="${KODA_DISTRIBUTION_SCOPE:-internal}"
@@ -39,6 +40,12 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 [[ -z "$vuln_bundle" || -d "$vuln_bundle" ]] || { echo "vulnerability bundle not found: $vuln_bundle" >&2; exit 1; }
+signing_key="${KODA_RELEASE_SIGNING_KEY:-}"
+if [[ -n "$signing_key" ]]; then
+  [[ -r "$signing_key" ]] || { echo "release signing key is not readable: $signing_key" >&2; exit 1; }
+else
+  require_unsigned_artifact_opt_in "air-gap release"
+fi
 mkdir -p "$(dirname "$output")"
 output="$(cd "$(dirname "$output")" && pwd)/$(basename "$output")"
 stage_dir="$(mktemp -d "$(dirname "$output")/.airgap-release.XXXXXX")"
@@ -47,7 +54,10 @@ trap cleanup EXIT
 image_dir="$stage_dir/images"
 mkdir -p "$image_dir" "$stage_dir/config" "$stage_dir/deploy" "$stage_dir/scripts" "$stage_dir/docs" "$stage_dir/source"
 DOCKER_DEFAULT_PLATFORM=linux/amd64 compose build portal-web portal-api portal-worker
-remote_images=("$DTRACK_APISERVER_IMAGE" "$DTRACK_FRONTEND_IMAGE" "$POSTGRES_IMAGE" "$NGINX_IMAGE" "$GRYPE_IMAGE" "$CYCLONEDX_CLI_IMAGE" "$ALPINE_BASE_IMAGE")
+remote_images=("$POSTGRES_IMAGE" "$NGINX_IMAGE" "$GRYPE_IMAGE" "$CYCLONEDX_CLI_IMAGE" "$ALPINE_BASE_IMAGE")
+if [[ "$include_dtrack" == true || "$include_dtrack" == 1 ]]; then
+  remote_images+=("$DTRACK_APISERVER_IMAGE" "$DTRACK_FRONTEND_IMAGE")
+fi
 for image in "${remote_images[@]}"; do docker pull --platform linux/amd64 "$image"; done
 local_images=("${PORTAL_WEB_IMAGE}:${PORTAL_IMAGE_TAG:-dev}" "${PORTAL_API_IMAGE}:${PORTAL_IMAGE_TAG:-dev}" "${PORTAL_WORKER_IMAGE}:${PORTAL_IMAGE_TAG:-dev}")
 for image in "${local_images[@]}"; do
@@ -98,6 +108,7 @@ RELEASE_CREATED_AT=$(date -u +%Y%m%dT%H%M%SZ)
 TARGET_PLATFORM=linux/amd64
 DISTRIBUTION_SCOPE=internal-only
 COMPOSE_FILE=compose.yaml:compose.airgap.yaml
+DEPENDENCY_TRACK_INCLUDED=$include_dtrack
 VULNERABILITY_BUNDLE=$([[ -n "$vuln_bundle" ]] && echo included || echo absent)
 TRACKER_GIT_REVISION=$git_revision
 TRACKER_WORKTREE_DIRTY=$([[ "$worktree_dirty" == 1 ]] && echo true || echo false)
@@ -108,5 +119,10 @@ EOF
 ) > "$stage_dir/manifest.sha256"
 tar --no-xattrs -czf "$output" -C "$stage_dir" .
 (cd "$(dirname "$output")" && sha256_file "$(basename "$output")") > "${output}.sha256"
+if [[ -n "$signing_key" ]]; then
+  sign_file "$signing_key" "$output" "${output}.sig"
+fi
 echo "Created air-gap release: $output"
 echo "SHA-256: ${output}.sha256"
+[[ -z "$signing_key" ]] || echo "Detached signature: ${output}.sig"
+[[ -n "$signing_key" ]] || echo "Unsigned air-gap release created by explicit opt-in" >&2

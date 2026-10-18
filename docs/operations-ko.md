@@ -8,16 +8,16 @@
 
 | 서비스 | 역할 |
 | --- | --- |
-| `gateway` | 외부 진입점. `/`는 포털, `/api`는 포털 API, `/dependency-track`는 공식 Dependency-Track UI/API로 프록시 |
+| `gateway` | 외부 진입점. `/`는 포털, `/api`는 포털 API로 프록시 |
 | `portal-web` | React/Vite 포털을 정적 빌드하여 8080 포트에서 제공 |
 | `portal-api`, `portal-worker` | `apps/api` 실제 이미지 |
-| `postgres` | `dtrack`, `sbom_tracker` DB와 각 전용 계정을 초기화 |
-| `dtrack-apiserver`, `dtrack-frontend` | 공식 Dependency-Track `5.0.3` 이미지 |
+| `postgres` | 계정·회차·정책·검토·알림을 보관하는 `sbom_tracker` DB와 전용 계정 초기화 |
+| `portal-data-updater` | 오프라인 데이터 검증·활성화·롤백 전용 worker |
 
 ## 2. 초기 기동
 
 ```bash
-cp .env.example .env
+make env
 vi .env
 docker compose build portal-web portal-api portal-worker
 docker compose up -d
@@ -29,37 +29,40 @@ docker compose ps
 | 항목 | 내용 |
 | --- | --- |
 | `POSTGRES_PASSWORD` | PostgreSQL superuser 비밀번호 |
-| `DTRACK_DB_PASSWORD` | `dtrack` DB 계정 비밀번호 |
 | `TRACKER_DB_PASSWORD` | `sbom_tracker` DB 계정 비밀번호 |
 | `TRACKER_BOOTSTRAP_ADMIN_PASSWORD` | 최초 Tracker 관리자 비밀번호 |
 | `TRACKER_LDAP_ENCRYPTION_KEY` | LDAP bind 비밀번호를 DB에 저장할 때 사용하는 Fernet 키 |
-| `TRACKER_DEPENDENCY_TRACK_API_KEY` | Dependency-Track 전용 team API 키 |
-| `DTRACK_API_BASE_URL` | 브라우저가 접근할 수 있는 공개 base 주소. `/api`를 붙이지 않음 |
+| `PUBLIC_HTTP_BIND` | 기본은 로컬 전용 `127.0.0.1`; 원격 공개 시 아래 HTTPS 조건 필수 |
 | 볼륨 이름, 외부 공개 포트 | 필요할 때만 변경 |
 
-운영 환경에서는 `TRACKER_ENVIRONMENT=production`, `TRACKER_SECURE_COOKIES=true`,
-`TRACKER_PUBLIC_ORIGIN=https://<동일-오리진-호스트>`를 함께 설정합니다.
+`make env`는 데이터베이스·최초 관리자·LDAP 암호화 키를 생성하고 `.env`를 `0600`으로
+저장합니다. 운영에서 `PUBLIC_HTTP_BIND`를 loopback 이외 주소로 바꿀 때는 외부 TLS
+reverse proxy와 함께 `TRACKER_ENVIRONMENT=production`, `TRACKER_SECURE_COOKIES=true`,
+`TRACKER_PUBLIC_ORIGIN=https://<동일-오리진-호스트>`를 모두 설정해야 합니다.
 
-Dependency-Track 초기 관리자 로그인 후 포털 전용 팀을 만들고 다음 최소 권한을
-부여합니다.
+KODA가 Grype DB 분석 결과로 지표·정책을 계산합니다. **설정 → SBOM 정책**에서
+규칙과 만료 예외를 변경하고, 기존 회차는 **새 분석 리비전**으로 재평가합니다. 분석마다
+정책 버전·스냅샷·평가 상태·근거가 보존됩니다. 미평가/실패를 위반 0건으로 해석하지 않습니다.
+초기 기본 정책은 Critical/High 및 KEV 위반, 미확인 라이선스 경고이며 조직의 금지
+라이선스·구성요소 목록은 운영자가 설정합니다. Grype DB 반입·롤백은 기존대로 유지합니다.
+KEV 정책을 켠 상태에서 CISA KEV 데이터가 없으면 비해당으로 통과시키지 않고 데이터
+부족 경고를 기록합니다. 유효한 빈 KEV 목록과 데이터 미공급을 구분합니다. 예외 만료는
+다음 분석에서 반영되며 과거 리비전의 판정은 바뀌지 않습니다.
 
-| 권한 | 용도 |
-| --- | --- |
-| `BOM_UPLOAD` | BOM 업로드 |
-| `PROJECT_CREATION_UPLOAD` | 업로드 시 프로젝트 생성 |
-| `PORTFOLIO_MANAGEMENT_UPDATE` | 정상 완료 회차의 latest 승격에만 사용 |
-| `VIEW_PORTFOLIO` | 프로젝트·구성요소 조회 |
-| `VIEW_VULNERABILITY` | 취약점 조회 |
-| `VIEW_POLICY_VIOLATION` | 정책 위반 조회 |
-
-발급 키는 `TRACKER_DEPENDENCY_TRACK_API_KEY`에만 저장하며 frontend나 브라우저
-환경변수로 전달하지 않습니다.
+정책의 **위반**은 준수 여부 판정이며, 분석 작업이 정상적으로 끝났다는 **완료** 상태와
+별개입니다. 현재 정책 판정 자체가 외부 배포를 차단하지는 않습니다. 규칙에는 서비스·환경·
+릴리스 범위를 지정할 수 있으며 범위를 비우면 전체 서비스에 적용됩니다. 라이선스는 선언된 식별자와 `AND`·`OR` 표현식으로 검사하고,
+`WITH` 예외·사용자 정의·미확인 정보는 검토 대상으로 남깁니다. SPDX 전체 식별자 목록
+검증이나 법적 호환성 판단은 제공하지 않습니다. 정책 결과가 100,000건을 넘으면 평가
+실패로 표시하며 규칙 범위를 줄여 재분석해야 합니다.
 
 ### 2-1. 계정과 권한 초기화
 
 최초 기동 시 `TRACKER_BOOTSTRAP_ADMIN_USERNAME` 사용자가 없고
 `TRACKER_BOOTSTRAP_ADMIN_PASSWORD`가 설정되어 있으면 활성 `admin` 계정을 한 번
-생성합니다. 로그인 후 설정 화면에서 다음 작업을 수행합니다.
+생성합니다. 빈 값·12자 미만·알려진 기본값은 기동 시 거부됩니다. 과거 기본 비밀번호로
+생성된 계정은 `.env`에 새 강력한 값을 한 번 설정하고 재기동하면 자동으로 교체되며
+감사 로그가 남습니다. 로그인 후 설정 화면에서 다음 작업을 수행합니다.
 
 1. 가입 또는 LDAP 로그인으로 생성된 승인 대기 계정의 역할을 확인하고 승인합니다.
 2. 역할 정책에서 화면 접근 권한과 기능 제어 권한을 검토합니다.
@@ -89,45 +92,14 @@ Dependency-Track 초기 관리자 로그인 후 포털 전용 팀을 만들고 �
 - 통합 KODA suite는 Tracker의 HttpOnly 세션을 gateway에서 검증한 뒤 KODA에 UUID,
   표시 이름, 만료 시각만 전달합니다. Tracker 승인 계정은 KODA에도 자동 활성화되고
   KODA 관리자는 프로젝트 권한만 별도로 부여합니다.
-- Dependency-Track UI는 별도 사용자·Team 권한을 사용합니다. 포털 backend 연동용
-  API 키를 사용자 로그인이나 브라우저 SSO에 사용하지 않습니다. Dependency-Track
-  자체 LDAP/OIDC가 필요한 경우에는 설치한 upstream 버전의 공식 설정으로 별도 구성합니다.
 
 운영 세션은 HTTPS 동일 오리진을 전제로 합니다. `TRACKER_ENVIRONMENT=production`은
 HTTPS `TRACKER_PUBLIC_ORIGIN`과 `TRACKER_SECURE_COOKIES=true`가 아니면 기동을
 거부합니다. reverse proxy는 원래 Host와 HTTPS scheme을 보존해야 합니다.
 
-설정 후 실제 키·버전·팀 권한을 읽기 전용으로 확인합니다.
-
-```bash
-./scripts/verify-dtrack-connection.sh
-```
-
-실제 BOM 업로드·이벤트 token 추적·프로젝트 metric/policy 조회까지 확인하려면
-승인된 테스트 환경에서 다음 선택적 live smoke test를 실행합니다. 테스트 프로젝트가
-Dependency-Track에 남으므로 운영 프로젝트가 아닌 별도 인스턴스/이름을 사용합니다.
-
-```bash
-KODA_DTRACK_LIVE=1 \
-KODA_DTRACK_LIVE_URL=http://127.0.0.1:8088/dependency-track \
-KODA_DTRACK_LIVE_API_KEY='전용 팀 키' \
-.venv/bin/pytest tests/integration/test_dtrack_live.py -q
-```
-
-관리자 API 키가 있는 초기 설치에서만 자동 팀/권한/키 발급 도구를 사용할 수
-있습니다. 관리자 키는 셸 환경변수로만 전달하고 `.env`에는 저장하지 않습니다.
-기존 키가 있는 팀은 자동 회전하지 않으므로 실수로 기존 연동을 끊지 않습니다.
-권한이 이미 같은 경우 Dependency-Track의 `PUT v1/permission/team`은 `304`를
-반환할 수 있으며 최신 스크립트는 이를 성공으로 처리합니다. team에 사용자 멤버가
-0명이어도 API 키 인증에는 영향을 주지 않습니다.
-
-```bash
-export DTRACK_ADMIN_API_KEY='관리자 API 키'
-export DTRACK_ADMIN_API_BASE_URL='http://127.0.0.1:8088/dependency-track/api'
-./scripts/configure-dtrack-key.sh
-docker compose up -d --force-recreate portal-api portal-worker
-./scripts/verify-dtrack-connection.sh
-```
+기동 후 실제 관리자 로그인, 서비스·환경 조회, 테스트 SBOM 업로드와 Grype 분석을
+확인합니다. 결과의 분석 상태·정책 평가 상태·정책 버전·데이터 기준일을 함께 확인해야
+하며, health 응답 한 건만으로 전체 기능이 검증됐다고 판단하지 않습니다.
 
 ### 계정·데이터 생명주기와 감사
 
@@ -136,8 +108,7 @@ docker compose up -d --force-recreate portal-api portal-worker
   새 업로드는 API가 거부합니다.
 - 회차 `보관`은 `sbom.archive` 권한으로 상태를 바꿉니다. 회차 `영구 삭제`는 실제
   관리자이면서 `sbom.delete` 권한이 있을 때만 가능하며 완료·실패·보관 회차의 Tracker
-  데이터와 로컬 원본만 제거합니다. 진행·대기 작업은 거부하고 Dependency-Track
-  프로젝트는 삭제하지 않습니다.
+  데이터와 로컬 원본만 제거합니다. 진행·대기 작업은 거부하며 외부 백업은 제거하지 않습니다.
 - 감사 로그 조회와 CSV 다운로드는 실제 관리자이면서 `audit.view` 권한이 있어야
   합니다. `Excel 다운로드`는 현재 검색어를 적용한 전체 결과를 UTF-8 BOM CSV로
   내보내며 시각은 서울 시간, 위험한 셀 시작 문자는 수식으로 실행되지 않게 처리합니다.
@@ -175,8 +146,6 @@ GATEWAY_SERVER_NAME=koda.example.internal
 GATEWAY_PUBLIC_SCHEME=https
 TRACKER_PUBLIC_ORIGIN=https://koda.example.internal
 TRACKER_SECURE_COOKIES=true
-DTRACK_API_BASE_URL=https://koda.example.internal/dependency-track
-DTRACK_ADMIN_API_BASE_URL=https://koda.example.internal/dependency-track/api
 KODA_SSBOM_TRACKER_URL=https://koda.example.internal/
 ```
 
@@ -294,21 +263,17 @@ Windows에서 만든 `koda-vuln-bundle-<version>.zip`은 서버에서 먼저 임
 ## 4. 상태 확인
 
 ```bash
+docker compose ps
 curl -fsS http://localhost:${PUBLIC_HTTP_PORT:-8088}/healthz
 curl -fsS http://localhost:${PUBLIC_HTTP_PORT:-8088}/api/v1/healthz
-curl -I http://localhost:${PUBLIC_HTTP_PORT:-8088}/dependency-track/
-curl -fsS http://localhost:${PUBLIC_HTTP_PORT:-8088}/dependency-track/api/version
-curl -fsS http://localhost:${PUBLIC_HTTP_PORT:-8088}/dependency-track/static/config.json \
-  | python3 -m json.tool
+docker compose exec -T portal-web nginx -t
+docker compose exec -T portal-worker grype version
 ```
 
-gateway는 포털뿐 아니라 Dependency-Track frontend와 API readiness가 모두 정상인
-경우에만 healthy가 됩니다. Dependency-Track API의 내부 readiness endpoint는
-`/health/ready`입니다.
-원격 브라우저를 사용하는 경우 `static/config.json`의 `API_BASE_URL`에
-`localhost`, `127.0.0.1`, `dtrack-apiserver`가 없어야 합니다. 설치 중 발생한
-흰 화면·401·304·400·413 오류는 [폐쇄망 장애 대응](troubleshooting-ko.md)을
-따릅니다.
+gateway·web·API·분석 worker·데이터 updater·PostgreSQL이 실행 중인지 확인합니다.
+브라우저에서 로그인하고 저장된 회차의 CVE·정책 근거를 조회합니다. 새 분석 리비전이
+완료돼도 데이터 부족 경고나 정책 위반이 있으면 별도 조치가 필요합니다. 흰 화면·인증·
+업로드·Grype DB 오류는 [폐쇄망 장애 대응](troubleshooting-ko.md)을 따릅니다.
 
 ## 5. 백업과 복원
 
@@ -322,13 +287,17 @@ gateway는 포털뿐 아니라 Dependency-Track frontend와 API readiness가 모
 
 ```bash
 ENV_FILE=/opt/koda-sbom/.env
+BACKUP_SIGNING_KEY=/etc/koda/keys/backup-signing.pem
+BACKUP_VERIFY_KEY=/etc/koda/trust/backup-public.pem
 docker compose --env-file "$ENV_FILE" -f compose.yaml -f compose.airgap.yaml \
-  stop gateway portal-web portal-api portal-worker dtrack-frontend dtrack-apiserver
+  stop gateway portal-web portal-api portal-worker portal-data-updater
 
 ENV_FILE="$ENV_FILE" BACKUP_ROOT=/media/koda-backup/tracker \
+  KODA_BACKUP_SIGNING_KEY="$BACKUP_SIGNING_KEY" \
   ./scripts/backup-system.sh
 ENV_FILE="$ENV_FILE" \
-  ./scripts/verify-backup.sh /media/koda-backup/tracker/<출력된-UTC-시각>
+  ./scripts/verify-backup.sh /media/koda-backup/tracker/<출력된-UTC-시각> \
+  --public-key "$BACKUP_VERIFY_KEY"
 
 ./scripts/start-airgap.sh "$ENV_FILE"
 ```
@@ -338,10 +307,25 @@ ENV_FILE="$ENV_FILE" \
 | 포함 | 포함되지 않음 |
 | --- | --- |
 | PostgreSQL globals SQL | 운영 `.env` (위의 명시적 옵션을 사용한 경우만 포함) |
-| `dtrack`, `sbom_tracker` 논리 덤프 | 통합 Suite의 KODA 포털 SQLite·입력 파일 |
-| `tracker-artifacts`, `dtrack-data`, `vuln-data` volume tarball | 호스트에 별도로 둔 원본 SBOM, 스캔 대상, KODA 보고서, TLS 인증서 |
+| `sbom_tracker` 논리 덤프 | 통합 Suite의 KODA 포털 SQLite·입력 파일 |
+| `tracker-artifacts`, `vuln-data` volume tarball | 호스트에 별도로 둔 원본 SBOM, 스캔 대상, KODA 보고서, TLS 인증서 |
 | compose/deploy 기준 설정 | Docker 이미지 tar와 릴리스 압축파일 |
-| SHA-256 manifest | |
+| SHA-256 manifest와 detached signature | 백업 서명 개인키·검증 공개키 |
+
+백업용 RSA 키 쌍은 릴리스 키와 분리합니다. `KODA_BACKUP_SIGNING_KEY` 개인키는
+백업 디렉터리 밖의 접근 제한 경로에 두며, 공개키도 백업 세트와 다른 신뢰 저장소에
+보관합니다. 서명 파일은 manifest가 공격자에 의해 함께 교체되는 것을 차단합니다.
+
+서명 없이 백업해야 하는 제한된 환경에서는 생성과 검증에 모두 명시적 플래그를
+지정합니다. checksum과 metadata/tar 안전성 검사는 유지되지만 백업의 진위는
+검증되지 않습니다.
+
+```bash
+ENV_FILE="$ENV_FILE" BACKUP_ROOT=/media/koda-backup/tracker \
+  KODA_ALLOW_UNSIGNED_ARTIFACTS=1 ./scripts/backup-system.sh
+ENV_FILE="$ENV_FILE" KODA_ALLOW_UNSIGNED_ARTIFACTS=1 \
+  ./scripts/verify-backup.sh /media/koda-backup/tracker/<출력된-UTC-시각>
+```
 
 복원은 현재 데이터를 교체하므로 검증된 백업과 그 백업을 만든 당시의 `.env` 및
 호환 릴리스가 모두 준비된 경우에만 수행합니다. 현재 상태도 먼저 새 백업으로
@@ -351,49 +335,67 @@ ENV_FILE="$ENV_FILE" \
 ENV_FILE=/opt/koda-sbom/.env
 BACKUP=/media/koda-backup/tracker/<UTC-시각>
 
-ENV_FILE="$ENV_FILE" ./scripts/verify-backup.sh "$BACKUP"
-ENV_FILE="$ENV_FILE" ./scripts/restore-system.sh "$BACKUP"
+ENV_FILE="$ENV_FILE" ./scripts/verify-backup.sh "$BACKUP" \
+  --public-key /etc/koda/trust/backup-public.pem
+ENV_FILE="$ENV_FILE" ./scripts/restore-system.sh "$BACKUP" \
+  --public-key /etc/koda/trust/backup-public.pem
 ./scripts/start-airgap.sh "$ENV_FILE"
 ```
 
-`restore-system.sh`는 Compose 서비스를 내리고 named volume과 두 DB를 교체한 뒤
+무서명 백업 복원은 공개키 없이 다음과 같이 실행합니다.
+
+```bash
+ENV_FILE="$ENV_FILE" KODA_ALLOW_UNSIGNED_ARTIFACTS=1 \
+  ./scripts/restore-system.sh "$BACKUP"
+```
+
+`restore-system.sh`는 백업을 권한 `0700` 임시 디렉터리에 복사한 다음 서명·manifest,
+현재 환경의 project/DB/volume metadata와 tar 경로를 검증합니다. 검증이 모두 끝난
+뒤에만 Compose 서비스를 내리고 named volume과 두 DB를 교체한 뒤
 PostgreSQL만 기동한 상태로 끝납니다. 따라서 마지막 `start-airgap.sh`와 상태 확인을
 생략하면 안 됩니다. 다른 `COMPOSE_PROJECT_NAME`, DB 이름, volume 이름으로 만든
 백업을 현재 `.env`에 임의 복원하지 않습니다.
 
 ## 6. 폐쇄망 부분 교체
 
-- 포털·worker·Dependency-Track 이미지나 Compose를 바꿀 때는 개별 image tar를
+- 포털·worker·데이터 updater 이미지나 Compose를 바꿀 때는 개별 image tar를
   직접 덮어쓰지 않고 새 전체 Tracker 릴리스의 manifest를 검증한 뒤 기존 설치
   디렉터리에 `install-airgap.sh`를 다시 실행합니다. 통합 KODA Suite 운영 서버는
   이 단독 절차 대신 Suite 압축파일의 `koda-suite install`을 사용합니다.
 - 계정·역할·회차·감사 기록은 `sbom_tracker` DB, 업로드 원문은
   `tracker-artifacts` volume에 있으므로 관리자 대량 변경 전 전체 백업을 만듭니다.
-- Dependency-Track 프로젝트·정책은 `dtrack` DB와 `dtrack-data` volume에 있으므로
-  같은 전체 백업으로 보호합니다.
+- 정책 버전·VEX 검토·알림·재분석 일정도 `sbom_tracker` DB에 포함됩니다.
 - Grype/NVD/KEV만 바꿀 때는 이미지를 다시 설치하지 않고
   `verify-vuln-bundle.sh` → `import-vuln-bundle.sh` → 포털 동기화 순서로 반입합니다.
 - `.env`, TLS 인증서, 외부 reverse proxy 설정은 릴리스에 포함되지 않습니다. 변경
   전 별도 백업하고 `preflight-airgap.sh`를 통과시킨 뒤 서비스를 재기동합니다.
 
 업그레이드 기동 시 기존 DB에는 환경 활성 상태 컬럼과 관리자 역할의 `sbom.delete`
-권한이 보강됩니다. 취약점 원본, 감사 로그와 Dependency-Track 데이터는 변환하지
-않으므로 기동 전 `sbom_tracker` DB와 artifact volume을 함께 백업합니다.
+권한이 보강됩니다. 기존 취약점 원본과 감사 로그를 보존하므로 기동 전 `sbom_tracker`
+DB와 artifact volume을 함께 백업합니다. 이전 시스템 자료의 이관은 별도 절차로 검증합니다.
 
 Tracker 단독 설치를 같은 디렉터리에서 갱신하는 예시는 다음과 같습니다.
 
 ```bash
 RELEASE=/media/koda-release/koda-sbom-airgap-<버전>.tar.gz
 PREFIX=/opt/koda-sbom
+RELEASE_VERIFY_KEY=/etc/koda/trust/release-public.pem
+BACKUP_SIGNING_KEY=/etc/koda/keys/backup-signing.pem
+BACKUP_VERIFY_KEY=/etc/koda/trust/backup-public.pem
 
-"$PREFIX/scripts/verify-airgap-release.sh" "$RELEASE"
+"$PREFIX/scripts/verify-airgap-release.sh" "$RELEASE" \
+  --public-key "$RELEASE_VERIFY_KEY" --signature "${RELEASE}.sig"
 docker compose --project-directory "$PREFIX" --env-file "$PREFIX/.env" \
   -f "$PREFIX/compose.yaml" -f "$PREFIX/compose.airgap.yaml" stop
 ENV_FILE="$PREFIX/.env" BACKUP_ROOT=/media/koda-backup/tracker \
+  KODA_BACKUP_SIGNING_KEY="$BACKUP_SIGNING_KEY" \
   "$PREFIX/scripts/backup-system.sh"
 ENV_FILE="$PREFIX/.env" \
-  "$PREFIX/scripts/verify-backup.sh" /media/koda-backup/tracker/<출력된-UTC-시각>
-"$PREFIX/scripts/install-airgap.sh" "$RELEASE" "$PREFIX" --env-file "$PREFIX/.env"
+  "$PREFIX/scripts/verify-backup.sh" /media/koda-backup/tracker/<출력된-UTC-시각> \
+  --public-key "$BACKUP_VERIFY_KEY"
+"$PREFIX/scripts/install-airgap.sh" "$RELEASE" "$PREFIX" \
+  --public-key "$RELEASE_VERIFY_KEY" --signature "${RELEASE}.sig" \
+  --env-file "$PREFIX/.env"
 "$PREFIX/scripts/start-airgap.sh" "$PREFIX/.env"
 ```
 
@@ -421,3 +423,155 @@ KODA_TRACKER_TOKEN='서비스 범위 토큰' \
 
 동일 `Idempotency-Key` 재전송은 같은 회차를 반환하고, 다른 키로 같은 파일을
 올리면 blob은 중복 저장하지 않으면서 새 회차를 배정합니다.
+
+### 기존 백업과 이관 자료
+
+현재 KODA 백업은 데이터베이스·artifact·취약점 데이터의 구성과 manifest를 검증한 뒤
+복원합니다. 이전 시스템 자료는 원본을 별도 보존하고, 현재 백업 형식과 같다고 가정하지
+않습니다. 필요한 항목만 명시적으로 이관한 뒤 정책 조건·범위·예외와 기록 수를 비교합니다.
+서명 검증과 무서명 명시적 opt-in 규칙은 기존대로 유지합니다.
+
+## 고급 정책·VEX·자동 재분석
+
+KODA API와 일반 분석 worker가 아래 기능을 직접 처리합니다. Grype DB와 선택적인 KEV/NVD 데이터는 기존처럼 사용하며, 외부 취약점 API를 호출하지 않습니다.
+
+| 기능 | 실제 처리 방식 | 운영상 경계 |
+| --- | --- | --- |
+| 서비스별 정책 | 규칙마다 서비스 ID·환경 ID·릴리스 버전을 지정. 빈 목록은 전체, 여러 범위는 교집합 | 릴리스 버전은 정확한 문자열 일치. 프로젝트는 KODA 서비스이며 환경·릴리스를 별도로 선택 |
+| CEL 고급 조건 | `cel-expr-python==0.1.3` 표준 런타임, 구성요소·취약점·프로젝트별 평가 | 파일·네트워크·Python 함수 호출 없음. 오류/미확인 필드를 자동으로 통과시키지 않음 |
+| 검토 | 제출 → 독립 검토자의 승인/거절, 의견과 결정 이력 보존 | 작성자 자기 승인 금지. 승인·거절 후 변경하려면 새 검토 제출 |
+| VEX | CycloneDX 1.6 내보내기, 1.6/1.7 가져오기 | 정확한 bom-ref·구성요소 버전·CVE 대상만 허용. 가져오기는 미승인 검토로 등록 |
+| VEX 평가 | 서비스·환경·정확한 구성요소 버전·취약점 기준으로 최신 승인 적용 | `not_affected`, `false_positive`만 보안 규칙을 제외. 라이선스/구성요소/프로젝트 규칙은 유지 |
+| 알림 | 결과 변경·분석/정책 실패·검토 요청/결정의 영구 보관함, 사용자별 읽음 | 동일 결과의 반복 분석은 조용히 유지. 이메일/Slack 전용 전송기는 포함하지 않음 |
+| Webhook | HMAC SHA-256 서명, 영구 outbox, 지수 backoff 후 최대 5회, 최종 실패 수동 재시도 | 명시한 호스트만 허용. 수신자는 이벤트 ID로 중복 수신 방지 필요 |
+| 전체 SBOM 재분석 | 기본 활성·매일 1회, 모든 보관 전 회차에 새 분석 리비전 추가 | 5분~7일 간격, 범위/최신 회차만 옵션. 원본 SBOM과 과거 분석은 유지 |
+| 데이터 갱신 후 재분석 | 활성 데이터 번들의 버전+매니페스트 변경 감지 | 진행 중 변경은 후속 사이클 하나로 합침. 최초 worker 관측은 변경으로 취급하지 않음 |
+
+### CEL 작성과 검증
+
+설정 → SBOM 정책에서 규칙 종류를 CEL로 선택하고 대상과 범위를 지정합니다. 식이 `true`이면 해당 규칙의 위반이며 `false`이면 통과입니다. 화면에서 저장 전 컴파일 검증을 실행할 수 있습니다. `POST /api/v1/sbom-policies/validate` API에 `expression`, `target`, `runId`를 보내면 해당 실제 회차의 저장된 분석 결과로 미리 평가할 수 있습니다. 미리 평가는 저장된 분석을 변경하지 않습니다.
+
+```cel
+// 취약점 대상: KEV이며 수정 가능한 버전이 있고 CVSS 9 이상
+vulnerability.kev && size(vulnerability.fixedIn) > 0 && vulnerability.cvssScore >= 9.0
+
+// 구성요소 대상: SPDX 목록을 대상으로 한 임의 조건
+component.licenses.exists(l, l.startsWith("GPL-"))
+
+// 프로젝트 대상: 운영 환경의 특정 릴리스
+project.slug == "payments" && environment.slug == "prod" && release.version == "1.0"
+```
+
+변수는 `project{id,slug,name}`, `environment{id,slug,name}`, `release{version}`, `run{id,source,roundNumber}`, `component`, `vulnerability`, `now`입니다. 취약점 severity는 Grype 원문의 대소문자를 유지하므로 실제 미리보기로 확인합니다. 구성요소는 이름·버전·purl·라이선스·properties, 취약점은 ID·심각도·CVSS·KEV·수정 버전을 제공합니다. 데이터가 없는 선택 필드는 `has(...)`로 확인합니다. `ageDays`·`latestVersion`·`versionDistance`는 SBOM의 명시적인 `koda:*` properties가 있을 때만 존재하며 외부 저장소 조회나 임의 추정으로 만들지 않습니다.
+
+CEL은 별도 격리 프로세스에서 최대 10초 wall time/8초 CPU, Linux 주소 공간 512MiB, 입력 32MiB, 출력 4MiB, 100,000회 평가 한도를 적용합니다. 식은 8,192바이트까지이며 표준 CEL 매크로·정규식·시간 연산을 지원합니다. 한도 초과와 런타임 오류는 해당 분석의 정책 실패로 기록합니다. 운영 데이터가 크면 규칙 범위나 대상 수를 줄여 조정합니다.
+
+### VEX 검토의 적용 시점
+
+회차 상세 → VEX·검토에서 정확한 구성요소/CVE를 선택합니다. 영향 없음/오탐에는 설명과 CycloneDX 근거 코드가 필수입니다. 만료 시각을 지정할 수 있습니다. 승인 결정은 **다음 재분석**부터 새 리비전에 적용하며 과거 리비전은 다시 쓰지 않습니다. 원본 CVE와 Grype 결과는 보존하고 유효 취약점 수·제외 수·검토 근거를 별도로 표시합니다. 만료된 최신 승인이 이전 승인을 되살리지는 않습니다. `resolved` 상태 자체로 탐지 결과를 제거하지 않으며 실제 수정 버전의 새 SBOM으로 확인합니다.
+
+### 재분석 대기열과 복구
+
+설정 → 재분석 일정에서 주기·범위를 저장하거나 수동 사이클을 실행합니다. 설치 직후 첫 예약은 24시간 뒤입니다. 기본은 모든 저장된 보관 전 회차이며 최신 회차만 옵션을 켜면 릴리스별 마지막 보관 전 회차를 선택합니다. 비활성 카탈로그에 속하더라도 보관하지 않은 기록은 기본 전체 범위에 포함됩니다. 일정 비활성화는 앞으로의 자동 접수를 중지하며 이미 접수한 사이클은 끝까지 처리합니다.
+
+사이클의 대상 목록과 회차별 대기·접수·완료·실패·건너뜀 상태는 DB에 저장됩니다. 대기열 용량이 부족하거나 해당 회차가 이미 실행 중이면 대기했다가 같은 사이클에서 접수합니다. 삭제/보관된 대상은 건너뜁니다. worker는 약 10초마다 진행을 확인하지만 실제 실행 시각은 다른 분석 시간에 따라 지연될 수 있습니다. 작업이 중단되면 15분 임대 만료 후 재접수하며 3번째 시도까지 실패하면 최종 실패로 표시합니다. 복수 worker는 DB 잠금과 활성 사이클 고유 키로 중복 접수를 방지합니다.
+
+### Webhook 설정
+
+`.env`에서 다음 값을 지정한 뒤 API와 일반 worker를 다시 생성합니다. 설정 화면은 활성 여부와 호스트 등 비밀값이 아닌 상태만 표시합니다.
+
+```dotenv
+TRACKER_NOTIFICATION_WEBHOOK_ENABLED=true
+TRACKER_NOTIFICATION_WEBHOOK_URL=https://alerts.example.internal/koda
+TRACKER_NOTIFICATION_ALLOWED_HOSTS=alerts.example.internal
+TRACKER_NOTIFICATION_WEBHOOK_SECRET=<별도 생성한 충분히 긴 비밀키>
+```
+
+기본 Docker `app` 네트워크는 `internal: true`입니다. 같은 네트워크의 내부 수신기를 연결하거나 필요한 목적지로만 도달할 수 있는 별도 네트워크 구성을 운영자가 제공해야 합니다. URL 지정만으로 외부 통신이 열리지는 않습니다. HTTP는 명시적으로 허용한 내부 호스트에서만 사용할 수 있고, 리디렉션과 환경 proxy는 사용하지 않습니다. `X-KODA-Signature: sha256=<HMAC>`를 원본 요청 바이트로 검증하고 `Idempotency-Key`의 이벤트 ID를 중복 처리하지 않도록 저장합니다. 네트워크 오류에도 보관함 기록은 남습니다.
+
+### 기존 시스템 이관 시 의미 보존
+
+| 항목 | KODA에서 확인할 기준 |
+| --- | --- |
+| 프로젝트 계층 | 서비스·환경·릴리스·회차 식별자를 대응시키고 원본 식별자와 출처를 보존 |
+| 최신 회차 | 최신 표시를 새 SBOM 생성이나 새 Grype 분석으로 해석하지 않음 |
+| 분석 기록 | 원본 결과와 KODA 자체 재평가 결과를 구분하고 기준일·도구 버전·정책 버전을 함께 기록 |
+| 정책 | 조건·연산자·대상·범위·라이선스 그룹·예외를 확인하고 대응할 수 없는 의미는 보류 |
+| 저장소 메타데이터 | 패키지 나이·최신 버전·버전 거리는 실제 공급 데이터의 출처와 기준일을 확인 |
+
+동일한 이름의 정책이라고 의미가 같지는 않습니다. Grype DB에 없는 저장소 최신성 정보를
+추정해서 채우지 않습니다. 필요한 데이터를 명시적으로 공급하거나 평가 불가로 표시하고,
+이관 도구의 실행만으로 의미적 동등성이 검증됐다고 판단하지 않습니다.
+
+## 기존 자료 자동이관과 패키지 메타데이터
+
+설정의 **기존 시스템 이관**은 관리자만 적용할 수 있습니다. 원본 API 주소·키를 입력해
+수집하거나 CLI가 만든 JSON 번들을 가져옵니다. 원본 키는 이관 레코드에 저장하지 않습니다.
+원본은 읽기만 하고 프로젝트·SBOM·취약점·정책·검토·정책 위반 증거를 번들에 보존합니다.
+
+1. `POST /api/v1/legacy-migrations/export-stage`에 `baseUrl`, `apiKey`,
+   `allowedOrigins`(정확한 scheme/host/port), 선택적 `projectUuids`를 보냅니다.
+   오프라인 번들은 `POST /api/v1/legacy-migrations/stage`의 `bundle`로 제출합니다.
+2. 응답의 `report.canApply`, `blockers`, `warnings`, 변환 규칙과 프로젝트 범위를 확인합니다.
+   조건을 생략해 통과시키지 않으며 하나라도 변환 불가능하면 적용을 차단합니다.
+3. `POST /api/v1/legacy-migrations/{id}/apply`에 `expectedDigest`,
+   `expectedPolicyVersion`, `trustSourceReviews`를 제출합니다. 기본값은 원본 검토를
+   미승인 증거로 보존하는 `false`입니다. `true`는 관리자가 원본의 판단을 신뢰하는 명시적
+   선택이며 근거·원작성자·정확한 회차 범위를 보존합니다. 신뢰할 수 없는 복합 억제는 차단합니다.
+4. 적용은 트랜잭션으로 실행하고 원본 ID 매핑으로 재실행 중복을 막습니다.
+   `GET /api/v1/legacy-migrations`에서 이력을, `GET /{id}/bundle`에서 원본을 확인합니다.
+5. 이관된 과거 결과는 원본 분석 증거입니다. 현재 Grype DB 분석은 별도 새 리비전으로 실행합니다.
+
+지원 변환은 FAIL/WARN/INFO, 조건별 ALL/ANY, 심각도·취약점 ID, 좌표·PURL·CPE·SWID·해시·내부 구성요소,
+단일 라이선스/그룹의 SPDX 식별자·AND/OR, 프로젝트·태그·하위 프로젝트·최신 표시의 이관 시점 범위입니다.
+태그·계층 범위는 현재 원본 스냅샷의 고정 회차 ID로 변환하며 향후 외부 변경을 추적하는 동기화는 아닙니다.
+무기한 정책 예외도 정확한 `runId` 범위를 보존합니다. AGE는 원본 시간대를 `sourceTimeZone: "UTC"`로
+명시하고 일 단위 `PnD`일 때 최신 버전 공개일의 UTC 달력 날짜를 기준으로 변환합니다.
+일반 `ageDays`(현재 버전의 경과 24시간 수)와는 의미가 다릅니다.
+
+구조화된 단위별 버전 거리, 연·월 달력 기간, 다른 시간대 AGE, CWE/EPSS, 라이선스 혼합·부정 조건,
+SPDX WITH/PLUS 및 Java 전용 정규식처럼 의미를 검증하지 못한 조건은 차단 사유와 원본으로 남깁니다.
+자동 변환 성공이 모든 외부 분석기의 계산식·데이터까지 동일하다는 뜻은 아닙니다.
+
+번들은 최대 64MiB, 원본 단일 응답은 32MiB, 수집은 최대 5분으로 제한됩니다.
+큰 포트폴리오는 프로젝트를 나눠 수집합니다. 원본 origin 외부 리디렉션·환경 proxy·링크 로컬 주소는
+차단하고 DNS로 확인한 목적지에 연결합니다. CLI 예:
+
+```bash
+export LEGACY_SOURCE_API_KEY='<원본 읽기 키>'
+python scripts/import-legacy-data.py --help
+```
+
+### 최신 버전·출시일 자동 수집
+
+`portal-metadata-collector`가 npm·PyPI·Maven·NuGet·Go·Cargo 공식 HTTPS API를 조회합니다.
+신규 업로드뿐 아니라 기존 구성요소도 자동 백필하고 기본 24시간 캐시를 갱신합니다.
+분석 API와 Grype worker는 외부 저장소를 호출하지 않고 캐시만 읽습니다.
+수집기에만 별도 `metadata-egress` 네트워크를 연결하며 API·일반 worker는 내부망을 유지합니다.
+
+```dotenv
+TRACKER_PACKAGE_METADATA_ENABLED=true
+TRACKER_PACKAGE_METADATA_TTL_SECONDS=86400
+TRACKER_PACKAGE_METADATA_REQUEST_TIMEOUT_SECONDS=10
+TRACKER_PACKAGE_METADATA_MIN_INTERVAL_SECONDS=1
+TRACKER_PACKAGE_METADATA_MAX_ATTEMPTS=3
+TRACKER_PACKAGE_METADATA_RETRY_SECONDS=60
+```
+
+회차 상세에서 최신 버전·현재/최신 공개 시각·출처·수집/만료 시각·필드별 미확인을 확인합니다.
+패키지 관리 체계마다 '최신' 정의가 달라 npm의 latest 태그와 안정 버전, 배포 철회/미공개 여부 등을
+구분해 기록합니다. 지원하지 않는 ecosystem과 잘못된 PURL은 명시적으로 표시합니다.
+Maven 검색 인덱스에서 공개일을 확인하지 못하면 해당 버전 POM의 Last-Modified를
+**저장소 파일 시각(최초 출시일 미확정)**으로 표시합니다. 이를 최초 공개일로 보증하지 않습니다.
+`versionDistance`는 지원하는 체계의 안정 릴리스 개수 차이이며 단위별 버전 차이가 아닙니다.
+Maven·Go의 거리를 임의로 추정하지 않습니다.
+
+누락·만료·오류·null 필드는 CEL에 정상 최신 값으로 공급하지 않습니다.
+관련 데이터를 사용하는 조건이 `has()`로 누락을 건너뛰더라도 데이터 부족 경고와
+`policyDataComplete=false`를 기록합니다. 과거 리비전에는 사용한 메타데이터 증거를 보존합니다.
+
+`GET /api/v1/package-metadata/status`, 회차별 `GET /api/v1/sbom-runs/{id}/package-metadata`,
+수동 갱신 `POST /api/v1/sbom-runs/{id}/package-metadata/refresh`를 제공합니다.
+폐쇄망은 수집을 끄고 `GET /api/v1/package-metadata/export?page=1&size=1000`으로 받은 캐시를
+`POST /api/v1/package-metadata/import`로 반입합니다. 여러 페이지는 빠짐없이 반입해야 합니다.
+반입 데이터의 원래 시각과 출처를 보존하며 오래된 자료를 새 수집으로 위장하지 않습니다.

@@ -12,6 +12,13 @@ distribution_scope="${KODA_DISTRIBUTION_SCOPE:-internal}"
 for legal_file in LICENSE NOTICE THIRD_PARTY_NOTICES.md; do
   [[ -f "$ROOT_DIR/$legal_file" ]] || { echo "legal file missing: $legal_file" >&2; exit 1; }
 done
+signing_key="${KODA_RELEASE_SIGNING_KEY:-}"
+if [[ -n "$signing_key" ]]; then
+  [[ -r "$signing_key" ]] || { echo "release signing key is not readable: $signing_key" >&2; exit 1; }
+else
+  require_unsigned_artifact_opt_in "offline bundle"
+fi
+umask 077
 
 timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
 bundle_root="${OFFLINE_BUNDLE_ROOT:-$ROOT_DIR/dist/offline-bundle}"
@@ -28,8 +35,6 @@ remote_images=()
 while IFS= read -r image; do
   [[ -n "$image" ]] && remote_images+=("$image")
 done <<EOF
-${DTRACK_APISERVER_IMAGE}
-${DTRACK_FRONTEND_IMAGE}
 ${POSTGRES_IMAGE}
 ${NGINX_IMAGE}
 ${GRYPE_IMAGE}
@@ -37,6 +42,11 @@ ${CYCLONEDX_CLI_IMAGE}
 ${ALPINE_BASE_IMAGE}
 EOF
 
+dependency_track_included=false
+if dependency_track_enabled || [[ "${KODA_INCLUDE_DEPENDENCY_TRACK:-false}" == true || "${KODA_INCLUDE_DEPENDENCY_TRACK:-false}" == 1 ]]; then
+  dependency_track_included=true
+  remote_images+=("$DTRACK_APISERVER_IMAGE" "$DTRACK_FRONTEND_IMAGE")
+fi
 for image in "${remote_images[@]}"; do
   docker pull --platform linux/amd64 "$image"
 done
@@ -77,6 +87,7 @@ cat > "${bundle_dir}/metadata.env" <<EOF
 BUNDLE_CREATED_AT=${timestamp}
 TARGET_PLATFORM=linux/amd64
 DISTRIBUTION_SCOPE=internal-only
+DEPENDENCY_TRACK_INCLUDED=$dependency_track_included
 DTRACK_VERSION=5.0.3
 POSTGRES_IMAGE=${POSTGRES_IMAGE}
 DTRACK_APISERVER_IMAGE=${DTRACK_APISERVER_IMAGE}
@@ -92,4 +103,9 @@ EOF
     sha256_file "$file"
   done < <(find . -type f ! -name manifest.sha256 -print0 | sort -z)
 ) > "${bundle_dir}/manifest.sha256"
+if [[ -n "$signing_key" ]]; then
+  sign_file "$signing_key" "${bundle_dir}/manifest.sha256" "${bundle_dir}/manifest.sha256.sig"
+fi
 echo "Created offline bundle: ${bundle_dir}"
+[[ -z "$signing_key" ]] || echo "Detached signature: ${bundle_dir}/manifest.sha256.sig"
+[[ -n "$signing_key" ]] || echo "Unsigned offline bundle created by explicit opt-in" >&2

@@ -90,11 +90,8 @@ Tracker 인증 확인이 실패하거나 시간 초과되면 gateway는 KODA 보
 통합 압축파일 생성과 설치는 KODA 저장소의
 `platforms/linux/suite/README.ko.md`를 따릅니다.
 
-Dependency-Track UI는 Tracker/KODA SSO 대상이 아니며 별도 계정으로 로그인합니다.
-Tracker backend용 team API 키는 `v1/team/self`의 권한으로 검증하며 team 사용자
-멤버가 0명이어도 사용할 수 있습니다. 공개 frontend base URL에는 `/api`를 붙이지
-않고, 관리자 자동화 base에만 `/api`를 붙입니다. 흰 화면·API 키·BOM 400 문제는
-[폐쇄망 장애 대응](troubleshooting-ko.md)을 따릅니다.
+KODA 자체 분석·정책·검토 화면에는 Tracker 세션과 역할 권한을 적용합니다.
+흰 화면·인증·업로드 문제는 [폐쇄망 장애 대응](troubleshooting-ko.md)을 따릅니다.
 
 ## GitLab 기반 KODA 결과 수신
 

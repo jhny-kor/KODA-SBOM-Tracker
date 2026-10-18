@@ -16,16 +16,26 @@ from .models import ApiToken, Role, RolePolicy, User, UserSession
 ph = PasswordHasher()
 
 PERMISSION_CATALOG = tuple(sorted({
+    "migrations.manage", "metadata.view", "metadata.manage",
+    "vex.view", "vex.manage", "vex.approve", "notifications.view", "notifications.manage", "reanalysis.view", "reanalysis.manage",
     "dashboard.view", "services.view", "runs.view", "compare.view", "vulnerability.view", "audit.view", "settings.view",
-    "sbom.upload", "artifact.download", "analysis.create", "dtrack.retry", "sbom.archive", "sbom.delete", "catalog.manage", "vulnerability.manage", "users.manage", "tokens.manage", "dtrack.settings", "roles.manage",
+    "sbom.upload", "artifact.download", "analysis.create", "policies.view", "policies.manage", "dtrack.retry", "sbom.archive", "sbom.delete", "catalog.manage", "vulnerability.manage", "users.manage", "tokens.manage", "dtrack.settings", "roles.manage",
 }))
 DEFAULT_ROLE_PERMISSIONS = {
     Role.ADMIN: set(PERMISSION_CATALOG),
-    Role.MANAGER: {"dashboard.view", "services.view", "runs.view", "compare.view", "settings.view", "sbom.upload", "artifact.download", "analysis.create", "dtrack.retry", "sbom.archive", "catalog.manage", "users.manage"},
-    Role.ANALYST: {"dashboard.view", "services.view", "runs.view", "compare.view", "sbom.upload", "artifact.download", "analysis.create", "dtrack.retry"},
-    Role.UPLOADER: {"dashboard.view", "services.view", "runs.view", "compare.view", "sbom.upload", "artifact.download"},
-    Role.VIEWER: {"dashboard.view", "services.view", "runs.view", "compare.view", "artifact.download"},
+    Role.MANAGER: {"dashboard.view", "services.view", "runs.view", "compare.view", "settings.view", "policies.view", "policies.manage", "sbom.upload", "artifact.download", "analysis.create", "dtrack.retry", "sbom.archive", "catalog.manage", "users.manage"},
+    Role.ANALYST: {"dashboard.view", "services.view", "runs.view", "compare.view", "policies.view", "sbom.upload", "artifact.download", "analysis.create", "dtrack.retry"},
+    Role.UPLOADER: {"dashboard.view", "services.view", "runs.view", "compare.view", "policies.view", "sbom.upload", "artifact.download"},
+    Role.VIEWER: {"dashboard.view", "services.view", "runs.view", "compare.view", "policies.view", "artifact.download"},
 }
+for _role, _grants in DEFAULT_ROLE_PERMISSIONS.items():
+    _grants.update({'metadata.view', 'vex.view', 'notifications.view', 'reanalysis.view'})
+    if _role in {Role.ADMIN, Role.MANAGER, Role.ANALYST}:
+        _grants.add('vex.manage')
+    if _role in {Role.ADMIN, Role.MANAGER}:
+        _grants.update({'metadata.manage', 'vex.approve', 'notifications.manage', 'reanalysis.manage'})
+
+DEFAULT_ROLE_PERMISSIONS[Role.ADMIN].add("migrations.manage")
 
 
 def digest(value: str) -> str:

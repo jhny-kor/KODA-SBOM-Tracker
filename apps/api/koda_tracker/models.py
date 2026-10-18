@@ -224,7 +224,22 @@ class AnalysisRevision(Base):
     data_sources: Mapped[dict] = mapped_column(JSON, default=dict)
     findings: Mapped[list] = mapped_column(JSON, default=list)
     policies: Mapped[list] = mapped_column(JSON, default=list)
+    # Native policy evidence is revision-scoped; legacy DTrack policies remain
+    # readable with policy_version=None and policy_state=not_evaluated.
+    policy_state: Mapped[str] = mapped_column(String(32), default="not_evaluated")
+    policy_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    policy_snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
+    policy_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    metrics: Mapped[dict] = mapped_column(JSON, default=dict)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class SbomPolicyRevision(Base):
+    __tablename__ = "sbom_policy_revisions"
+    version: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    document: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_by: Mapped[str] = mapped_column(String(128))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
@@ -261,3 +276,9 @@ class VulnerabilityDataBundle(Base):
     manifest: Mapped[dict] = mapped_column(JSON)
     active: Mapped[bool] = mapped_column(Boolean, default=False)
     imported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class FeatureUpgrade(Base):
+    __tablename__ = "feature_upgrades"
+    name: Mapped[str] = mapped_column(String(128), primary_key=True)
+    applied_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)

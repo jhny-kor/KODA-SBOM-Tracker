@@ -15,7 +15,7 @@ export const demoLdapSettings: LdapSettings = {
 const permissions = [
   "dashboard.view", "services.view", "runs.view", "compare.view", "vulnerability.view", "audit.view", "settings.view",
   "sbom.upload", "artifact.download", "analysis.create", "dtrack.retry", "sbom.archive", "sbom.delete",
-  "catalog.manage", "vulnerability.manage", "dtrack.settings", "users.manage", "tokens.manage", "roles.manage",
+  "catalog.manage", "vulnerability.manage", "dtrack.settings", "users.manage", "tokens.manage", "roles.manage", "policies.view", "policies.manage",
 ];
 
 export const demoRolePolicyCatalog: RolePolicyCatalog = {
@@ -61,6 +61,11 @@ export const demoRuns: SbomRun[] = names.map((value, index) => ({
   vulnerableComponentCount: Math.ceil(value[5] / 2),
   componentTypeCounts: { library: value[4] },
   policyViolationCount: value[6],
+  policyState: value[7] === "processing" ? "not_evaluated" : "completed",
+  policyStatus: value[7] === "processing" ? "not_evaluated" : value[6] ? "fail" : "pass",
+  policyVersion: value[7] === "processing" ? null : 1,
+  dependencyTrackEnabled: false,
+  policyViolations: Array.from({ length: value[6] }, (_, i) => ({ policyId: "critical-high", policyName: "Critical·High 취약점", component: `샘플 구성요소 ${i + 1}`, vulnerabilityId: `CVE-2025-DEMO-${i + 1}`, type: "SECURITY", action: "fail", reason: "샘플 정책 평가 결과", suppressed: false })),
   state: value[7],
   dataAsOf: index < 3 ? "2025-05-21" : `2025-05-${String(Math.max(13, 20 - Math.floor(index / 2))).padStart(2, "0")}`,
   createdAt: `2025-05-${String(Math.max(13, 21 - Math.floor(index / 2))).padStart(2, "0")}T${String(9 + (index % 8)).padStart(2, "0")}:${String((15 + index * 3) % 60).padStart(2, "0")}:00Z`,

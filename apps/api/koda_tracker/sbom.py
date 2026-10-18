@@ -16,6 +16,12 @@ class SbomValidationError(ValueError):
     pass
 
 
+def validate_component_count(payload: dict, max_components: int) -> None:
+    components = payload.get("components", [])
+    if len(components) > max_components:
+        raise SbomValidationError(f"SBOM 구성요소 수가 제한({max_components})을 초과했습니다")
+
+
 def _validated_payload(payload: object) -> dict:
     if not isinstance(payload, dict) or payload.get("bomFormat") != "CycloneDX":
         raise SbomValidationError("CycloneDX SBOM이 아닙니다")
@@ -164,9 +170,13 @@ def _xml_payload(root) -> dict:
                     item["hashes"].append({"alg": digest.attrib.get("alg", ""), "content": digest.text or ""})
             elif kind == "licenses":
                 for license_node in child:
-                    identifier = _text(license_node, "id") or _text(license_node, "name")
-                    if identifier:
-                        item["licenses"].append({"license": {"id": identifier}})
+                    if _local(license_node.tag) == "expression":
+                        item["licenses"].append({"expression": (license_node.text or "").strip()})
+                        continue
+                    identifier = _text(license_node, "id")
+                    name = _text(license_node, "name")
+                    if identifier or name:
+                        item["licenses"].append({"license": {"id": identifier} if identifier else {"name": name}})
             elif kind == "properties":
                 for prop in child:
                     item["properties"].append({"name": prop.attrib.get("name", ""), "value": prop.text or ""})
@@ -236,6 +246,9 @@ def licenses_for(component: dict) -> list[str]:
     result: list[str] = []
     for value in component.get("licenses") or []:
         if isinstance(value, dict):
+            if isinstance(value.get("expression"), str):
+                result.append(value["expression"])
+                continue
             license_value = value.get("license") or value
             if isinstance(license_value, dict):
                 text = license_value.get("id") or license_value.get("name")

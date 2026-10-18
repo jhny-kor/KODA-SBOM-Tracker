@@ -157,7 +157,7 @@
       "type": "database",
       "label": "Tracker 회차",
       "sublabel": "구성요소 · CVE · 정책",
-      "tag": "Dependency-Track",
+      "tag": "KODA 자체 분석",
       "width": 114
     },
     {

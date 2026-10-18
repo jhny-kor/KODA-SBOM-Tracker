@@ -119,12 +119,13 @@ def test_ldap_settings_requires_csrf_and_encryption_key(monkeypatch: pytest.Monk
 
 def test_ldap_never_falls_back_to_local_password(monkeypatch: pytest.MonkeyPatch) -> None:
     username = "ldap-local-collision"
+    password = "long-enough-password"
     try:
         with TestClient(app) as client:
             headers = _admin(client)
             created = client.post(
                 "/api/v1/users",
-                json={"username": username, "password": "x", "role": "viewer"},
+                json={"username": username, "password": password, "role": "viewer"},
                 headers=headers,
             )
             assert created.status_code == 201
@@ -136,7 +137,7 @@ def test_ldap_never_falls_back_to_local_password(monkeypatch: pytest.MonkeyPatch
             monkeypatch.setattr("koda_tracker.main.authenticate_user", reject)
             response = client.post(
                 "/api/v1/auth/login",
-                json={"username": username, "password": "x", "useLdap": True},
+                json={"username": username, "password": password, "useLdap": True},
             )
             assert response.status_code == 401
     finally:
@@ -221,16 +222,17 @@ def test_plain_ldap_bind_does_not_create_tls_connection(monkeypatch: pytest.Monk
 
 def test_admin_can_hard_delete_user_and_reuse_username() -> None:
     username = "delete-me-user"
+    password = "long-enough-password"
     try:
         with TestClient(app) as client, TestClient(app) as user_client:
             headers = _admin(client)
             created = client.post(
                 "/api/v1/users",
-                json={"username": username, "password": "x", "role": "uploader"},
+                json={"username": username, "password": password, "role": "uploader"},
                 headers=headers,
             )
             assert created.status_code == 201
-            login = user_client.post("/api/v1/auth/login", json={"username": username, "password": "x"})
+            login = user_client.post("/api/v1/auth/login", json={"username": username, "password": password})
             assert login.status_code == 200
             user_headers = {"X-CSRF-Token": login.json()["csrfToken"]}
             service = client.post("/api/v1/services", json={"slug": "deleted-user", "name": "삭제 사용자 서비스"}, headers=headers)
@@ -253,11 +255,11 @@ def test_admin_can_hard_delete_user_and_reuse_username() -> None:
             assert user_client.get("/api/v1/auth/me").status_code == 401
             with SessionLocal() as db:
                 assert db.get(SbomRun, run_id).uploaded_by is None
-            assert client.post("/api/v1/auth/login", json={"username": username, "password": "x"}).status_code == 401
+            assert client.post("/api/v1/auth/login", json={"username": username, "password": password}).status_code == 401
             assert all(item["username"] != username for item in client.get("/api/v1/users").json())
             recreated = client.post(
                 "/api/v1/users",
-                json={"username": username, "password": "x", "role": "viewer"},
+                json={"username": username, "password": password, "role": "viewer"},
                 headers=headers,
             )
             assert recreated.status_code == 201

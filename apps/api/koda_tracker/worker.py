@@ -3,11 +3,13 @@ from __future__ import annotations
 import asyncio
 import argparse
 import fcntl
+import logging
 import time
 from pathlib import Path
 
 from sqlalchemy import select
 
+from .config import get_settings
 from .db import SessionLocal
 from .models import Job, JobState, ProcessingState, SbomRun
 from .services import analyze_offline, sync_dependency_track
@@ -111,21 +113,32 @@ async def process_one() -> bool:
         job.state = JobState.RUNNING
         job.attempts += 1
         db.commit()
-        run = db.get(SbomRun, job.run_id) if job.run_id else None
+        # Serialize revisions and archive/delete operations on this run across
+        # worker processes; different runs can still be analyzed concurrently.
+        run = db.scalar(select(SbomRun).where(SbomRun.id == job.run_id).with_for_update()) if job.run_id else None
         try:
             if not run:
                 raise RuntimeError("작업의 SBOM 회차가 존재하지 않습니다")
             if run.archived_at is not None or run.state == ProcessingState.ARCHIVED:
                 raise RuntimeError("보관된 회차는 다시 처리할 수 없습니다")
+            revision = None
             if job.kind in {"process_run", "analyze"}:
-                analyze_offline(db, run)
-            if job.kind in {"process_run", "sync_dependency_track"}:
+                revision = analyze_offline(db, run)
+            if job.kind in {"process_run", "sync_dependency_track"} and get_settings().dependency_track_enabled:
                 await sync_dependency_track(db, run)
-            job.state = JobState.COMPLETED
-            job.error = None
+            if revision is not None and (revision.state == JobState.FAILED or revision.policy_state == "failed"):
+                job.state = JobState.FAILED
+                job.error = revision.error or revision.policy_error
+            else:
+                job.state = JobState.COMPLETED
+                job.error = None
         except Exception as exc:
             job.state = JobState.FAILED
             job.error = str(exc)[-2000:]
+            if run is not None:
+                run.analysis_state, run.state = JobState.FAILED, ProcessingState.FAILED
+            from .workflows import notify_job_failure
+            notify_job_failure(db, job, run)
         db.commit()
         return True
 
@@ -136,6 +149,7 @@ def run(*, data_updates: bool = False) -> None:
     from .main import _prune_scheduled_runs
 
     next_prune = 0.0
+    next_scheduler = 0.0
     updater_lock = None
     if data_updates:
         from .config import get_settings
@@ -150,6 +164,17 @@ def run(*, data_updates: bool = False) -> None:
             if not data_updates and now >= next_prune:
                 _prune_scheduled_runs()
                 next_prune = now + 3600
+            if not data_updates and now >= next_scheduler:
+                from .reanalysis import scheduler_tick
+                from .workflows import deliver_notifications
+                for maintenance in (scheduler_tick, deliver_notifications):
+                    try:
+                        with SessionLocal() as db:
+                            maintenance(db)
+                            db.commit()
+                    except Exception:
+                        logging.getLogger(__name__).exception("Native workflow maintenance failed")
+                next_scheduler = now + 10
             if data_updates:
                 did_work = asyncio.run(process_data_update_one())
             else:

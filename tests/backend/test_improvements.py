@@ -315,6 +315,7 @@ def test_cve_projection_counts_dates_and_comparison_stay_consistent() -> None:
 
 
 def test_run_state_changes_all_request_the_same_row_lock(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(main_module.get_settings(), "dependency_track_enabled", True)
     suffix = uuid.uuid4().hex[:10]
     with TestClient(app) as client:
         headers = _admin(client)

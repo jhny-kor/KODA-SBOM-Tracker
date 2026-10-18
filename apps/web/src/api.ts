@@ -1,6 +1,7 @@
+import type { ReanalysisSchedule, ReanalysisCycle, VexReview, VexReviewInput, ReviewEvent, InboxNotification, NotificationDelivery } from "./types";
 import { demoChanges, demoRolePolicyCatalog, demoRuns } from "./demo";
 import { compareStandaloneRuns, getStandaloneCatalogs, getStandaloneRun, getStandaloneRuns, importStandaloneSbom } from "./standalone";
-import type { AuditEvent, AuthUser, CatalogItem, Comparison, ComponentSnapshot, DependencyTrackStatus, JobState, LdapSettings, PageResult, RolePolicy, RolePolicyCatalog, SbomRun, SbomRunDetail, UserSummary, VulnerabilityBundle, VulnerabilityDataJob } from "./types";
+import type { AuditEvent, AuthUser, CatalogItem, Comparison, ComponentSnapshot, DependencyTrackStatus, JobState, LdapSettings, PageResult, RolePolicy, RolePolicyCatalog, SbomRun, SbomRunDetail, SbomPolicyDocument, UserSummary, VulnerabilityBundle, VulnerabilityDataJob } from "./types";
 
 export const standaloneMode = import.meta.env.VITE_STANDALONE_MODE === "true";
 export const demoMode = !standaloneMode && import.meta.env.VITE_DEMO_MODE !== "false";
@@ -140,7 +141,7 @@ export async function fetchRun(runId: string): Promise<SbomRunDetail> {
   if (standaloneRun) return standaloneRun;
   if (previewMode) {
     const run = demoRuns.find((item) => item.id === runId) || demoRuns[0];
-    return { ...run, cveDataAsOf: run.cveDataAsOf || run.dataAsOf, components: [{ identityKey: "pkg:maven/org.apache.httpcomponents/httpclient@4.5.13", identityStatus: "stable", componentType: "library", group: "org.apache.httpcomponents", name: "httpclient", version: "4.5.13", purl: "pkg:maven/org.apache.httpcomponents/httpclient@4.5.13", bomRef: "pkg:maven/org.apache.httpcomponents/httpclient@4.5.13", sha256: "demo-sha256", licenses: [{ license: { id: "Apache-2.0" } }], properties: {} }], analyses: [{ id: `demo-analysis-${run.id}`, sequence: 1, state: "completed", dataAsOf: "2025-05-21", cveDataAsOf: "2025-05-21", toolVersion: "grype-demo", dataSources: {}, findings: [{ canonicalId: "CVE-2025-DEMO", severity: "high", component: "httpclient@4.5.13", cvssScore: 9.8, kev: true, fixedIn: ["4.5.14", "5.0.0"] }] }] };
+    return { ...run, cveDataAsOf: run.cveDataAsOf || run.dataAsOf, components: [{ identityKey: "pkg:maven/org.apache.httpcomponents/httpclient@4.5.13", identityStatus: "stable", componentType: "library", group: "org.apache.httpcomponents", name: "httpclient", version: "4.5.13", purl: "pkg:maven/org.apache.httpcomponents/httpclient@4.5.13", bomRef: "pkg:maven/org.apache.httpcomponents/httpclient@4.5.13", sha256: "demo-sha256", licenses: [{ license: { id: "Apache-2.0" } }], properties: {} }], analyses: [{ id: `demo-analysis-${run.id}`, sequence: 1, state: "completed", dataAsOf: "2025-05-21", cveDataAsOf: "2025-05-21", toolVersion: "grype-demo", dataSources: {}, policyState: run.policyState, policyStatus: run.policyStatus, policyVersion: run.policyVersion, policyCount: run.policyViolationCount, policyViolations: run.policyViolations, analysisMetrics: run.analysisMetrics, findings: [{ canonicalId: "CVE-2025-DEMO", severity: "high", component: "httpclient@4.5.13", cvssScore: 9.8, kev: true, fixedIn: ["4.5.14", "5.0.0"] }] }] };
   }
   return request<SbomRunDetail>(`/api/v1/sbom-runs/${encodeURIComponent(runId)}`);
 }
@@ -381,3 +382,92 @@ export async function fetchComparison(baseRunId: string, targetRunId: string, ba
   if (targetAnalysisId) params.set("targetAnalysisId", targetAnalysisId);
   return request<Comparison>(`/api/v1/comparisons?${params}`);
 }
+
+export async function fetchSbomPolicies(): Promise<SbomPolicyDocument> {
+  if (previewMode) return {
+    version: 1,
+    rules: [
+      { id: "critical-high", name: "Critical·High 취약점", kind: "severity", enabled: true, action: "fail", values: ["critical", "high"] },
+      { id: "kev", name: "KEV 취약점", kind: "kev", enabled: true, action: "fail", values: [] },
+      { id: "license-review", name: "라이선스 확인 필요", kind: "license_unknown", enabled: true, action: "warn", values: [] },
+    ],
+    exceptions: [], createdBy: "샘플 정책",
+  };
+  return request<SbomPolicyDocument>("/api/v1/sbom-policies");
+}
+
+export function updateSbomPolicies(document: SbomPolicyDocument): Promise<SbomPolicyDocument> {
+  if (previewMode) return Promise.reject(new ApiError("미리보기에서는 정책을 저장하지 않습니다.", 0));
+  return request<SbomPolicyDocument>("/api/v1/sbom-policies", {
+    method: "PUT", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ expectedVersion: document.version, rules: document.rules, exceptions: document.exceptions }),
+  });
+}
+
+export async function fetchRunPolicyViolations(runId: string, page = 1, size = 25, analysisId = ""): Promise<PageResult<Record<string, unknown>> & { analysisId?: string | null }> {
+  if (previewMode) {
+    const detail = await fetchRun(runId);
+    const analysis = analysisId ? detail.analyses.find((item) => item.id === analysisId) : detail.analyses[0];
+    const records = analysis?.policyViolations || analysis?.policies || detail.policyViolations || [];
+    return { analysisId: analysis?.id, items: records.slice((page - 1) * size, page * size), total: records.length, page, size };
+  }
+  const params = new URLSearchParams({ page: String(page), size: String(size) });
+  if (analysisId) params.set("analysisId", analysisId);
+  return request<PageResult<Record<string, unknown>> & { analysisId?: string | null }>(`/api/v1/sbom-runs/${encodeURIComponent(runId)}/policy-violations?${params}`);
+}
+
+function workflowMutation<T>(path: string, body: unknown, method = "POST"): Promise<T> {
+  if (previewMode) return Promise.reject(new ApiError("샘플 모드에서는 워크플로를 변경하지 않습니다.", 0));
+  return request<T>(path, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+}
+export function validateSbomPolicyExpression(expression: string, target: string) {
+  return workflowMutation<{ valid: boolean; runtime?: string; contextVariables?: string[] }>("/api/v1/sbom-policies/validate", { expression, target });
+}
+export function fetchReanalysisSchedule() { return request<ReanalysisSchedule>("/api/v1/reanalysis-schedule"); }
+export function updateReanalysisSchedule(schedule: ReanalysisSchedule) {
+  const { enabled, intervalMinutes, onDataUpdate, latestOnly, serviceIds, environmentIds } = schedule;
+  return workflowMutation<ReanalysisSchedule>("/api/v1/reanalysis-schedule", { expectedVersion: schedule.version, enabled, intervalMinutes, onDataUpdate, latestOnly, serviceIds, environmentIds }, "PUT");
+}
+export function queueReanalysisCycle() { return workflowMutation<ReanalysisCycle>("/api/v1/reanalysis-schedule/run-now", {}); }
+export function fetchReanalysisCycles(page = 1) { return request<PageResult<ReanalysisCycle>>(`/api/v1/reanalysis-cycles?page=${page}&size=10`); }
+export function fetchVexReviews(runId: string, page = 1) { return request<PageResult<VexReview>>(`/api/v1/sbom-runs/${encodeURIComponent(runId)}/reviews?page=${page}&size=10`); }
+export function submitVexReview(runId: string, body: VexReviewInput) { return workflowMutation<VexReview>(`/api/v1/sbom-runs/${encodeURIComponent(runId)}/reviews`, body); }
+export function decideVexReview(id: string, decision: "approved" | "rejected", reason: string) { return workflowMutation<VexReview>(`/api/v1/reviews/${encodeURIComponent(id)}/decision`, { decision, reason }); }
+export function fetchReviewEvents(id: string) { return request<{ items: ReviewEvent[] }>(`/api/v1/reviews/${encodeURIComponent(id)}/events`); }
+export function commentVexReview(id: string, comment: string) { return workflowMutation<ReviewEvent>(`/api/v1/reviews/${encodeURIComponent(id)}/events`, { comment }); }
+export function importVex(runId: string, document: unknown) { return workflowMutation<unknown>(`/api/v1/sbom-runs/${encodeURIComponent(runId)}/vex-import`, document); }
+export function fetchNotifications(page = 1) { return request<PageResult<InboxNotification> & { unreadCount: number }>(`/api/v1/notifications?page=${page}&size=10`); }
+export function markNotificationRead(id: string) { return workflowMutation<unknown>(`/api/v1/notifications/${encodeURIComponent(id)}/read`, {}); }
+export function fetchNotificationDeliveries(page = 1) { return request<PageResult<NotificationDelivery>>(`/api/v1/notification-deliveries?page=${page}&size=10`); }
+export function retryNotificationDelivery(id: string) { return workflowMutation<unknown>(`/api/v1/notification-deliveries/${encodeURIComponent(id)}/retry`, {}); }
+
+export function fetchNotificationSettings() { return request<{webhookEnabled:boolean;webhookConfigured:boolean;webhookHost?:string;secretConfigured:boolean}>("/api/v1/notification-settings"); }
+
+export interface PackageMetadataRow {
+  purl: string; ecosystem: string; currentVersion: string; status: string;
+  latestVersion?: string | null; currentVersionPublishedAt?: string | null; latestPublishedAt?: string | null;
+  ageDays?: number | null; versionDistance?: number | null; fetchedAt?: string | null; expiresAt?: string | null;
+  sourceUrls?: string[]; sourceKind?: string; error?: string | null; fieldStatus?: Record<string, string>;
+  versionDistanceBasis?: string; publicationBasis?: string; latestSelection?: string; latestIsPrerelease?: boolean;
+  currentVersionPublishedAtBasis?: string; latestPublishedAtBasis?: string;
+  registryLatestVersion?: string | null; registryLatestIsPrerelease?: boolean; warnings?: string[];
+}
+export interface RunMetadataItem { component: {identityKey?: string; name: string; version?: string | null; purl?: string | null}; metadata: PackageMetadataRow }
+export interface MetadataStatus { enabled: boolean; supportedEcosystems: string[]; counts: Record<string, number>; ttlSeconds: number }
+export interface MigrationRecord {
+  id: string; digest: string; sourceId?: string; state: "staged" | "blocked" | "applied"; createdAt?: string; appliedAt?: string | null;
+  report: { currentPolicyVersion: number; canApply: boolean; blockers: Array<{reason: string}>; warnings: Array<{reason: string}>; counts: Record<string, number>; convertedPolicies?: unknown[]; [key: string]: unknown };
+  result?: {runIds?: string[]; analysisRevisionsCreated?: number; reviewsCreated?: number; policyVersion?: number; trustSourceReviews?: boolean; actor?: string; grypeReanalysis?: string} | null;
+}
+export const fetchMetadataStatus = () => request<MetadataStatus>("/api/v1/package-metadata/status");
+export const fetchRunMetadata = (id: string, page = 1) => request<PageResult<RunMetadataItem>>(`/api/v1/sbom-runs/${encodeURIComponent(id)}/package-metadata?page=${page}&size=10`);
+export const refreshRunMetadata = (id: string) => workflowMutation<{queued:number;cached:number;unsupported:number;invalid?:number;deferred?:number}>(`/api/v1/sbom-runs/${encodeURIComponent(id)}/package-metadata/refresh`, {});
+export const importMetadata = (bundle: unknown) => workflowMutation<{imported:number;skipped:number}>("/api/v1/package-metadata/import", bundle);
+export const stageMigration = (bundle: unknown) => workflowMutation<MigrationRecord>("/api/v1/legacy-migrations/stage", {bundle});
+export const stageRemoteMigration = (baseUrl: string, apiKey: string) => {
+  const parsed = new URL(baseUrl);
+  if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password) return Promise.reject(new ApiError("원본 주소는 계정 정보 없는 HTTP(S) URL이어야 합니다.", 0));
+  return workflowMutation<MigrationRecord>("/api/v1/legacy-migrations/export-stage", {baseUrl,apiKey,allowedOrigins:[parsed.origin]});
+};
+export const fetchMigrations = (page = 1) => request<PageResult<MigrationRecord>>(`/api/v1/legacy-migrations?page=${page}&size=20`);
+export const applyMigration = (record: MigrationRecord, expectedPolicyVersion: number, trustSourceReviews: boolean) => workflowMutation<MigrationRecord>(`/api/v1/legacy-migrations/${encodeURIComponent(record.id)}/apply`, {expectedDigest:record.digest,expectedPolicyVersion,trustSourceReviews});
