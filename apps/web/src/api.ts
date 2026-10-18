@@ -477,7 +477,7 @@ export const applyMigration = (record: MigrationRecord, expectedPolicyVersion: n
 
 export interface NativeProject {
   id:string;sourceId:string;sourceProjectId:string;serviceId:string;environmentId:string;releaseId?:string;currentRunId?:string;
-  name:string;version:string;parentProjectId:string|null;tags:string[];isLatest:boolean;active:boolean;revision:number;
+  name:string;version:string;parentProjectId:string|null;tags:string[];isLatest:boolean;active:boolean;revision:number;collectionLogic?:CollectionLogic;collectionTag?:string|null;
 }
 export interface ProjectSyncSource {id:string;name:string;baseUrl:string;enabled:boolean;intervalMinutes:number;state:string;attempts:number;version:number;nextRunAt?:string|null;lastSuccessAt?:string|null;lastError?:string|null;lastMigrationId?:string|null}
 export const fetchProjectCatalog = (page=1) => request<PageResult<NativeProject>>(`/api/v1/project-catalog?page=${page}&size=20`);
@@ -488,3 +488,16 @@ export const createProjectSyncSource = (body:Record<string,unknown>) => workflow
 export const updateProjectSyncSource = (source:ProjectSyncSource,update:Record<string,unknown>) => workflowMutation<ProjectSyncSource>(`/api/v1/project-sync-sources/${encodeURIComponent(source.id)}`,{expectedVersion:source.version,...update},"PATCH");
 export const runProjectSync = (id:string) => workflowMutation<ProjectSyncSource>(`/api/v1/project-sync-sources/${encodeURIComponent(id)}/run-now`,{});
 export const fetchProjectSyncEvents = (id:string) => request<PageResult<{id:string;attempt:number;state:string;startedAt:string;finishedAt?:string;detail:Record<string,unknown>}>>(`/api/v1/project-sync-sources/${encodeURIComponent(id)}/events`);
+
+export type CollectionLogic = "NONE" | "AGGREGATE_DIRECT_CHILDREN" | "AGGREGATE_DIRECT_CHILDREN_WITH_TAG" | "AGGREGATE_LATEST_VERSION_CHILDREN" | "AGGREGATE_ALL_DESCENDANTS";
+export interface CollectionTotals {rawVulnerabilityCount?:number;policyFailCount?:number;policyWarnCount?:number;policyInfoCount?:number;policySuppressedCount?:number;componentCount:number;vulnerabilityCount:number;vulnerableComponentCount:number;kevCount:number;policyViolationCount:number;suppressedVulnerabilityCount:number;severityCounts:Record<string,number>;uniqueVulnerabilityCount:number}
+export interface CollectionMetrics {projectId:string;collectionLogic:CollectionLogic;collectionTag:string|null;generatedAt:string;coverage:{selectedProjectCount:number;analyzedProjectCount:number;missingProjectCount:number;staleProjectCount:number;policyIncompleteProjectCount?:number;complete:boolean};totals:CollectionTotals;projects:{projectId:string;name:string;version:string;runId?:string|null;analysisId?:string|null;analysisSequence?:number|null;state:string;policyState?:string|null;metrics?:CollectionTotals|null}[]}
+export const fetchCollectionMetrics = (id:string) => request<CollectionMetrics>(`/api/v1/project-catalog/${encodeURIComponent(id)}/metrics`);
+
+export interface PrivateAffected {purl:string;versions:string[];ranges:{scheme:"maven"|"semver";introduced:string|null;fixed:string|null;lastAffected:string|null}[];fixedVersions:string[]}
+export interface PrivateAdvisoryInput {advisoryId:string;title:string;description:string;severity:"Critical"|"High"|"Medium"|"Low"|"Unknown";cvssScore:number|null;cwes:number[];aliases:string[];references:string[];state:"draft"|"published"|"withdrawn";affected:PrivateAffected[]}
+export interface PrivateAdvisory extends PrivateAdvisoryInput {id:string;revision:number;createdAt:string;updatedAt:string;affectedRunsQueued?:number}
+export const fetchPrivateAdvisories = (page=1) => request<PageResult<PrivateAdvisory>>(`/api/v1/private-vulnerabilities?page=${page}&size=20`);
+export const createPrivateAdvisory = (body:PrivateAdvisoryInput) => workflowMutation<PrivateAdvisory>("/api/v1/private-vulnerabilities",body);
+export const updatePrivateAdvisory = (advisory:PrivateAdvisory,body:PrivateAdvisoryInput) => workflowMutation<PrivateAdvisory>(`/api/v1/private-vulnerabilities/${encodeURIComponent(advisory.id)}`,{...body,expectedRevision:advisory.revision},"PUT");
+export const fetchPrivateAdvisoryHistory = (id:string) => request<unknown>(`/api/v1/private-vulnerabilities/${encodeURIComponent(id)}/history`);

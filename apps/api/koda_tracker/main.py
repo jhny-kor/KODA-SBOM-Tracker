@@ -73,6 +73,8 @@ from .services import audit, create_components, enqueue
 from .policies import PolicyDocument, get_policy_document, validate_policy_expressions, validate_expression, preview_expression, policy_context_for_run, components_with_dependency_graph
 from . import package_metadata_models, migration_models, vulnerability_intelligence_models
 from .vulnerability_intelligence_api import router as vulnerability_intelligence_router
+from .private_vulnerability_api import router as private_vulnerability_router
+from . import private_vulnerability_models
 from .project_catalog_api import router as project_catalog_router
 from .project_catalog_models import NativeReanalysisPending
 from .package_metadata_api import router as package_metadata_router
@@ -412,6 +414,7 @@ app.include_router(package_metadata_router)
 app.include_router(migration_router)
 app.include_router(vulnerability_intelligence_router)
 app.include_router(project_catalog_router)
+app.include_router(private_vulnerability_router)
 app.add_middleware(RequestBodyLimitMiddleware)
 _upload_persist_lock = asyncio.Lock()
 

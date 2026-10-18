@@ -3,16 +3,14 @@
 2026-10-18의 코드와 격리 Docker 검증 기준입니다. **KODA의 주요 SBOM·Grype·정책·VEX 흐름을
 자체 처리하는 것과 Dependency-Track 제품 전체를 대체하는 것은 다릅니다. 미구현 기능은 남아 있습니다.**
 대부분은 예전 KODA의 자체 입력 화면이 아니라 외부 시스템 열기 링크에서 사용하던 기능입니다.
-부모 Collection은 예전 연결기가 실제로 생성했으므로 계층 메타데이터만으로 집계까지 대체됐다고
-설명하면 안 됩니다.
+부모 Collection 집계와 사내 취약점 작성·관리는 자체 구현을 추가했습니다.
+구체적인 집계 단위와 영향 버전 지원 범위는 [추가 검증 기록](verification-collection-private-20261018-ko.md)을 따릅니다.
 
 ## 미구현 기능
 
 | 기능 | 현재 KODA 범위 | 확인 근거 |
 | --- | --- | --- |
-| 부모 Collection의 자식 전체·최신/태그별 집계 지표 | 계층·태그·최신 표시와 동적 정책 범위는 있으나 자식 지표 집계는 없음 | [기존 Collection 생성](../apps/api/koda_tracker/dtrack.py), [자체 카탈로그 모델](../apps/api/koda_tracker/project_catalog_models.py). 기존 연결기는 `AGGREGATE_LATEST_VERSION_CHILDREN`을 설정 |
 | 추가 취약점 분석기·계정 직접 연동 | Grype 실행, 반입한 NVD/KEV, FIRST EPSS 제공. OSS Index·Snyk·Trivy·VulnDB의 별도 분석기 설정/실행은 없음 | [분석 서비스](../apps/api/koda_tracker/services.py). Grype DB에 들어 있는 공급원 데이터와 직접 분석기 연동은 구분 |
-| 사내 취약점 DB 작성·수정·영향 버전 등록 | 공식 EPSS 캐시·Grype 데이터 번들 반입은 있으나 사내 취약점 CRUD는 없음 | [취약점 보강 API](../apps/api/koda_tracker/vulnerability_intelligence_api.py)·[모델](../apps/api/koda_tracker/vulnerability_intelligence_models.py) |
 | 사설·인증 저장소와 추가 생태계 자동 수집 | 공개 npm·PyPI·Maven·NuGet·Go·Cargo와 오프라인 캐시 반입 제공. 사설 Artifactory/Nexus 계정, Composer·RubyGems·Hex·CPAN 수집기 없음 | [수집기와 허용 공급원](../apps/api/koda_tracker/package_metadata.py) |
 | Email·Slack·Teams·Mattermost·Jira 전용 알림 전송기·템플릿 | 보관함·서명 Webhook·재시도 제공. 외부 중계는 가능하지만 내장 전송기는 없음 | [알림 전송](../apps/api/koda_tracker/workflows.py)·[설정](../apps/api/koda_tracker/config.py) |
 | OIDC SSO·팀별 프로젝트 ACL·팀 단위 API 키 | 로컬/LDAP, 역할 권한과 서비스 범위 API 토큰 제공 | [인증 API](../apps/api/koda_tracker/main.py)·[계정 모델](../apps/api/koda_tracker/models.py). 조직 팀/프로젝트 ACL 모델·OIDC 콜백 없음 |
@@ -24,9 +22,9 @@
 
 | 항목 | 경계 |
 | --- | --- |
-| 이관 대상 | 프로젝트·SBOM·발견·분석·검토·위반·정책·라이선스/그룹 중심. 사용자·팀·ACL·알림 설정·분석기 자격증명·사설 저장소 설정의 전체 DB 자동이관은 아님 |
+| 이관 대상 | 프로젝트·SBOM·발견·분석·검토·위반·정책·라이선스/그룹 중심. 새 사내 DB 작성·관리는 자체 기능이며 원본의 사내 취약점 작성 DB 전체 자동이관은 별도. 사용자·팀·ACL·알림 설정·분석기 자격증명·사설 저장소 설정의 전체 DB 자동이관은 아님 |
 | 분석 공급원과 결과 | Grype와 다른 분석기/DB의 CVE 집합·심각도·수정 제안은 다를 수 있음. 같은 기준일의 건수만으로 동등성을 판단하지 않음 |
-| 비CVE advisory 표시 | 원본 발견 데이터는 보존하지만 기본 발견 화면·집계는 CVE 또는 CVE alias가 있는 자료 중심. CVE가 없는 사내/기타 advisory의 전용 조회·전역 집계는 제공하지 않음 ([표시 projection](../apps/api/koda_tracker/vulnerability.py)) |
+| 비CVE advisory 표시 | 사내 DB에서 게시한 내부 ID는 회차 발견·정책·VEX·Collection 집계에 포함. 그 밖의 공개 공급원 결과는 CVE 또는 CVE alias 중심이며 모든 비CVE advisory의 포트폴리오 전역 검색은 제공하지 않음 ([표시 projection](../apps/api/koda_tracker/vulnerability.py)) |
 | 정책 위반 표시 단위 | KODA 결과는 정책·구성요소·버전·선택적 취약점 기준으로 중복 제거. 원본의 조건별 위반 행 수와 같지 않을 수 있음. 구버전 ALL 판정은 원시 개수 의미를 보존하되 원본 조건 행은 이관 증거로 보관 |
 | 출시일·버전 거리 | Maven 색인 시각·Go 리비전 생성 시각을 구분. 공급원이 제공하지 않는 최초 공개일이나 사설 버전 목록을 임의 생성하지 않음 |
 | 풍부한 CycloneDX 구조 | 원본 파일 보존. XML CPE·SWID는 이번에 정규화 보완. services·일부 풍부한 메타데이터·중첩 구성요소의 전체 정규화/전용 화면은 제한됨 |

@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
+from .collection_metrics import CollectionLogic, collection_config, collection_metrics, configure_collection
 from .db import get_db
 from .models import Environment, Release, SbomRun, Service, now
 from .project_catalog_models import NativeProject, ProjectRunLink, ProjectSyncSource, ProjectSyncEvent
@@ -29,6 +30,8 @@ class ProjectCreate(BaseModel):
     isLatest: bool = False
     active: bool = True
     runId: str | None = None
+    collectionLogic: CollectionLogic = CollectionLogic.NONE
+    collectionTag: str | None = Field(default=None, max_length=255)
 
 
 class ProjectUpdate(BaseModel):
@@ -39,6 +42,8 @@ class ProjectUpdate(BaseModel):
     tags: list[str] | None = Field(default=None, max_length=100)
     isLatest: bool | None = None
     active: bool | None = None
+    collectionLogic: CollectionLogic | None = None
+    collectionTag: str | None = Field(default=None, max_length=255)
 
 
 class RunLinkRequest(BaseModel):
@@ -75,6 +80,7 @@ def create_project(body: ProjectCreate, db: Session = Depends(get_db), principal
             raise HTTPException(409, "동일한 원본 프로젝트가 이미 있습니다")
         _parent_check(db, body.sourceId, body.sourceProjectId, body.parentProjectId)
         p = NativeProject(source_id=body.sourceId, source_project_id=body.sourceProjectId, service_id=body.serviceId, environment_id=body.environmentId, name=body.name, version=body.version, parent_project_id=body.parentProjectId, tags=tags_of(body.tags), is_latest=False, active=body.active)
+        configure_collection(p, body.collectionLogic, body.collectionTag)
         db.add(p); db.flush()
         set_latest(db, p, body.isLatest)
         if body.runId:
@@ -111,6 +117,13 @@ def update_project(project_id: str, body: ProjectUpdate, db: Session = Depends(g
             if body.isLatest is None:
                 raise CatalogError("최신 버전 상태는 null일 수 없습니다")
             set_latest(db, p, body.isLatest)
+        if {"collectionLogic", "collectionTag"} & body.model_fields_set:
+            current = collection_config(p)
+            logic = body.collectionLogic if "collectionLogic" in body.model_fields_set else current["collectionLogic"]
+            if logic is None:
+                raise CatalogError("Collection 방식은 null일 수 없습니다")
+            tag = body.collectionTag if "collectionTag" in body.model_fields_set else current["collectionTag"]
+            configure_collection(p, logic, tag)
         p.revision += 1
         audit(db, principal.username, "project_catalog.update", "project", p.id, body.model_dump(exclude_unset=True))
         db.commit()
@@ -136,6 +149,17 @@ def attach_run(project_id: str, body: RunLinkRequest, db: Session = Depends(get_
         return project_payload(p)
     except ValueError as exc:
         db.rollback(); raise HTTPException(422, str(exc)) from exc
+
+
+@router.get("/project-catalog/{project_id}/metrics")
+def get_collection_metrics(project_id: str, db: Session = Depends(get_db), _=Depends(require_permission("migrations.manage"))):
+    p = db.get(NativeProject, project_id)
+    if p is None:
+        raise HTTPException(404, "프로젝트가 없습니다")
+    try:
+        return collection_metrics(db, p)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
 
 
 class SyncCreate(BaseModel):

@@ -664,3 +664,58 @@ CWE·EPSS 또는 고급 helper가 필요한 데이터를 찾지 못하면 `polic
 보존하지만 재분석 대기·실행 상태를 표시하므로 이를 새 Grype 완료 결과로 간주하지 않습니다.
 활성 원본의 명시적 재동기화는 자체 편집한 카탈로그를 원본 값으로 다시 맞춥니다.
 자체 값을 계속 유지하려면 해당 원본 동기화를 비활성화합니다. 정책의 로컬 수정 충돌은 계속 차단합니다.
+
+## Collection 집계와 사내 취약점 DB
+
+설정의 **기존 자료 이관 / 프로젝트 카탈로그**에서 부모 프로젝트의 Collection 방식을
+선택하고 지표를 조회합니다. 일반 프로젝트는 `NONE`, Collection은 아래 방식을 사용합니다.
+
+| 방식 | 선택 범위 |
+| --- | --- |
+| `AGGREGATE_DIRECT_CHILDREN` | 활성 직접 자식. 자식 Collection은 그 자식의 설정에 따라 재귀 집계 |
+| `AGGREGATE_LATEST_VERSION_CHILDREN` | `isLatest=true`인 활성 직접 자식. 자동 버전 문자열 비교가 아니라 카탈로그 최신 표시 사용 |
+| `AGGREGATE_DIRECT_CHILDREN_WITH_TAG` | 지정 태그가 있는 활성 직접 자식. 중첩 Collection의 자식은 자체 설정 적용 |
+| `AGGREGATE_ALL_DESCENDANTS` | 활성 하위 일반 프로젝트 전체. 중간 일반 프로젝트도 포함하며 Collection 자신의 SBOM은 제외 |
+
+집계는 프로젝트별 최신 비보관 회차 하나의 최신 완료 분석을 사용하며 동일 회차는 한 번만
+합산합니다. Collection 자신의 SBOM은 합산하지 않습니다. 최신 회차가 미분석이면 더 오래된
+회차의 성공을 대신 쓰지 않습니다. 해당 회차의 재분석 대기·실패 시 이전 완료 리비전은
+`stale` 증거로 구분합니다. 누락·오래된 결과·정책 미평가 또는 정책 데이터 부족이 있으면 커버리지는 불완전합니다.
+취약점 합계는 승인된 VEX 억제 후 발생 건수이며 고유 취약점 ID 수는 별도입니다.
+구성요소는 프로젝트별 발생 건수여서 포트폴리오 고유 패키지 수와 다릅니다.
+
+- `GET /api/v1/project-catalog/{id}/metrics`: 합계, 커버리지, 프로젝트별 회차·분석 증거.
+- 카탈로그 생성/수정의 `collectionLogic`, `collectionTag`: 설정. 수정 시 `expectedRevision` 필요.
+- 조회에는 `migrations.manage`, 수정에는 관리자 역할·동일 권한·CSRF가 필요합니다.
+- 기존 자료 동기화는 원본 Collection 방식과 태그도 반영합니다. 전체 동등성은 미구현 기능 표를 참조합니다.
+
+설정의 **사내 취약점 DB**에서 내부 ID(예: `KODA-2026-001`) 또는 CVE ID, 제목·설명,
+심각도·CVSS·CWE·별칭·참고 URL, 영향 패키지와 수정 버전을 작성합니다. 조회는 관리자와
+`metadata.view` 또는 `metadata.manage`, 작성은 관리자와 `metadata.manage`가 필요합니다. 초안은 분석에 사용하지 않고, 게시된 항목만 실제 Grype
+분석 결과에 합칩니다. DB 조회·버전 매칭은 오프라인이며 참고 URL이나 패키지 코드를 실행하지 않습니다.
+
+영향 패키지는 **버전·qualifier·subpath 없는 PURL**로 지정하고 정확한 버전을 나열하거나
+범위를 지정합니다. `introduced`는 포함, `fixed`는 미포함, `lastAffected`는 포함이며
+`fixed`와 `lastAffected`는 함께 지정하지 않습니다. Maven은 Maven ComparableVersion
+정렬을, SemVer 범위는 정식 `x.y.z`를 사용합니다. prerelease·build metadata 등 다른 표기는
+정확 버전 목록에 명시합니다. PyPI 등 범위 정렬을 지원하지 않는 생태계도 정확 버전 목록을
+사용하며 임의의 문자열 순서로 취약 여부를 추정하지 않습니다. `fixedVersions`는 수정 권고이며
+영향 판정은 `versions`/`ranges`로 결정합니다. 분석 입력의 qualifier/subpath는 패키지 식별에서
+제외하며 사설 저장소 URL을 접속하지 않습니다. PURL의 버전과 구성요소 버전이 모순되면 일치로 처리하지 않습니다.
+
+- `GET/POST /api/v1/private-vulnerabilities`: 페이지 목록 / 생성.
+- `PUT /api/v1/private-vulnerabilities/{id}`: 전체 문서 수정. `expectedRevision` 필수, ID 변경 불가.
+- `DELETE /api/v1/private-vulnerabilities/{id}?expectedRevision=N`: 물리 삭제 대신 철회.
+- `GET /api/v1/private-vulnerabilities/{id}/history`: 페이지별 불변 작성 이력.
+
+게시·게시 내용 변경·철회는 이전/현재 영향 버전에 해당하는 비보관 회차의 재분석 의도를
+같은 DB 트랜잭션에 저장합니다. `portal-project-sync`가 큐 여유에 맞춰 작업을 넣고
+`portal-worker`가 실제 Grype 분석을 실행합니다. 큐가 가득 차거나 이미 분석 중이면 의도를
+보존해 재시도합니다. `affectedRunsQueued`는 접수 수이며 완료 수가 아닙니다.
+재분석 완료를 확인한 뒤 결과를 판단합니다. 철회는 새 결과에서 제외하며 이전 분석은 변경하지 않습니다.
+각 분석의 `dataSources.privateVulnerabilityDb`는 게시 항목의 불변 작성 리비전과 해시를 보관합니다.
+사내 DB 테이블은 기존 PostgreSQL 백업·복원 대상에 포함됩니다.
+
+사내 내부 ID도 발견 화면·정책·VEX·회차 비교·Collection에 포함합니다. 사내 항목의 공개 CVE 별칭은 보존하되 내부 ID를 유지해
+같은 공개 CVE 발견과 VEX 검토 대상을 구분합니다. Grype DB는 계속 사용하며 사내 DB가 이를 대체하지 않습니다.
+검증 명령과 실제 결과는 [Docker 추가 검증](verification-collection-private-20261018-ko.md)을 참조합니다.

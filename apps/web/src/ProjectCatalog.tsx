@@ -1,9 +1,12 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { createNativeProject, createProjectSyncSource, fetchProjectCatalog, fetchProjectSyncEvents, fetchProjectSyncSources, previewMode, runProjectSync, updateNativeProject, updateProjectSyncSource } from "./api";
-import type { NativeProject, ProjectSyncSource } from "./api";
+import type { CollectionLogic, NativeProject, ProjectSyncSource } from "./api";
 import type { CatalogItem } from "./types";
 import { WorkflowPagination } from "./ReanalysisSchedule";
 import { formatSeoulDateTime } from "./format";
+import { CollectionMetricsView } from "./CollectionMetrics";
+
+const collectionModes:Record<CollectionLogic,string>={NONE:"일반 프로젝트",AGGREGATE_DIRECT_CHILDREN:"직접 자식 집계",AGGREGATE_DIRECT_CHILDREN_WITH_TAG:"태그가 일치하는 직접 자식",AGGREGATE_LATEST_VERSION_CHILDREN:"최신 버전 자식 집계",AGGREGATE_ALL_DESCENDANTS:"모든 하위 프로젝트 집계"};
 
 const errorMessage = (value: unknown) => value instanceof Error ? value.message : "처리에 실패했습니다.";
 const split = (value:string) => value.split(",").map(v => v.trim()).filter(Boolean);
@@ -14,15 +17,20 @@ function ProjectEditor({project,disabled,save}:{project:NativeProject;disabled:b
   const [parent,setParent] = useState(project.parentProjectId || "");
   const [latest,setLatest] = useState(project.isLatest);
   const [active,setActive] = useState(project.active);
-  return <form className="table-frame workflow-form" onSubmit={event => {event.preventDefault();void save(project,{tags:split(tags),parentProjectId:parent.trim() || null,isLatest:latest,active});}}>
+  const [logic,setLogic] = useState<CollectionLogic>(project.collectionLogic || "NONE");
+  const [tag,setTag] = useState(project.collectionTag || "");
+  return <form className="table-frame workflow-form" onSubmit={event => {event.preventDefault();void save(project,{tags:split(tags),parentProjectId:parent.trim() || null,isLatest:latest,active,collectionLogic:logic,collectionTag:logic==="AGGREGATE_DIRECT_CHILDREN_WITH_TAG" ? tag.trim() : null});}}>
     <h4>{project.name} · {project.version || "버전 없음"}</h4><p className="mono wrap">{project.sourceId} / {project.sourceProjectId}</p>
     <fieldset disabled={disabled}><legend>프로젝트 범위 v{project.revision}</legend>
       <label>태그<input aria-label={`${project.id} 태그`} value={tags} onChange={e=>setTags(e.target.value)} placeholder="쉼표로 구분"/></label>
       <label>부모 원본 프로젝트 ID<input aria-label={`${project.id} 부모`} value={parent} onChange={e=>setParent(e.target.value)} placeholder="같은 원본의 프로젝트 ID, 비우면 최상위"/></label>
       <label className="checkbox-label"><input type="checkbox" checked={latest} onChange={e=>setLatest(e.target.checked)}/>최신 버전</label>
       <label className="checkbox-label"><input type="checkbox" checked={active} onChange={e=>setActive(e.target.checked)}/>활성 프로젝트</label>
+      <label>Collection 집계 방식<select aria-label={`${project.id} Collection 방식`} value={logic} onChange={e=>setLogic(e.target.value as CollectionLogic)}>{Object.entries(collectionModes).map(([value,label])=><option key={value} value={value}>{label}</option>)}</select></label>
+      {logic==="AGGREGATE_DIRECT_CHILDREN_WITH_TAG"&&<label>집계 태그<input required value={tag} onChange={e=>setTag(e.target.value)}/></label>}
       {!disabled && <button className="secondary" type="submit">프로젝트 범위 저장</button>}
     </fieldset><p>변경은 다음 분석에 적용됩니다. 과거 리비전의 범위·판정은 보존합니다.</p>
+    {(project.collectionLogic && project.collectionLogic!=="NONE")&&<CollectionMetricsView projectId={project.id}/> }
   </form>;
 }
 

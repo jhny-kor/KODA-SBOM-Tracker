@@ -58,8 +58,14 @@ def targets(run):
 
 
 def resolve_target(run, component, vulnerability_id):
-    matches = [(key, finding) for key, finding in targets(run).items()
-               if key[0] == component and vulnerability_id in {key[2], finding.get("id"), *(finding.get("aliases") or [])}]
+    candidates = [(key, finding) for key, finding in targets(run).items() if key[0] == component]
+    # A public CVE can also be a private advisory's alias. Exact identities take
+    # precedence so a review of one finding cannot silently select the other.
+    matches = [(key, finding) for key, finding in candidates
+               if vulnerability_id in {key[2], finding.get("id")}]
+    if not matches:
+        matches = [(key, finding) for key, finding in candidates
+                   if vulnerability_id in (finding.get("aliases") or [])]
     if len(matches) != 1:
         raise HTTPException(422, "검토 대상은 현재 분석의 정확한 구성요소 버전과 취약점이어야 합니다")
     return matches[0][0]

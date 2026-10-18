@@ -292,3 +292,43 @@ def test_pending_source_reanalysis_remains_visible_after_older_job_completes(db,
     result = koda_run_result(run.id, db, None)
     assert result["run"]["analysisState"] == "queued"
     assert run.state == ProcessingState.COMPLETED  # response overlay never rewrites evidence
+
+
+def test_real_private_advisory_flows_through_grype_policy_metrics_and_snapshot(db, tmp_path, monkeypatch):
+    from koda_tracker.private_vulnerability import AdvisoryDocument
+    from koda_tracker.private_vulnerability_models import PrivateVulnerability
+    component = {"name": "internal", "version": "1.0.0", "purl": "pkg:generic/internal@1.0.0", "licenses": [{"license": {"id": "MIT"}}]}
+    run = make_run(db, tmp_path, [component])
+    document = AdvisoryDocument(advisoryId="INTERNAL-001", title="Private issue", severity="High",
+                                affected=[{"purl": "pkg:generic/internal", "versions": ["1.0.0"]}], state="published").model_dump()
+    advisory = PrivateVulnerability(advisory_id=document['advisoryId'], state='published', revision=1, document=document)
+    db.add(advisory); db.flush()
+    monkeypatch.setattr(services, "get_settings", lambda: Settings(grype_db_dir=tmp_path / "grype-db"))
+    monkeypatch.setattr(services, "load_context", lambda _: VulnerabilityContext(None, {}, {}, {}, {}))
+    monkeypatch.setattr(services.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout=json.dumps({"matches": [], "descriptor": {"version": "0.109.1"}}), stderr=""))
+    revision = services.analyze_offline(db, run)
+    assert revision.state == JobState.COMPLETED
+    assert revision.findings[0]['id'] == 'INTERNAL-001'
+    assert revision.metrics['vulnerabilityCount'] == 1
+    assert any(p['vulnerabilityId'] == 'INTERNAL-001' for p in revision.policies)
+    assert revision.data_sources['privateVulnerabilityDb']['advisories'][0]['revision'] == 1
+    old = copy.deepcopy(revision.findings)
+    advisory.document = {**document, 'state': 'withdrawn'}
+    advisory.state = 'withdrawn'; advisory.revision = 2; db.flush()
+    updated = services.analyze_offline(db, run)
+    assert updated.findings == [] and updated.metrics['vulnerabilityCount'] == 0
+    assert revision.findings == old
+
+
+def test_private_db_failure_does_not_report_successful_partial_analysis(db, tmp_path, monkeypatch):
+    run = make_run(db, tmp_path)
+    monkeypatch.setattr(services, "get_settings", lambda: Settings(grype_db_dir=tmp_path / "grype-db"))
+    monkeypatch.setattr(services, "load_context", lambda _: VulnerabilityContext(None, {}, {}, {}, {}))
+    monkeypatch.setattr(services.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout='{"matches": []}', stderr=""))
+    def unavailable(*args):
+        raise RuntimeError('private advisory database unavailable')
+    monkeypatch.setattr(services, 'match_private_vulnerabilities', unavailable)
+    revision = services.analyze_offline(db, run)
+    assert revision.state == JobState.FAILED
+    assert 'private advisory database unavailable' in revision.error
+    assert revision.policy_state != 'completed'

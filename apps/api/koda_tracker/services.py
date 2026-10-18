@@ -24,6 +24,7 @@ from .sbom import licenses_for, normalized_identity, sha256_for
 from . import package_metadata_models
 from .package_metadata import enqueue_components
 from . import workflow_models  # Register workflow tables before standalone create_all callers.
+from .private_vulnerability import match_private_vulnerabilities
 from .policies import evaluate_revision
 from .vulnerability import active_bundle, load_context, normalize_finding
 
@@ -125,6 +126,12 @@ def analyze_offline(db: Session, run: SbomRun) -> AnalysisRevision:
                         ],
                     }
                 )
+            if isinstance(run, SbomRun):
+                private_findings, private_snapshot = match_private_vulnerabilities(
+                    db, (run.normalized_bom or {}).get("components", [])
+                )
+                findings.extend(private_findings)
+                revision.data_sources = {**revision.data_sources, "privateVulnerabilityDb": private_snapshot}
             revision.state = JobState.COMPLETED
             revision.tool_version = str(payload.get("descriptor", {}).get("version", "grype"))
         else:

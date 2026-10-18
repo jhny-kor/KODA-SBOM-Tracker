@@ -1,8 +1,8 @@
 """Mutable project catalog, immutable run links and durable source-sync records."""
 from __future__ import annotations
 from datetime import datetime
-from sqlalchemy import JSON, Boolean, DateTime, Integer, String, Text, UniqueConstraint
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .db import Base
 from .models import new_id, now
 
@@ -25,6 +25,15 @@ class NativeProject(Base):
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     revision: Mapped[int] = mapped_column(Integer, default=1)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+    collection_config: Mapped["NativeCollectionConfig | None"] = relationship(cascade="all, delete-orphan", uselist=False, lazy="selectin")
+
+
+class NativeCollectionConfig(Base):
+    __tablename__ = "native_collection_configs"
+    project_id: Mapped[str] = mapped_column(ForeignKey("native_projects.id", ondelete="CASCADE"), primary_key=True)
+    logic: Mapped[str] = mapped_column(String(64), default="NONE")
+    tag: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
 
 class ProjectRunLink(Base):

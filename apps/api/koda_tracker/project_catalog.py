@@ -10,6 +10,7 @@ import uuid
 from cryptography.fernet import Fernet, InvalidToken
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
+from .collection_metrics import collection_config, configure_collection
 from .config import get_settings
 from .models import AuditEvent, Job, JobState, ProcessingState, Release, SbomRun, SbomPolicyRevision, now
 from .project_catalog_models import NativeProject, ProjectRunLink, ProjectSyncSource, ProjectSyncEvent, NativeReanalysisPending
@@ -54,8 +55,10 @@ def upsert_source_projects(db: Session, bundle: dict, plan: dict) -> list[Native
     source_id = bundle["source"]["id"]
     existing = {p.source_project_id: p for p in db.scalars(select(NativeProject).where(NativeProject.source_id == source_id))}
     incoming = {}
+    original_projects = {}
     for item in bundle["projects"]:
         project = item["project"]
+        original_projects[project["uuid"]] = project
         parent = project.get("parent")
         parent = parent.get("uuid") if isinstance(parent, dict) else parent
         incoming[project["uuid"]] = {"name": str(project.get("name") or project["uuid"])[:255], "version": str(project.get("version") or "unversioned")[:255], "parent_project_id": parent, "tags": tags_of(project.get("tags") or []), "is_latest": project.get("isLatest") is True, "active": project.get("active") is not False}
@@ -85,6 +88,14 @@ def upsert_source_projects(db: Session, bundle: dict, plan: dict) -> list[Native
             for key, value in values.items():
                 setattr(project, key, value)
             if changed:
+                project.revision += 1
+        raw = original_projects[identity]
+        if "collectionLogic" in raw:
+            tag = raw.get("collectionTag")
+            tag = tag.get("name") if isinstance(tag, dict) else tag
+            before_config = collection_config(project)
+            configure_collection(project, raw.get("collectionLogic") or "NONE", tag)
+            if before_config != collection_config(project) and identity in existing:
                 project.revision += 1
         project.current_run_id = target["runId"]
         # Release creation happens later in apply_migration; resolve lazily.
@@ -159,7 +170,7 @@ def scoped_run_matches(db: Session, run_id: str, scope: dict) -> bool:
 
 
 def project_payload(p: NativeProject) -> dict:
-    return {"id": p.id, "sourceId": p.source_id, "sourceProjectId": p.source_project_id, "serviceId": p.service_id, "environmentId": p.environment_id, "releaseId": p.release_id, "currentRunId": p.current_run_id, "name": p.name, "version": p.version, "parentProjectId": p.parent_project_id, "tags": p.tags, "isLatest": p.is_latest, "active": p.active, "revision": p.revision, "updatedAt": utc(p.updated_at).isoformat() if p.updated_at else None}
+    return {**collection_config(p), "id": p.id, "sourceId": p.source_id, "sourceProjectId": p.source_project_id, "serviceId": p.service_id, "environmentId": p.environment_id, "releaseId": p.release_id, "currentRunId": p.current_run_id, "name": p.name, "version": p.version, "parentProjectId": p.parent_project_id, "tags": p.tags, "isLatest": p.is_latest, "active": p.active, "revision": p.revision, "updatedAt": utc(p.updated_at).isoformat() if p.updated_at else None}
 
 
 def link_run(db: Session, project: NativeProject, run: SbomRun) -> None:

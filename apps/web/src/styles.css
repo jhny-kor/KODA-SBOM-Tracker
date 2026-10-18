@@ -474,3 +474,7 @@ button.danger.compact { min-height: 30px; padding: 0 10px; font-size: 12px; }
 .metadata-table td { vertical-align: top; white-space: normal; overflow-wrap: anywhere; min-width: 140px; }
 .metadata-table td:last-child { min-width: 260px; max-width: 380px; }
 .metadata-table details p { margin: 8px 0; }
+
+/* Advisory authoring is one continuous form, including its package fieldsets. */
+.private-advisory-form { grid-template-columns: minmax(0, 1fr); }
+.private-advisory-form fieldset { min-width: 0; display: grid; gap: 12px; }

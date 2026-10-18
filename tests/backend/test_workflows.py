@@ -354,3 +354,12 @@ def test_manage_only_custom_grants_can_read_their_workflow_panels(setup):
     setup.db.commit()
     for path in ["/sbom-runs/run/reviews", "/sbom-runs/run/vex", "/notifications", "/notification-settings"]:
         assert setup.client.get("/api/v1" + path, headers=headers()).status_code == 200
+
+
+def test_private_cve_alias_does_not_make_public_or_internal_vex_target_ambiguous():
+    private = {**FINDING, "id": "INTERNAL-001", "canonicalId": "INTERNAL-001", "aliases": [CVE],
+               "sourceKind": "private_vulnerability", "source": "KODA_PRIVATE", "privateAdvisoryId": "uuid"}
+    run = SimpleNamespace(analyses=[SimpleNamespace(state=JobState.COMPLETED, sequence=1, findings=[FINDING, private])])
+    assert workflows.resolve_target(run, PURL, CVE)[2] == CVE
+    assert workflows.resolve_target(run, PURL, "INTERNAL-001")[2] == "INTERNAL-001"
+    assert workflows.resolve_target(run, PURL, "GHSA-demo")[2] == CVE

@@ -11,6 +11,8 @@
 
 - **SBOM 회차 관리** — 서비스·환경·릴리스별로 CycloneDX JSON/XML을 업로드하고 분석 상태를 추적합니다.
 - **취약점·정책 분석** — Grype DB로 CVE를 분석하고 KODA가 구성요소·심각도·KEV 지표와 SBOM 정책 위반을 직접 산출합니다. CVSS·KEV·제안 버전과 CVE 기준일을 함께 표시합니다.
+- **Collection 지표** — 부모별 직접 자식·최신 버전·태그·전체 하위 범위를 집계합니다. 중첩 Collection과 미분석·오래된 결과의 커버리지를 구분합니다.
+- **사내 취약점 DB** — 내부 ID·영향 패키지/버전·수정 버전을 등록하고 초안·게시·철회와 변경 이력을 관리합니다. 게시·변경·철회 시 영향 회차를 자동 재분석하며 Grype 결과와 함께 정책·VEX에 적용합니다.
 - **고급 정책·검토** — 서비스·환경·릴리스와 동적 계층·태그·최신 버전 범위, CWE·EPSS·달력 AGE·단위별 버전 거리·SPDX를 포함한 표준 CEL 조건, 독립 승인형 VEX와 검토 이력, CycloneDX VEX 가져오기/내보내기를 제공합니다.
 - **자동 재분석·알림** — 전체 보관 전 SBOM을 기본 매일 재분석하고 데이터 번들 변경 시 후속 분석을 접수합니다. 결과 변경 보관함과 선택적 서명 Webhook·전송 재시도를 제공합니다. [운영 설정](docs/operations-ko.md#고급-정책vex자동-재분석)을 참조하세요.
 - **회차 비교** — 두 회차를 골라 구성요소·취약점·정책 위반 변경점을 탭으로 확인합니다.
@@ -71,7 +73,7 @@ KEV 데이터가 없으면 KEV 정책은 데이터 부족 경고를 남깁니다
 평가가 완료된 것으로 표시하지 않습니다. 기능 범위와 확인 기준은
 [기능 지원 범위](docs/feature-coverage-ko.md)를 따릅니다.
 현재 Docker 인수 결과와 미지원·미검증 범위는 [고급 기능 검증](docs/verification-complete-20261018-ko.md)과 [Java 정규식 추가 검증](docs/verification-java-regex-20261018-ko.md)에 정리했습니다. [구버전 리터럴 이관](docs/verification-literal-20261018-ko.md)과
-[외부 플랫폼 대비 미구현·제한 기능](docs/native-parity-audit-ko.md)도 확인하세요.
+[Collection·사내 DB 검증](docs/verification-collection-private-20261018-ko.md)과 [외부 플랫폼 대비 미구현·제한 기능](docs/native-parity-audit-ko.md)도 확인하세요.
 
 ## 배포 방식
 
