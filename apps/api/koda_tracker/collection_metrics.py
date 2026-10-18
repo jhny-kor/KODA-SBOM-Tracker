@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from enum import Enum
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .models import AnalysisRevision, JobState, Release, SbomRun, now
@@ -84,17 +84,35 @@ def collection_metrics(db: Session, root: NativeProject) -> dict:
         candidates[project_id][run.id] = run
     # Ordinary uploads inherit a catalog release only when it is unambiguous,
     # matching project_for_run rather than relying on a stale currentRunId.
-    coordinate_projects = defaultdict(list)
-    for node in nodes:
-        coordinate_projects[(node.service_id, node.environment_id, node.version)].append(node.id)
     service_ids = {node.service_id for node in selected.values()}
+    # Uniqueness must include every source, exactly as project_for_run does.
+    # Count in SQL so other catalogs' project rows and IDs need not be exposed.
+    coordinate_projects = {}
+    if service_ids:
+        coordinates = db.execute(select(
+            NativeProject.service_id, NativeProject.environment_id, NativeProject.version,
+            func.count(NativeProject.id), func.min(NativeProject.id),
+        ).where(NativeProject.service_id.in_(service_ids)).group_by(
+            NativeProject.service_id, NativeProject.environment_id, NativeProject.version,
+        ))
+        coordinate_projects = {(service, environment, version): (count, owner)
+                               for service, environment, version, count, owner in coordinates}
+    selected_coordinates = defaultdict(list)
+    for node in selected.values():
+        selected_coordinates[(node.service_id, node.environment_id, node.version)].append(node.id)
+    ambiguous_projects = set()
     inherited = db.execute(select(Release, SbomRun).join(SbomRun, SbomRun.release_id == Release.id).where(Release.service_id.in_(service_ids), SbomRun.archived_at.is_(None))) if service_ids else []
     for release, run in inherited:
-        matches = coordinate_projects[(release.service_id, release.environment_id, release.version)]
-        if len(matches) == 1 and matches[0] in selected:
-            explicit = db.get(ProjectRunLink, run.id)
-            if explicit is None or explicit.project_id == matches[0]:
-                candidates[matches[0]][run.id] = run
+        # Explicit ownership was collected above, and must never be replaced by
+        # coordinate inheritance, even when it belongs to another source.
+        if db.get(ProjectRunLink, run.id) is not None:
+            continue
+        coordinate = (release.service_id, release.environment_id, release.version)
+        count, owner = coordinate_projects.get(coordinate, (0, None))
+        if count == 1 and owner in selected:
+            candidates[owner][run.id] = run
+        elif count > 1:
+            ambiguous_projects.update(selected_coordinates[coordinate])
     newest = {pid: max(runs.values(), key=lambda r: (r.created_at, r.round_number, r.id)) for pid, runs in candidates.items()}
     run_ids = [run.id for run in newest.values()]
     analyses = defaultdict(list)
@@ -103,13 +121,15 @@ def collection_metrics(db: Session, root: NativeProject) -> dict:
     pending = set(db.scalars(select(NativeReanalysisPending.run_id).where(NativeReanalysisPending.run_id.in_(run_ids))))
     totals = Counter({k: 0 for k in ("componentCount", "vulnerabilityCount", "vulnerableComponentCount", "kevCount", "policyViolationCount", "suppressedVulnerabilityCount", "rawVulnerabilityCount", "policyFailCount", "policyWarnCount", "policyInfoCount", "policySuppressedCount")})
     severities, unique_ids, seen_runs = Counter(), set(), set()
-    rows, analyzed, missing, stale, policy_incomplete = [], 0, 0, 0, 0
+    rows, analyzed, missing, stale, policy_incomplete, ambiguous = [], 0, 0, 0, 0, 0
     for project in sorted(selected.values(), key=lambda p: (p.name, p.version, p.id)):
         run = newest.get(project.id)
         completed = [a for a in analyses[run.id] if a.state == JobState.COMPLETED] if run else []
         revision = max(completed, key=lambda a: a.sequence, default=None)
         latest = max(analyses[run.id], key=lambda a: a.sequence, default=None) if run else None
-        state = "missing"
+        unresolved = run is None and project.id in ambiguous_projects
+        state = "ambiguous" if unresolved else "missing"
+        ambiguous += unresolved
         metrics = None
         if revision:
             state = "stale" if run.id in pending or run.analysis_state != JobState.COMPLETED or revision != latest else "completed"
@@ -135,4 +155,4 @@ def collection_metrics(db: Session, root: NativeProject) -> dict:
             if run:
                 state = run.analysis_state.value
         rows.append({"projectId": project.id, "name": project.name, "version": project.version, "runId": run.id if run else None, "analysisId": revision.id if revision else None, "analysisSequence": revision.sequence if revision else None, "state": state, "policyState": revision.policy_state if revision else "not_evaluated", "metrics": metrics})
-    return {"projectId": root.id, **collection_config(root), "generatedAt": now().isoformat(), "coverage": {"selectedProjectCount": len(selected), "analyzedProjectCount": analyzed, "missingProjectCount": missing, "staleProjectCount": stale, "policyIncompleteProjectCount": policy_incomplete, "complete": not (missing or stale or policy_incomplete)}, "totals": {**dict(totals), "severityCounts": dict(severities), "uniqueVulnerabilityCount": len(unique_ids)}, "projects": rows}
+    return {"projectId": root.id, **collection_config(root), "generatedAt": now().isoformat(), "coverage": {"selectedProjectCount": len(selected), "analyzedProjectCount": analyzed, "missingProjectCount": missing, "staleProjectCount": stale, "policyIncompleteProjectCount": policy_incomplete, "ambiguousProjectCount": ambiguous, "complete": not (missing or stale or policy_incomplete or ambiguous)}, "totals": {**dict(totals), "severityCounts": dict(severities), "uniqueVulnerabilityCount": len(unique_ids)}, "projects": rows}

@@ -13,6 +13,7 @@ from .config import get_settings
 from .db import SessionLocal
 from .models import Job, JobState, ProcessingState, SbomRun
 from .services import analyze_offline, sync_dependency_track
+from .sbom_normalization import prepare_run, normalization_tick
 
 DATA_UPDATE_KINDS = {"data_update", "vulnerability_data_update"}
 
@@ -123,6 +124,7 @@ async def process_one() -> bool:
                 raise RuntimeError("보관된 회차는 다시 처리할 수 없습니다")
             revision = None
             if job.kind in {"process_run", "analyze"}:
+                prepare_run(db, run)
                 revision = analyze_offline(db, run)
             if job.kind in {"process_run", "sync_dependency_track"} and get_settings().dependency_track_enabled:
                 await sync_dependency_track(db, run)
@@ -150,6 +152,7 @@ def run(*, data_updates: bool = False) -> None:
 
     next_prune = 0.0
     next_scheduler = 0.0
+    next_normalization = 0.0
     updater_lock = None
     if data_updates:
         from .config import get_settings
@@ -175,6 +178,14 @@ def run(*, data_updates: bool = False) -> None:
                     except Exception:
                         logging.getLogger(__name__).exception("Native workflow maintenance failed")
                 next_scheduler = now + 10
+            if not data_updates and now >= next_normalization:
+                try:
+                    with SessionLocal() as db:
+                        normalization_tick(db)
+                        db.commit()
+                except Exception:
+                    logging.getLogger(__name__).exception("SBOM normalization maintenance failed")
+                next_normalization = now + 10
             if data_updates:
                 did_work = asyncio.run(process_data_update_one())
             else:

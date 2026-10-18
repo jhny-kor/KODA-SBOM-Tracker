@@ -26,7 +26,7 @@ def db():
 
 
 def project(db, identity, parent=None, logic="NONE", tag=None, **kw):
-    p = NativeProject(id=identity, source_id="sample", source_project_id=identity, service_id="s", environment_id="e", name=identity, version=identity, parent_project_id=parent, tags=kw.pop("tags", []), is_latest=kw.pop("latest", True), active=kw.pop("active", True), **kw)
+    p = NativeProject(id=identity, source_id="sample", source_project_id=identity, service_id="s", environment_id="e", name=identity, version=kw.pop("version", identity), parent_project_id=parent, tags=kw.pop("tags", []), is_latest=kw.pop("latest", True), active=kw.pop("active", True), **kw)
     configure_collection(p, logic, tag)
     db.add(p); db.flush()
     return p
@@ -79,7 +79,7 @@ def test_missing_failed_pending_and_archived_coverage_does_not_report_complete(d
     rb,_=analysis(db,b); rb.archived_at=now()
     db.flush()
     result=collection_metrics(db,root)
-    assert result["coverage"]=={"selectedProjectCount":3,"analyzedProjectCount":1,"missingProjectCount":2,"staleProjectCount":1,"policyIncompleteProjectCount":0,"complete":False}
+    assert result["coverage"]=={"selectedProjectCount":3,"analyzedProjectCount":1,"missingProjectCount":2,"staleProjectCount":1,"policyIncompleteProjectCount":0,"ambiguousProjectCount":0,"complete":False}
     assert result["projects"][0]["analysisId"]==rev.id
     db.delete(failed); run.analysis_state=JobState.COMPLETED
     db.add(NativeReanalysisPending(source_id="private",run_id=run.id)); db.flush()
@@ -130,3 +130,62 @@ def test_deep_hierarchy_is_iterative_and_cycle_rejected(db):
     root.parent_project_id="node999";db.flush()
     with pytest.raises(ValueError):
         collection_metrics(db,root)
+
+
+def test_cross_source_unlinked_coordinate_is_ambiguous_not_owned_by_each_collection(db):
+    root_a = project(db, "root-a", logic="AGGREGATE_DIRECT_CHILDREN")
+    child_a = project(db, "child-a", "root-a")
+    root_b = project(db, "root-b", logic="AGGREGATE_DIRECT_CHILDREN")
+    child_b = project(db, "child-b", "root-b", version=child_a.version)
+    root_b.source_id = child_b.source_id = "other-source"
+    run, _ = analysis(db, child_a)
+    db.delete(db.get(ProjectRunLink, run.id)); db.flush()
+    assert project_catalog.project_for_run(db, run.id) is None
+    for root in (root_a, root_b):
+        result = collection_metrics(db, root)
+        assert result["projects"][0]["runId"] is None
+        assert result["projects"][0]["state"] == "ambiguous"
+        assert result["coverage"]["ambiguousProjectCount"] == 1
+        assert result["coverage"]["missingProjectCount"] == 1
+        assert result["coverage"]["complete"] is False
+        assert result["totals"]["vulnerabilityCount"] == 0
+
+
+@pytest.mark.parametrize("explicit_other_source", [False, True])
+def test_explicit_link_wins_over_cross_source_coordinate_and_never_leaks(db, explicit_other_source):
+    root = project(db, "root", logic="AGGREGATE_DIRECT_CHILDREN")
+    child = project(db, "child", "root")
+    foreign = project(db, "foreign", version=child.version)
+    foreign.source_id = "other-source"
+    run, revision = analysis(db, child)
+    if explicit_other_source:
+        db.get(ProjectRunLink, run.id).project_id = foreign.id
+    db.flush()
+    result = collection_metrics(db, root)
+    if explicit_other_source:
+        assert result["projects"][0]["runId"] is None
+        assert result["coverage"]["complete"] is False
+        assert result["totals"]["componentCount"] == 0
+    else:
+        assert result["projects"][0]["runId"] == run.id
+        assert result["projects"][0]["analysisId"] == revision.id
+        assert result["coverage"]["complete"] is True
+        assert result["totals"]["componentCount"] == 1
+    assert result["coverage"]["ambiguousProjectCount"] == 0
+
+
+def test_globally_unique_unlinked_coordinate_inherits_but_archived_runs_do_not(db):
+    root = project(db, "root", logic="AGGREGATE_DIRECT_CHILDREN")
+    child = project(db, "child", "root")
+    foreign = project(db, "foreign", version="different-version")
+    foreign.source_id = "other-source"
+    run, _ = analysis(db, child)
+    db.delete(db.get(ProjectRunLink, run.id)); db.flush()
+    assert project_catalog.project_for_run(db, run.id).id == child.id
+    result = collection_metrics(db, root)
+    assert result["projects"][0]["runId"] == run.id and result["coverage"]["complete"]
+    run.archived_at = now(); foreign.version = child.version; db.flush()
+    result = collection_metrics(db, root)
+    assert result["projects"][0]["runId"] is None
+    assert result["projects"][0]["state"] == "missing"
+    assert result["coverage"]["ambiguousProjectCount"] == 0

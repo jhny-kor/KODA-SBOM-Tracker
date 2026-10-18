@@ -27,7 +27,7 @@
 | 비CVE advisory 표시 | 사내 DB에서 게시한 내부 ID는 회차 발견·정책·VEX·Collection 집계에 포함. 그 밖의 공개 공급원 결과는 CVE 또는 CVE alias 중심이며 모든 비CVE advisory의 포트폴리오 전역 검색은 제공하지 않음 ([표시 projection](../apps/api/koda_tracker/vulnerability.py)) |
 | 정책 위반 표시 단위 | KODA 결과는 정책·구성요소·버전·선택적 취약점 기준으로 중복 제거. 원본의 조건별 위반 행 수와 같지 않을 수 있음. 구버전 ALL 판정은 원시 개수 의미를 보존하되 원본 조건 행은 이관 증거로 보관 |
 | 출시일·버전 거리 | Maven 색인 시각·Go 리비전 생성 시각을 구분. 공급원이 제공하지 않는 최초 공개일이나 사설 버전 목록을 임의 생성하지 않음 |
-| 풍부한 CycloneDX 구조 | 원본 파일 보존. XML CPE·SWID는 이번에 정규화 보완. services·일부 풍부한 메타데이터·중첩 구성요소의 전체 정규화/전용 화면은 제한됨 |
+| 풍부한 CycloneDX 구조 | 원본 파일 보존. XML CPE·SWID는 이번에 정규화 보완. JSON/XML 중첩 구성요소의 목록·지표·정책·할당량 정규화는 추가 검증에서 보완. services·일부 풍부한 메타데이터의 전체 정규화/전용 화면은 제한됨 |
 | 비정상 원본 조건 | 원본에서 null 버전/조건 때문에 예외가 발생하는 구성은 명시적 차단·실패로 처리. 버전별로 등록되지 않은 조건은 임의 재해석하지 않음 |
 
 ## 구현 여부와 다른 검증 경계
@@ -45,3 +45,7 @@
 [File Formats](https://docs.dependencytrack.org/integrations/file-formats/),
 [전체 기능 목록](https://docs.dependencytrack.org/)입니다. 원본의 모든 플러그인·향후 버전까지
 완전한 동등성이 검증됐다고 주장하지 않습니다.
+
+2026-10-18 추가 정확성 점검에서 발견한 중첩·npm scope·Collection 원본 모호함·NuGet 문제는
+[수정 및 Docker 검증](verification-sbom-corrections-20261018-ko.md)에 정리했습니다. 이 수정이
+위 미구현 기능 전체를 구현했다는 의미는 아닙니다.

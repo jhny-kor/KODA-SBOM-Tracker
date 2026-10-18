@@ -180,7 +180,11 @@ def test_go_uppercase_escaping_and_retraction_aware_distance(db):
 def test_nuget_unlisted_and_prerelease_ignored(db):
     def entry(version, listed=True):
         return {"catalogEntry": {"version": version, "listed": listed, "published": "2025-01-01T00:00:00Z"}}
-    with client(lambda _: httpx.Response(200, json={"items": [{"items": [entry("1.0.0"), entry("2.0.0"), entry("3.0.0", False), entry("4.0.0-beta")]}]})) as http:
+    def registry(request):
+        if request.url.path == "/v3/index.json":
+            return httpx.Response(200, json={"resources": [{"@id": "https://api.nuget.org/v3/registration5-gz-semver2/", "@type": "RegistrationsBaseUrl/3.6.0"}]})
+        return httpx.Response(200, json={"items": [{"items": [entry("1.0.0"), entry("2.0.0"), entry("3.0.0", False), entry("4.0.0-beta")]}]})
+    with client(registry) as http:
         result = metadata.fetch_metadata(metadata.parse_purl("pkg:nuget/Newtonsoft.Json@1.0.0"), http, at=AT)
     assert result["latestVersion"] == "2.0.0"
     assert result["versionDistance"] == 1

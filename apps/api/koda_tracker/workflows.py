@@ -21,6 +21,7 @@ from .config import get_settings
 from .models import AnalysisRevision, AuditEvent, JobState, SbomRun, User, now
 from .workflow_models import FindingReview, NotificationDelivery, NotificationEvent, ReviewEvent
 from .vulnerability import project_cve_findings
+from .sbom import iter_components
 
 STATES = {"resolved", "resolved_with_pedigree", "exploitable", "in_triage", "false_positive", "not_affected"}
 JUSTIFICATIONS = {"code_not_present", "code_not_reachable", "requires_configuration", "requires_dependency", "requires_environment", "protected_by_compiler", "protected_at_runtime", "protected_at_perimeter", "protected_by_mitigating_control"}
@@ -189,7 +190,7 @@ def apply_vex_reviews(db, run, revision):
 def bom_targets(run):
     result = {}
     def visit(components):
-        for component in components or []:
+        for component in iter_components(components or []):
             ref = component.get("bom-ref")
             name = component.get("purl") or component.get("name") or ""
             version = str(component.get("version") or "")
@@ -199,7 +200,6 @@ def bom_targets(run):
                 if ref in result and result[ref][:2] != value[:2]:
                     raise HTTPException(422, "SBOM의 bom-ref가 모호합니다")
                 result[ref] = value
-            visit(component.get("components"))
     visit((run.normalized_bom or {}).get("components"))
     root_component = ((run.normalized_bom or {}).get("metadata") or {}).get("component")
     if isinstance(root_component, dict):

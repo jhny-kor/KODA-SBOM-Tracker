@@ -6,7 +6,7 @@ import subprocess
 from collections import Counter
 from pathlib import Path
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from .config import get_settings
@@ -20,19 +20,23 @@ from .models import (
     RunComponent,
     SbomRun,
 )
-from .sbom import licenses_for, normalized_identity, sha256_for
+from .sbom import iter_components, licenses_for, normalized_identity, sha256_for
 from . import package_metadata_models
 from .package_metadata import enqueue_components
 from . import workflow_models  # Register workflow tables before standalone create_all callers.
 from .private_vulnerability import match_private_vulnerabilities
+from .sbom_normalization import mark_current
 from .policies import evaluate_revision
 from .vulnerability import active_bundle, load_context, normalize_finding
 
 
-def create_components(db: Session, run: SbomRun) -> None:
-    if db.scalar(select(func.count()).select_from(RunComponent).where(RunComponent.run_id == run.id)):
+def create_components(db: Session, run: SbomRun, *, refresh: bool = False) -> None:
+    if refresh:
+        db.execute(delete(RunComponent).where(RunComponent.run_id == run.id))
+        db.expire(run, ["components"])
+    elif db.scalar(select(func.count()).select_from(RunComponent).where(RunComponent.run_id == run.id)):
         return
-    raw_components = run.normalized_bom.get("components", [])
+    raw_components = list(iter_components((run.normalized_bom or {}).get("components", [])))
     enqueue_components(db, raw_components)
     identities = [normalized_identity(raw)[0] for raw in raw_components]
     duplicates = Counter(identities)
@@ -64,7 +68,10 @@ def create_components(db: Session, run: SbomRun) -> None:
                 properties=list(raw.get("properties") or []),
             )
         )
+    mark_current(db, run)
     db.flush()
+    if refresh:
+        db.expire(run, ["components"])
 
 
 def analyze_offline(db: Session, run: SbomRun) -> AnalysisRevision:
@@ -73,13 +80,13 @@ def analyze_offline(db: Session, run: SbomRun) -> AnalysisRevision:
     db.add(revision)
     db.flush()
     if isinstance(run, SbomRun):
-        enqueue_components(db, (run.normalized_bom or {}).get("components", []))
+        enqueue_components(db, list(iter_components((run.normalized_bom or {}).get("components", []))))
     findings: list[dict] = []
     try:
         settings = get_settings()
         initial_bundle = active_bundle(settings)
         context = load_context(settings, release_path=initial_bundle.path) if initial_bundle else load_context(settings)
-        revision.data_sources = context.sources
+        revision.data_sources = {**context.sources, "sbomNormalization": {"version": 2}}
         revision.data_as_of = context.bundle.data_as_of if context.bundle else "unknown"
         if context.bundle is None:
             metadata_path = settings.grype_db_dir.parent / "metadata.env"

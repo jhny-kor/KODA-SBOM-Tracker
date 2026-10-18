@@ -55,7 +55,8 @@ from .models import (
     UserSession,
     VulnerabilityDataBundle,
 )
-from .sbom import SbomValidationError, parse_sbom_file, store_artifact_file, validate_component_count, validate_file_with_cyclonedx_cli
+from .sbom_normalization import mark_current
+from .sbom import component_count, SbomValidationError, parse_sbom_file, store_artifact_file, validate_component_count, validate_file_with_cyclonedx_cli
 from .security import (
     current_principal,
     digest,
@@ -348,6 +349,10 @@ async def lifespan(_: FastAPI):
         get_schedule(db)
         first_native_policy = db.scalar(select(SbomPolicyRevision.version).limit(1)) is None
         get_policy_document(db)
+        if db.get(FeatureUpgrade, "nuget-semver2-v1") is None:
+            from .package_metadata import requeue_legacy_nuget_metadata
+            requeue_legacy_nuget_metadata(db)
+            db.add(FeatureUpgrade(name="nuget-semver2-v1"))
         db.execute(
             delete(AuthAttempt).where(
                 AuthAttempt.created_at
@@ -1887,7 +1892,7 @@ def _persist_run(
         service.id,
         raw_sha256=raw_sha256,
         size_bytes=size_bytes,
-        component_count=len(payload.get("components", [])),
+        component_count=component_count(payload),
     )
     release = db.scalar(
         select(Release).where(
@@ -1923,6 +1928,7 @@ def _persist_run(
     db.add(run)
     db.flush()
     create_components(db, run)
+    mark_current(db, run)
     job = enqueue(db, "process_run", run.id)
     audit(db, actor, "sbom.upload", "sbom_run", run.id, {"sha256": sha256, "round": round_number})
     try:

@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from .cel_executor import CelPolicyError, execute_cel, validate_expression
 from .models import AnalysisRevision, JobState, SbomPolicyRevision, SbomRun
+from .sbom import iter_components
 from .vulnerability import cvss_score, project_cve_findings
 from .vulnerability_intelligence import enrich_findings, enqueue_findings
 from .project_catalog import catalog_context_for_run, project_scope_matches
@@ -398,7 +399,8 @@ def build_cel_contexts(components: list[dict], findings: list[dict], project_con
 
 
 def components_with_dependency_graph(bom: dict) -> list[dict]:
-    components = copy.deepcopy(bom.get("components") or [])
+    components = [copy.deepcopy({key: value for key, value in component.items() if key != "components"})
+                  for component in iter_components(bom.get("components") or [])]
     root_ref = ((bom.get("metadata") or {}).get("component") or {}).get("bom-ref")
     direct = None
     if root_ref:

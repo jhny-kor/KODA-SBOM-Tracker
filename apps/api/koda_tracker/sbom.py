@@ -16,10 +16,39 @@ class SbomValidationError(ValueError):
     pass
 
 
+def iter_components(components):
+    """Yield every component in stable preorder, without recursive Python calls.
+
+    Keep the nested normalized document intact; consumers that materialize rows,
+    calculate quotas or evaluate policies must share this same component scope.
+    """
+    if not isinstance(components, list):
+        raise SbomValidationError("components는 배열이어야 합니다")
+    stack = [iter(components)]
+    exhausted = object()
+    while stack:
+        component = next(stack[-1], exhausted)
+        if component is exhausted:
+            stack.pop()
+            continue
+        if not isinstance(component, dict):
+            raise SbomValidationError("구성요소는 객체여야 합니다")
+        yield component
+        nested = component.get("components", [])
+        if not isinstance(nested, list):
+            raise SbomValidationError("중첩 components는 배열이어야 합니다")
+        if nested:
+            stack.append(iter(nested))
+
+
+def component_count(payload: dict) -> int:
+    return sum(1 for _ in iter_components(payload.get("components", [])))
+
+
 def validate_component_count(payload: dict, max_components: int) -> None:
-    components = payload.get("components", [])
-    if len(components) > max_components:
-        raise SbomValidationError(f"SBOM 구성요소 수가 제한({max_components})을 초과했습니다")
+    for count, _ in enumerate(iter_components(payload.get("components", [])), 1):
+        if count > max_components:
+            raise SbomValidationError(f"SBOM 구성요소 수가 제한({max_components})을 초과했습니다")
 
 
 def _validated_payload(payload: object) -> dict:
@@ -28,8 +57,9 @@ def _validated_payload(payload: object) -> dict:
     version = str(payload.get("specVersion", ""))
     if version not in {"1.4", "1.5", "1.6", "1.7"}:
         raise SbomValidationError(f"지원하지 않는 CycloneDX 버전입니다: {version or 'unknown'}")
-    if not isinstance(payload.get("components", []), list):
-        raise SbomValidationError("components는 배열이어야 합니다")
+    # Validate nested containers as well when no external schema CLI is configured.
+    for _ in iter_components(payload.get("components", [])):
+        pass
     return payload
 
 
@@ -158,9 +188,9 @@ def _xml_payload(root) -> dict:
     components_node = next((node for node in root if _local(node.tag) == "components"), None)
     if components_node is None:
         return payload
-    for node in components_node:
-        if _local(node.tag) != "component":
-            continue
+    pending = [(node, payload["components"]) for node in reversed(list(components_node)) if _local(node.tag) == "component"]
+    while pending:
+        node, destination = pending.pop()
         item: dict = {
             "type": node.attrib.get("type", "library"),
             "bom-ref": node.attrib.get("bom-ref", ""),
@@ -200,7 +230,11 @@ def _xml_payload(root) -> dict:
         for optional in ("group","version","purl"):
             if optional not in present:
                 item.pop(optional,None)
-        payload["components"].append(item)
+        destination.append(item)
+        nested = next((child for child in node if _local(child.tag) == "components"), None)
+        if nested is not None:
+            item["components"] = []
+            pending.extend((child, item["components"]) for child in reversed(list(nested)) if _local(child.tag) == "component")
     return payload
 
 
@@ -241,9 +275,22 @@ def store_artifact_file(base: Path, source: Path, *, digest: str) -> tuple[str, 
 def normalized_identity(component: dict) -> tuple[str, str]:
     purl = str(component.get("purl") or "")
     if purl:
-        base = unquote(purl.split("#", 1)[0])
-        base = re.sub(r"@[^?]+(?=\?|$)", "", base)
-        return f"purl:{base.lower()}", "identified"
+        # A literal @ following the final slash separates the version. Decode
+        # only afterwards: %40angular is a namespace, not a version separator.
+        path, separator, qualifiers = purl.split("#", 1)[0].partition("?")
+        version_separator = path.rfind("@")
+        if version_separator > path.rfind("/"):
+            path = path[:version_separator]
+        base = unquote(path)
+        if base.startswith("pkg:"):
+            kind, slash, coordinate = base[4:].partition("/")
+            kind = kind.lower()
+            if kind in {"npm", "nuget", "pypi"}:
+                coordinate = coordinate.lower()
+            base = "pkg:" + kind + slash + coordinate
+        if separator:
+            base += "?" + unquote(qualifiers)
+        return f"purl:{base}", "identified"
     ctype = str(component.get("type") or "library").lower()
     group = str(component.get("group") or "").strip().lower()
     name = str(component.get("name") or "").strip().lower()

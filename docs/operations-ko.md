@@ -719,3 +719,45 @@ CWE·EPSS 또는 고급 helper가 필요한 데이터를 찾지 못하면 `polic
 사내 내부 ID도 발견 화면·정책·VEX·회차 비교·Collection에 포함합니다. 사내 항목의 공개 CVE 별칭은 보존하되 내부 ID를 유지해
 같은 공개 CVE 발견과 VEX 검토 대상을 구분합니다. Grype DB는 계속 사용하며 사내 DB가 이를 대체하지 않습니다.
 검증 명령과 실제 결과는 [Docker 추가 검증](verification-collection-private-20261018-ko.md)을 참조합니다.
+
+## SBOM 정규화 보정과 NuGet 수집기 업그레이드
+
+정규화 v2는 JSON/XML 중첩 구성요소를 목록·지표·정책·메타데이터 접수·업로드 할당량에서
+같은 범위로 계산합니다. npm scope를 패키지 버전과 구분하며 대소문자를 구분하는 생태계의
+좌표도 보존합니다. Collection의 자동 회차 연결은 전체 원본 카탈로그에서 좌표가 유일할 때만
+사용합니다. 소유가 모호하면 `ambiguousProjectCount`와 불완전 커버리지를 표시하며,
+관리자가 카탈로그의 회차 연결 API로 정확한 소유를 지정해야 합니다.
+
+기존 DB는 `run_normalizations` 테이블을 자동 생성합니다. 분석 worker는 이전 자료를 기본
+10초마다 한 회차씩 보정하며, 분석 작업도 시작 전에 보정을 수행합니다. XML은 원본 파일의
+SHA-256을 검증한 뒤 중첩 정보를 복구합니다. JSON은 보존한 계층에서 파생 행을 재생성합니다.
+변경된 비보관 회차는 영속 큐로 새 Grype/정책 분석을 접수합니다. 보관 회차는 파생 목록만
+보정하고 분석하지 않습니다. 원본 파일과 기존 분석 리비전·정책 스냅샷은 변경하지 않습니다.
+이전 자료의 1차 순회가 끝나면 완료 표식을 저장해 전체 자료를 계속 재탐색하지 않습니다.
+새 분석의 `dataSources.sbomNormalization.version=2`로 새 계산 근거를 구분합니다.
+따라서 과거 잘못된 집계는 당시 분석 증거에 남고, 최신 분석에서 수정된 값을 제공합니다.
+
+대량 초기 보정을 앞당기거나 실패 원인을 해결한 뒤 재시도하려면 worker가 실행 중이어도
+다음 명령을 사용할 수 있습니다. 회차 잠금으로 같은 자료를 동시에 보정하지 않습니다.
+
+```bash
+docker compose exec portal-api python -m koda_tracker.sbom_normalization --limit 1000
+docker compose exec portal-api python -m koda_tracker.sbom_normalization --limit 1000 --retry-failed
+```
+
+처리·변경·재분석 접수·실패 수를 확인하고 감사 로그의 `sbom.normalization_rebuild` /
+`sbom.normalization_failed`를 확인합니다. 원본 누락·해시 불일치·잘못된 구조는 기존 파생
+행을 보존한 채 실패로 기록합니다. 비보관 회차의 실패는 분석 실패 상태로 표시하며,
+반복 실패로 worker를 막지 않도록 유지보수 루프에서는 자동 반복하지 않습니다.
+일반 재분석 또는 `--retry-failed`로 복구를 다시 시도합니다.
+
+NuGet은 공식 서비스 인덱스의 `RegistrationsBaseUrl/3.6.0`을 발견해 SemVer2 등록 정보를
+읽습니다. 이전 8페이지 제한을 제거하고 전체 페이지를 순회합니다. 최대 4,096페이지/
+100,000개 레코드·응답 크기·요청 시간의 안전 한도는 유지하며 초과/부분 실패를 성공으로
+표시하지 않습니다. 현재 prerelease의 공개일도 수집하되 `latestVersion`은 listed 정식
+버전을 선택합니다. 미리보기 버전을 정식 업그레이드 대상으로 잘못 권고하지 않습니다.
+
+최초 `nuget-semver2-v1` 업그레이드 때 이전 공개 캐시 성공/영구 실패를 재접수하고 재시도
+횟수를 초기화합니다. 이전 문서는 새 수집이 완료될 때까지 stale/pending 근거로 남습니다.
+오프라인 반입 자료는 유지합니다. 폐쇄망의 구형 NuGet 캐시는 연결된 수집기에서 다시 내보내
+반입해야 최신 SemVer2 자료로 바뀝니다.

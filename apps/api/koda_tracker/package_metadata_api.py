@@ -17,6 +17,7 @@ from .version_ordering import numeric_version_distance
 from .package_metadata_models import PackageMetadataCache
 from .security import require_csrf, require_permission
 from .services import audit
+from .sbom import iter_components
 
 router = APIRouter(prefix="/api/v1")
 
@@ -52,7 +53,7 @@ def refresh_run(run_id: str, db: Session = Depends(get_db), principal=Depends(re
     run = db.get(SbomRun, run_id)
     if run is None:
         raise HTTPException(404, "SBOM 회차를 찾을 수 없습니다")
-    result = enqueue_components(db, (run.normalized_bom or {}).get("components", []), force=True)
+    result = enqueue_components(db, list(iter_components((run.normalized_bom or {}).get("components", []))), force=True)
     audit(db, principal.username, "package_metadata.refresh", "sbom_run", run_id, result)
     db.commit()
     return result

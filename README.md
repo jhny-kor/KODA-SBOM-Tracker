@@ -73,7 +73,7 @@ KEV 데이터가 없으면 KEV 정책은 데이터 부족 경고를 남깁니다
 평가가 완료된 것으로 표시하지 않습니다. 기능 범위와 확인 기준은
 [기능 지원 범위](docs/feature-coverage-ko.md)를 따릅니다.
 현재 Docker 인수 결과와 미지원·미검증 범위는 [고급 기능 검증](docs/verification-complete-20261018-ko.md)과 [Java 정규식 추가 검증](docs/verification-java-regex-20261018-ko.md)에 정리했습니다. [구버전 리터럴 이관](docs/verification-literal-20261018-ko.md)과
-[Collection·사내 DB 검증](docs/verification-collection-private-20261018-ko.md)과 [외부 플랫폼 대비 미구현·제한 기능](docs/native-parity-audit-ko.md)도 확인하세요.
+[Collection·사내 DB 검증](docs/verification-collection-private-20261018-ko.md), [SBOM 정확성 보완](docs/verification-sbom-corrections-20261018-ko.md)과 [외부 플랫폼 대비 미구현·제한 기능](docs/native-parity-audit-ko.md)도 확인하세요.
 
 ## 배포 방식
 

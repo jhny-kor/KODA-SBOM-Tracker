@@ -36,6 +36,8 @@ MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 MAX_QUEUE = 10000
 BACKFILL_BATCH = 100
 MAX_CACHE_IMPORT = 1000
+MAX_NUGET_PAGES = 4096
+MAX_NUGET_RECORDS = 100000
 _SEMVER = re.compile(r"^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:\+[-0-9A-Za-z.]+)?$")
 _PYPI_FINAL = re.compile(r"^v?(?:(\d+)!)?(\d+(?:\.\d+)*)(?:[-_.]?(?:post|rev|r)[-_.]?(\d*)|-(\d+))?(?:\+[a-z0-9]+(?:[-_.][a-z0-9]+)*)?$", re.I)
 
@@ -482,35 +484,112 @@ def _golang(target: PackageTarget, client: RegistryClient) -> dict:
             "publicationBasis": "go_module_revision_time", "warnings": ["Go 버전 시각은 소스 리비전 생성 시각이며 최초 registry 공개 시각과 다를 수 있습니다"]}
 
 
+def _nuget_version(version: str) -> tuple | None:
+    """NuGet identity/order: up to four release parts; build metadata is ignored.
+
+    NuGet compares prerelease labels case-insensitively and numeric labels by
+    value. Stable releases sort after prereleases with the same release parts.
+    https://learn.microsoft.com/nuget/concepts/package-versioning
+    """
+    if not isinstance(version, str) or len(version) > 255:
+        return None
+    match = re.fullmatch(r"([0-9]+(?:\.[0-9]+){0,3})(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?", version)
+    if not match:
+        return None
+    release, prerelease, _build = match.groups()
+    parts = tuple(int(part) for part in release.split("."))
+    parts += (0,) * (4 - len(parts))
+    labels = tuple((0, int(part)) if part.isdigit() else (1, part.lower()) for part in prerelease.split(".")) if prerelease else ()
+    return parts, 0 if prerelease else 1, labels
+
+
 def _nuget(target: PackageTarget, client: RegistryClient) -> dict:
-    payload = client.get(f"https://api.nuget.org/v3/registration5-semver1/{quote(target.name, safe='')}/index.json")
-    records = []
-    pages = payload.get("items", [])
-    if len(pages) > 8:
-        raise RegistryError("NuGet registry 페이지 한도 초과", retryable=False)
+    # Discover the SemVer2 hive; older hives deliberately omit SemVer2 packages.
+    service = client.get("https://api.nuget.org/v3/index.json")
+    resources = service.get("resources")
+    if not isinstance(resources, list):
+        raise RegistryError("NuGet service index resources가 없습니다", retryable=False)
+    bases = []
+    for resource in resources:
+        if not isinstance(resource, dict):
+            continue
+        types = resource.get("@type")
+        if "RegistrationsBaseUrl/3.6.0" not in (types if isinstance(types, list) else [types]):
+            continue
+        base = resource.get("@id")
+        if not isinstance(base, str) or not allowed_registry_url(base):
+            raise RegistryError("NuGet SemVer2 등록 주소가 허용되지 않습니다", retryable=False)
+        parsed = urlsplit(base)
+        if parsed.hostname != "api.nuget.org" or parsed.query or parsed.fragment or not parsed.path.endswith("/"):
+            raise RegistryError("NuGet SemVer2 등록 주소가 올바르지 않습니다", retryable=False)
+        bases.append(base)
+    if not bases:
+        raise RegistryError("NuGet SemVer2 등록 서비스를 찾을 수 없습니다", retryable=False)
+    base = sorted(set(bases))[0]
+    package_base = base + quote(target.name, safe="") + "/"
+    payload = client.get(package_base + "index.json")
+    pages = payload.get("items")
+    if not isinstance(pages, list) or not pages:
+        raise RegistryError("NuGet 등록 페이지가 없습니다", retryable=False)
+    if len(pages) > MAX_NUGET_PAGES:
+        raise RegistryError("NuGet 등록 페이지 안전 한도 초과; 부분 결과를 사용하지 않습니다", retryable=False)
+    if "count" in payload and (type(payload["count"]) is not int or payload["count"] != len(pages)):
+        raise RegistryError("NuGet 등록 페이지 개수가 일치하지 않습니다", retryable=False)
+    records = {}
+    record_count = 0
     for page in pages:
+        if not isinstance(page, dict):
+            raise RegistryError("NuGet 등록 페이지 형식 미지원", retryable=False)
         entries = page.get("items")
         if entries is None:
-            entries = client.get(page.get("@id", "")).get("items", [])
+            page_url = page.get("@id")
+            if not isinstance(page_url, str) or not page_url.startswith(package_base) or not allowed_registry_url(page_url):
+                raise RegistryError("NuGet 등록 페이지 주소가 패키지 범위를 벗어났습니다", retryable=False)
+            detail = client.get(page_url)
+            entries = detail.get("items")
+            if "count" in detail and (type(detail["count"]) is not int or not isinstance(entries, list) or detail["count"] != len(entries)):
+                raise RegistryError("NuGet 상세 페이지 항목 개수가 일치하지 않습니다", retryable=False)
+        if not isinstance(entries, list) or not entries:
+            raise RegistryError("NuGet 등록 페이지 항목이 없습니다", retryable=False)
+        if "count" in page and (type(page["count"]) is not int or page["count"] != len(entries)):
+            raise RegistryError("NuGet 페이지 항목 개수가 일치하지 않습니다", retryable=False)
+        record_count += len(entries)
+        if record_count > MAX_NUGET_RECORDS:
+            raise RegistryError("NuGet 버전 목록 안전 한도 초과; 부분 결과를 사용하지 않습니다", retryable=False)
         for entry in entries:
-            record = entry.get("catalogEntry")
-            if not isinstance(record, dict):
+            record = entry.get("catalogEntry") if isinstance(entry, dict) else None
+            if not isinstance(record, dict) or _nuget_version(record.get("version")) is None:
                 raise RegistryError("NuGet catalog entry 형식 미지원", retryable=False)
-            records.append(record)
-    def key(version):
-        parts = tuple(int(part) for part in version.split(".")) if re.fullmatch(r"\d+(?:\.\d+){1,3}", version) else None
-        return parts + (0,) * (4 - len(parts)) if parts is not None else None
-    eligible = {entry["version"]: entry for entry in records if isinstance(entry.get("version"), str) and key(entry["version"]) and entry.get("listed", True)}
-    latest = max(eligible, key=key, default=None)
-    if latest is None:
+            if record.get("id") is not None and str(record["id"]).lower() != target.name:
+                raise RegistryError("NuGet 응답의 패키지 식별자가 일치하지 않습니다", retryable=False)
+            if type(record.get("listed", True)) is not bool:
+                raise RegistryError("NuGet listed 값이 올바르지 않습니다", retryable=False)
+            # Keep only fields used by analysis rather than retaining the full
+            # dependency/license metadata of every historical version.
+            value = {key: record.get(key) for key in ("version", "published")}
+            published = parse_date(value["published"])
+            value["listed"] = record.get("listed", True) and not (published and published.year <= 1900)
+            key = _nuget_version(value["version"])
+            previous = records.get(key)
+            if previous is not None and (previous["listed"] != value["listed"] or previous["published"] != value["published"]):
+                raise RegistryError("NuGet 동일 버전의 등록 정보가 모순됩니다", retryable=False)
+            records[key] = value
+    eligible = {key: record for key, record in records.items() if key[1] == 1 and record["listed"]}
+    latest_key = max(eligible, default=None)
+    if latest_key is None:
         raise RegistryError("NuGet에 listed 정식 버전이 없습니다", retryable=False)
-    current = next((entry for entry in records if str(entry.get("version", "")).lower() == target.version.lower()), {})
-    published = parse_date(current.get("published"))
-    return {"latestVersion": latest, "latestSelection": "nuget_listed_stable_registration", "latestIsPrerelease": False,
+    current_key = _nuget_version(target.version)
+    if current_key is None:
+        raise RegistryError("NuGet 현재 버전 형식이 올바르지 않습니다", retryable=False)
+    current = records.get(current_key)
+    published = parse_date(current["published"]) if current else None
+    return {"latestVersion": eligible[latest_key]["version"], "latestSelection": "nuget_listed_stable_registration", "latestIsPrerelease": False,
             "currentVersionPublishedAt": iso(published) if published and published.year > 1900 else None,
-            "latestPublishedAt": iso(parse_date(eligible[latest].get("published"))),
-            "versionDistance": _distance(list(eligible), target.version, latest, key), "versionDistanceBasis": "nuget_listed_stable_release_count",
-            "currentVersionYanked": current.get("listed") is False, "publicationBasis": "nuget_registration_published"}
+            "latestPublishedAt": iso(parse_date(eligible[latest_key]["published"])),
+            "versionDistance": sum(current_key < key <= latest_key for key in eligible), "versionDistanceBasis": "nuget_listed_stable_release_count",
+            "currentVersionMissing": current is None, "currentVersionYanked": not current["listed"] if current else None,
+            "nugetRegistrationApi": "RegistrationsBaseUrl/3.6.0", "registrationPageCount": len(pages), "registrationVersionCount": len(records),
+            "publicationBasis": "nuget_registration_published"}
 
 
 def fetch_metadata(target: PackageTarget, client: RegistryClient, *, at: datetime | None = None) -> dict:
@@ -666,6 +745,30 @@ def backfill_components(db: Session, *, batch: int = BACKFILL_BATCH) -> int:
     enqueue_components(db, [{"purl": row.purl, "version": row.version} for row in rows])
     cursor.last_component_id = rows[-1].id
     return len(rows)
+
+
+def requeue_legacy_nuget_metadata(db: Session, *, at: datetime | None = None) -> int:
+    """Once-only deployment upgrade; caller persists its FeatureUpgrade marker.
+
+    Old permanent page-limit failures need another attempt. Old public success
+    records must be refreshed against the complete SemVer2 hive. Keep imported
+    offline evidence and in-progress work intact; queued old evidence is stale.
+    """
+    at = at or datetime.now(UTC)
+    count = 0
+    query = select(PackageMetadataCache).where(
+        PackageMetadataCache.ecosystem == "nuget",
+        PackageMetadataCache.state.in_(("completed", "failed")),
+    ).with_for_update().execution_options(yield_per=100)
+    for row in db.scalars(query):
+        document = row.document or {}
+        if document.get("sourceKind") == "offline_import" or document.get("nugetRegistrationApi") == "RegistrationsBaseUrl/3.6.0":
+            continue
+        row.document = {**document, "nugetCollectorUpgrade": {"requestedAt": iso(at), "previousState": row.state, "previousError": row.error}}
+        row.state, row.attempts, row.next_attempt_at, row.error = "queued", 0, at, None
+        count += 1
+    db.flush()
+    return count
 
 
 def collect_one(db: Session, client: RegistryClient | None = None, *, at: datetime | None = None) -> bool:
