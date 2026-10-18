@@ -8,6 +8,7 @@ inventory for a specific build.
 | Component | Version | License | Source |
 | --- | --- | --- | --- |
 | CEL Python runtime | 0.1.3 | Apache-2.0 | https://github.com/cel-expr/cel-python |
+| Apache Maven ComparableVersion algorithm (adapted Python implementation) | 3.9.11 | Apache-2.0 | https://github.com/apache/maven/blob/maven-3.9.11/maven-artifact/src/main/java/org/apache/maven/artifact/versioning/ComparableVersion.java |
 | Grype | 0.109.1 | Apache-2.0 | https://github.com/anchore/grype |
 | CycloneDX CLI | 0.30.0 | Apache-2.0 | https://github.com/CycloneDX/cyclonedx-cli |
 | React and React DOM | 19.2.3 | MIT | https://github.com/facebook/react |

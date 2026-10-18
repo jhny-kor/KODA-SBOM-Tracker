@@ -24,11 +24,17 @@ class CelPolicyError(ValueError):
 def execute_cel(payload: dict) -> dict:
     # JSON roundtrip deliberately rejects custom Python activation objects and NaN.
     try:
-        encoded = json.dumps(payload, ensure_ascii=False, allow_nan=False).encode()
+        encoded = bytearray()
+        for chunk in json.JSONEncoder(ensure_ascii=False, allow_nan=False).iterencode(payload):
+            value = chunk.encode()
+            if len(encoded) + len(value) > MAX_INPUT_BYTES:
+                raise CelPolicyError("CEL 입력이 32 MiB 한도를 초과했습니다")
+            encoded.extend(value)
+        encoded = bytes(encoded)
+    except CelPolicyError:
+        raise
     except (TypeError, ValueError, RecursionError) as exc:
         raise CelPolicyError("CEL 컨텍스트는 유한한 JSON 기본 값이어야 합니다") from exc
-    if len(encoded) > MAX_INPUT_BYTES:
-        raise CelPolicyError("CEL 입력이 32 MiB 한도를 초과했습니다")
     try:
         process = subprocess.run(
             [sys.executable, "-I", str(Path(__file__).with_name("cel_runtime.py"))],

@@ -130,7 +130,7 @@ def test_maven_missing_index_uses_labelled_version_artifact_timestamp_not_first_
         "https://repo.maven.apache.org/maven2/org/example/library/2.0/library-2.0.pom"]
 
 
-def test_maven_release_metadata_prerelease_retains_tag_but_selects_numeric_stable(db):
+def test_maven_release_metadata_prerelease_retains_tag_but_selects_comparable_stable(db):
     def registry(request):
         if request.url.host == "repo.maven.apache.org":
             return httpx.Response(200, content=b"<metadata><versioning><release>3.0-beta1</release><versions><version>2.9</version><version>2.10</version><version>3.0-beta1</version></versions></versioning></metadata>")
@@ -140,7 +140,7 @@ def test_maven_release_metadata_prerelease_retains_tag_but_selects_numeric_stabl
     assert result["latestVersion"] == "2.10"
     assert result["registryLatestVersion"] == "3.0-beta1"
     assert result["registryLatestIsPrerelease"] is True
-    assert result["latestSelection"] == "maven_numeric_stable_subset"
+    assert result["latestSelection"] == "maven_highest_stable_comparable_version"
 
 
 def test_cargo_yanked_versions_excluded_from_latest_and_distance(db):
@@ -154,16 +154,27 @@ def test_cargo_yanked_versions_excluded_from_latest_and_distance(db):
     assert result["versionDistance"] == 1
 
 
-def test_go_uppercase_escaping_and_no_retraction_unaware_distance(db):
+def test_go_uppercase_escaping_and_retraction_aware_distance(db):
     requests = []
     def registry(request):
         requests.append(str(request.url))
-        return httpx.Response(200, json={"Version": "v2.0.0", "Time": "2025-01-01T00:00:00Z"} if request.url.path.endswith("@latest") else {"Version": "v1.0.0", "Time": "2020-01-01T00:00:00Z"})
+        if request.url.path.endswith("/@v/list"):
+            return httpx.Response(200, text="v1.0.0\nv1.1.0\nv1.2.0\nv2.0.0\nv3.0.0-beta1\n")
+        if request.url.path.endswith(".mod"):
+            return httpx.Response(200, text="module github.com/Azure/example\nretract v1.1.0 // broken\n")
+        version = "v2.0.0" if request.url.path.endswith("@latest") else "v1.0.0"
+        return httpx.Response(200, json={"Version": version, "Time": "2025-01-01T00:00:00Z" if version == "v2.0.0" else "2020-01-01T00:00:00Z"})
     with client(registry) as http:
         result = metadata.fetch_metadata(metadata.parse_purl("pkg:golang/github.com/Azure/example@v1.0.0"), http, at=AT)
-    assert "github.com/!azure/example/@latest" in requests[0]
+    assert "github.com/!azure/example/@v/list" in requests[0]
     assert result["latestVersion"] == "v2.0.0"
-    assert result["versionDistance"] is None
+    assert result["versionDistance"] == 2  # 1.1.0 retracted; prerelease ignored
+    assert result["retractionSourceVersion"] == "v2.0.0"
+    assert result["retractedVersionCount"] == 1
+    assert result["versionDistanceBasis"] == "go_non_retracted_stable_release_count"
+    assert result["currentVersionPublishedAtBasis"] == "go_module_revision_time"
+    assert result["fieldStatus"]["currentVersionPublishedAt"] == "revision_timestamp"
+    assert any("리비전" in warning for warning in result["warnings"])
 
 
 def test_nuget_unlisted_and_prerelease_ignored(db):
@@ -282,3 +293,103 @@ def test_backfill_existing_components_is_bounded_and_idempotent(db):
     assert metadata.backfill_components(db, batch=2) == 0
     assert metadata.backfill_components(db, batch=2) == 2
     assert len(list(db.scalars(select(PackageMetadataCache)))) == 3
+
+
+def test_maven_comparable_distance_and_current_official_index_date(db):
+    requests = []
+    versions = ["1.0", "1.0.0", "1.1", "1.1-final", "1.1-sp1", "1.2-beta1", "1.2", "2.0-rc1", "2.0"]
+    def registry(request):
+        requests.append(str(request.url))
+        if request.url.host == "repo.maven.apache.org":
+            return httpx.Response(200, content=("<metadata><versioning><release>2.0</release><versions>" + "".join(f"<version>{v}</version>" for v in versions) + "</versions></versioning></metadata>").encode())
+        version = "1.0" if 'v:"1.0"' in request.url.params["q"] else "2.0"
+        return httpx.Response(200, json={"response": {"docs": [{"g": "org.example", "a": "library", "v": version, "timestamp": 1577836800000}]}})
+    with client(registry) as http:
+        result = metadata.fetch_metadata(metadata.parse_purl("pkg:maven/org.example/library@1.0"), http, at=AT)
+    assert result["versionDistance"] == 4
+    assert result["versionDistanceBasis"] == "maven_comparable_version_stable_release_count"
+    assert result["versionDistanceParts"] == {"epoch": 0, "major": 1, "minor": -1, "patch": -1}
+    assert result["versionDistancePartsBasis"] == "first_numeric_difference_absolute"
+    assert result["currentVersionPublishedAtBasis"] == "maven_central_index_version_timestamp"
+    assert result["fieldStatus"]["currentVersionPublishedAt"] == "publication_timestamp"
+    assert all("search.maven.org" not in url for url in requests)
+    assert any("central.sonatype.com/solrsearch" in url for url in requests)
+
+
+def test_maven_official_index_falls_back_to_classic_search_without_redirect(db):
+    def registry(request):
+        if request.url.host == "repo.maven.apache.org":
+            return httpx.Response(200, content=b"<metadata><versioning><release>2.0</release></versioning></metadata>")
+        if request.url.host == "central.sonatype.com":
+            return httpx.Response(503)
+        version = "1.0" if 'v:"1.0"' in request.url.params["q"] else "2.0"
+        return httpx.Response(200, json={"response": {"docs": [{"g": "org.example", "a": "library", "v": version, "timestamp": 1577836800000}]}})
+    with client(registry) as http:
+        result = metadata.fetch_metadata(metadata.parse_purl("pkg:maven/org.example/library@1.0"), http, at=AT)
+    assert result["currentVersionPublishedAt"].startswith("2020-01-01")
+    assert result["currentVersionPublishedAtBasis"] == "maven_central_index_version_timestamp"
+    assert any(url.startswith("https://search.maven.org/") for url in result["sourceUrls"])
+
+
+def test_go_self_retraction_ranges_do_not_make_the_retracted_release_latest(db):
+    def registry(request):
+        path = request.url.path
+        if path.endswith("/@v/list"):
+            return httpx.Response(200, text="v1.0.0\nv1.1.0\nv1.2.0\nv1.3.0\nv1.4.0\nv2.0.0\nv3.0.0-beta.1\n")
+        if path.endswith(".mod"):
+            assert path.endswith("v2.0.0.mod")
+            return httpx.Response(200, text='module example.org/lib\n// retract v1.0.0 is only a comment\nretract (\n [v1.1.0, v1.2.0] // broken range\n "v2.0.0" // self-retracted\n)\n')
+        version = "v2.0.0" if path.endswith("@latest") else path.rsplit("/", 1)[-1].removesuffix(".info")
+        return httpx.Response(200, json={"Version": version, "Time": "2025-01-01T00:00:00Z"})
+    with client(registry) as http:
+        result = metadata.fetch_metadata(metadata.parse_purl("pkg:golang/example.org/lib@v1.0.0"), http, at=AT)
+    assert result["latestVersion"] == "v1.4.0"
+    assert result["registryLatestVersion"] == "v2.0.0"
+    assert result["retractionSourceVersion"] == "v2.0.0"
+    assert result["versionDistance"] == 2  # v1.3.0, v1.4.0 only
+    assert result["retractedVersionCount"] == 3
+    assert result["currentVersionYanked"] is False
+
+
+@pytest.mark.parametrize("document", [
+    b"retract [v1.2.0, v1.1.0]\n", b"retract not-a-version\n", b"retract (\nv1.2.0\n", b"retract v1.1.0 v1.2.0\n",
+])
+def test_go_unknown_retract_syntax_fails_closed_instead_of_inventing_safe_distance(document):
+    with pytest.raises(metadata.RegistryError, match="Go retract"):
+        metadata._go_retractions(document)
+
+
+def test_go_retract_only_in_comment_or_string_is_ignored():
+    assert metadata._go_retractions(b'// retract v1.0.0\nmodule "retract"\nrequire example.org/lib v1.0.0\n') == []
+
+
+def test_go_version_info_identity_mismatch_is_not_assigned_to_current_version(db):
+    def registry(request):
+        path = request.url.path
+        if path.endswith("/@v/list"):
+            return httpx.Response(200, text="v1.0.0\nv2.0.0\n")
+        if path.endswith(".mod"):
+            return httpx.Response(200, text="module example.org/lib\n")
+        return httpx.Response(200, json={"Version": "v2.0.0", "Time": "2025-01-01T00:00:00Z"})
+    with client(registry) as http:
+        with pytest.raises(metadata.RegistryError, match="식별자"):
+            metadata.fetch_metadata(metadata.parse_purl("pkg:golang/example.org/lib@v1.0.0"), http, at=AT)
+
+
+def test_offline_numeric_distance_is_derived_and_inconsistent_source_claim_rejected(db):
+    from types import SimpleNamespace
+    from fastapi import HTTPException
+    from koda_tracker import package_metadata_api as api
+    at = datetime.now(UTC) - timedelta(minutes=1)
+    with client(lambda _: httpx.Response(200, json=npm_payload())) as http:
+        document = metadata.fetch_metadata(metadata.parse_purl("pkg:npm/library@1.0.0"), http, at=at)
+    document.update({"purl": "pkg:npm/library@1.0.0", "currentVersion": "1.0.0"})
+    body = api.ImportRequest(format="koda-package-metadata-v1", exportedAt=at.isoformat(), items=[document])
+    assert api.import_metadata(body, db, SimpleNamespace(username="admin"))["imported"] == 1
+    row = db.get(PackageMetadataCache, metadata.parse_purl(document["purl"]).id)
+    assert row.document["versionDistanceParts"] == {"epoch": 0, "major": 1, "minor": -1, "patch": -1}
+    invalid = {**document, "versionDistanceParts": {"epoch": 0, "major": 0, "minor": 0, "patch": 0}}
+    with pytest.raises(HTTPException) as error:
+        api.import_metadata(api.ImportRequest(format=body.format, exportedAt=body.exportedAt, items=[invalid]), db, SimpleNamespace(username="admin"))
+    assert error.value.status_code == 422
+    assert row.document["versionDistanceParts"]["major"] == 1

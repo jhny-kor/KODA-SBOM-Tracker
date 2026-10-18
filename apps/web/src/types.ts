@@ -16,6 +16,8 @@ export interface SbomPolicyRule {
   environmentIds?: string[];
   releaseVersions?: string[];
   runIds?: string[];
+  projectScope?: {sourceId: string; projectIds: string[]; tags: string[]; includeChildren: boolean; onlyLatest: boolean} | null;
+  legacyConditions?: Array<Record<string, unknown>>;
 }
 export interface SbomPolicyException {
   id: string;

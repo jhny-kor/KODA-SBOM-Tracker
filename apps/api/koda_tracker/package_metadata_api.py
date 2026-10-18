@@ -13,6 +13,7 @@ from .models import RunComponent, SbomRun
 from .package_metadata import (BACKFILL_BATCH, MAX_CACHE_IMPORT, MAX_RESPONSE_BYTES, SUPPORTED_ECOSYSTEMS,
                                enqueue_components, enrich_components, iso, metadata_payload, metadata_summary,
                                parse_date, parse_purl, setting, utc)
+from .version_ordering import numeric_version_distance
 from .package_metadata_models import PackageMetadataCache
 from .security import require_csrf, require_permission
 from .services import audit
@@ -104,6 +105,15 @@ def import_metadata(body: ImportRequest, db: Session = Depends(get_db), principa
         distance = document.get("versionDistance")
         if distance is not None and (type(distance) is not int or not 0 <= distance <= 1000000):
             raise HTTPException(422, "버전 거리가 올바르지 않습니다")
+        parts = numeric_version_distance(target.version, latest)
+        supplied_parts = document.get("versionDistanceParts")
+        if supplied_parts is not None and (not isinstance(supplied_parts, dict) or any(type(value) is not int for value in supplied_parts.values()) or supplied_parts != parts):
+            raise HTTPException(422, "단위별 버전 거리가 원본 버전과 일치하지 않습니다")
+        field_status = document.get("fieldStatus") or {}
+        if not isinstance(field_status, dict):
+            raise HTTPException(422, "메타데이터 필드 상태가 올바르지 않습니다")
+        document = {**document, "versionDistanceParts": parts, "versionDistancePartsBasis": "first_numeric_difference_absolute",
+                    "fieldStatus": {**field_status, "versionDistanceParts": "available" if parts is not None else "unavailable"}}
         urls = document.get("sourceUrls")
         if not isinstance(urls, list) or not urls or len(urls) > 16 or any(not isinstance(url, str) or len(url) > 4096 or not allowed_registry_url(url) for url in urls):
             raise HTTPException(422, "출처 URL은 허용된 HTTPS registry여야 합니다")

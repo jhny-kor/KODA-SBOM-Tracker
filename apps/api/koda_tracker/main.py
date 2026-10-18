@@ -70,8 +70,11 @@ from .security import (
     PERMISSION_CATALOG,
 )
 from .services import audit, create_components, enqueue
-from .policies import PolicyDocument, get_policy_document, validate_policy_expressions, validate_expression, preview_expression, policy_context_for_run
-from . import package_metadata_models, migration_models
+from .policies import PolicyDocument, get_policy_document, validate_policy_expressions, validate_expression, preview_expression, policy_context_for_run, components_with_dependency_graph
+from . import package_metadata_models, migration_models, vulnerability_intelligence_models
+from .vulnerability_intelligence_api import router as vulnerability_intelligence_router
+from .project_catalog_api import router as project_catalog_router
+from .project_catalog_models import NativeReanalysisPending
 from .package_metadata_api import router as package_metadata_router
 from .migration_api import router as migration_router
 from .package_metadata import enrich_components
@@ -111,7 +114,7 @@ class RequestBodyLimitMiddleware:
             return settings.max_upload_bytes + (2 * 1024 * 1024)
         if method == "POST" and path == "/api/v1/vulnerability-data-bundles/upload":
             return (2 * 1024 * 1024 * 1024) + (2 * 1024 * 1024)
-        if method == "POST" and path in {"/api/v1/legacy-migrations/stage", "/api/v1/package-metadata/import"}:
+        if method == "POST" and path in {"/api/v1/legacy-migrations/stage", "/api/v1/package-metadata/import", "/api/v1/vulnerability-intelligence/import"}:
             return 64 * 1024 * 1024 + 1024
         if method == "PUT" and path == "/api/v1/sbom-policies":
             return 1024 * 1024
@@ -407,6 +410,8 @@ app.include_router(reanalysis_router)
 app.include_router(workflow_router)
 app.include_router(package_metadata_router)
 app.include_router(migration_router)
+app.include_router(vulnerability_intelligence_router)
+app.include_router(project_catalog_router)
 app.add_middleware(RequestBodyLimitMiddleware)
 _upload_persist_lock = asyncio.Lock()
 
@@ -1317,7 +1322,8 @@ def validate_cel_policy(body: CelValidationRequest, db: Session = Depends(get_db
         if body.runId:
             run = _load_run(db, body.runId, include_components=True, include_analyses=True)
             latest = max(run.analyses, key=lambda item: item.sequence, default=None)
-            result.update(preview_expression(body.expression, body.target, enrich_components(db, run.normalized_bom.get("components", [])), latest.findings if latest else [], policy_context_for_run(run)))
+            from .vulnerability_intelligence import enrich_findings
+            result.update(preview_expression(body.expression, body.target, enrich_components(db, components_with_dependency_graph(run.normalized_bom)), enrich_findings(db, latest.findings if latest else []), policy_context_for_run(run, db)))
         return result
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
@@ -2022,9 +2028,9 @@ def _native_policy_result(analysis: AnalysisRevision | None, *, include_evidence
     status = state
     if state == "completed":
         status = (analysis.metrics or {}).get("policyStatus")
-        if status not in {"pass", "warn", "fail"}:
+        if status not in {"pass", "warn", "fail", "info"}:
             active = [record for record in analysis.policies or [] if not record.get("suppressed", False)]
-            status = "fail" if any(record.get("action") == "fail" for record in active) else "warn" if active else "pass"
+            status = "fail" if any(record.get("action") == "fail" for record in active) else "warn" if any(record.get("action") == "warn" for record in active) else "info" if active else "pass"
     payload = {
         "analysisId": analysis.id if analysis else None,
         "policyState": state,
@@ -2051,6 +2057,7 @@ def _run_payload(
     *,
     component_count: int | None = None,
     component_type_counts: dict[str, int] | None = None,
+    native_reanalysis_pending: bool = False,
 ) -> dict:
     latest = max(item.analyses, key=lambda analysis: analysis.sequence, default=None)
     findings = project_cve_findings(latest.findings if latest else [])
@@ -2074,10 +2081,11 @@ def _run_payload(
         "environment": {"id": item.release.environment.id, "name": item.release.environment.name, "slug": item.release.environment.slug},
         "releaseVersion": item.release.version,
         "roundNumber": item.round_number,
-        "state": item.state,
+        "state": (ProcessingState.PROCESSING if item.analysis_state == JobState.RUNNING else ProcessingState.QUEUED) if native_reanalysis_pending else item.state,
         "source": item.source or "manual",
         "sourceMetadata": item.source_metadata or {},
-        "analysisState": item.analysis_state,
+        "analysisState": (JobState.RUNNING if item.analysis_state == JobState.RUNNING else JobState.QUEUED) if native_reanalysis_pending else item.analysis_state,
+        "nativeReanalysisPending": native_reanalysis_pending,
         **_native_policy_result(latest),
         "dependencyTrackEnabled": get_settings().dependency_track_enabled,
         "dependencyTrackState": item.dtrack_state,
@@ -2129,7 +2137,7 @@ def koda_run_result(
         raise HTTPException(404, "회차를 찾을 수 없습니다")
     latest = max(item.analyses, key=lambda analysis: analysis.sequence, default=None)
     return {
-        "run": _run_payload(item),
+        "run": _run_payload(item, native_reanalysis_pending=bool(db.scalar(select(NativeReanalysisPending.run_id).where(NativeReanalysisPending.run_id == run_id).limit(1)))),
         "analysis": None if latest is None else {
             "sequence": latest.sequence,
             "state": latest.state,
@@ -2184,6 +2192,7 @@ def list_runs(
     total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
     items = list(db.scalars(query.order_by(SbomRun.created_at.desc()).offset((page - 1) * size).limit(size)).unique())
     run_ids = [item.id for item in items]
+    native_pending_ids = set(db.scalars(select(NativeReanalysisPending.run_id).where(NativeReanalysisPending.run_id.in_(run_ids)))) if run_ids else set()
     component_counts = dict(
         db.execute(
             select(RunComponent.run_id, func.count()).where(RunComponent.run_id.in_(run_ids)).group_by(RunComponent.run_id)
@@ -2203,6 +2212,7 @@ def list_runs(
                 item,
                 component_count=component_counts.get(item.id, 0),
                 component_type_counts=component_type_counts.get(item.id, {}),
+                native_reanalysis_pending=item.id in native_pending_ids,
             )
             for item in items
         ],
@@ -2255,7 +2265,7 @@ def get_run(
     component_count = db.scalar(
         select(func.count()).select_from(RunComponent).where(RunComponent.run_id == run_id)
     ) or 0
-    payload = {**_run_payload(item, component_count=component_count), **_native_policy_result(max(item.analyses, key=lambda value: value.sequence, default=None), include_evidence=True)}
+    payload = {**_run_payload(item, component_count=component_count, native_reanalysis_pending=bool(db.scalar(select(NativeReanalysisPending.run_id).where(NativeReanalysisPending.run_id == run_id).limit(1)))), **_native_policy_result(max(item.analyses, key=lambda value: value.sequence, default=None), include_evidence=True)}
     payload["components"] = []
     payload["analyses"] = [
         {

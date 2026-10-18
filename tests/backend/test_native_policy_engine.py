@@ -156,7 +156,9 @@ def test_policy_evidence_is_immutable_across_configuration_changes(db, tmp_path)
     db.add(SbomPolicyRevision(version=2, created_by="admin", document={"rules": [], "exceptions": []}))
     db.flush()
     assert get_policy_document(db).version == 2
-    assert original.document == expected == revision.policy_snapshot
+    assert expected == revision.policy_snapshot
+    assert original.document == {key: expected[key] for key in ("rules", "exceptions")}
+    assert expected["projectScopeSnapshot"] is None
     assert revision.policy_version == 1
     second = AnalysisRevision(run_id=run.id, sequence=2, state=JobState.COMPLETED, findings=[])
     evaluate_revision(db, run, second)
@@ -273,3 +275,20 @@ def test_context_loading_failure_updates_revision_and_run(db, tmp_path, monkeypa
     assert "unreadable offline context" in revision.error
     assert run.analysis_state == JobState.FAILED
     assert run.state == ProcessingState.FAILED
+
+
+def test_pending_source_reanalysis_remains_visible_after_older_job_completes(db, tmp_path):
+    from koda_tracker.main import get_run, list_runs, koda_run_result
+    from koda_tracker.project_catalog_models import NativeReanalysisPending
+    run = make_run(db, tmp_path)
+    run.state, run.analysis_state = ProcessingState.COMPLETED, JobState.COMPLETED
+    db.add(NativeReanalysisPending(source_id="sample", run_id=run.id, reason="source_sync"))
+    db.flush()
+    result = get_run(run.id, db, None)
+    assert result["nativeReanalysisPending"] is True
+    assert result["state"] == "queued" and result["analysisState"] == "queued"
+    result = list_runs(service_id=None, environment_id=None, state=None, source=None, q=None, page=1, size=50, db=db, _=None)
+    assert result["items"][0]["nativeReanalysisPending"] is True
+    result = koda_run_result(run.id, db, None)
+    assert result["run"]["analysisState"] == "queued"
+    assert run.state == ProcessingState.COMPLETED  # response overlay never rewrites evidence

@@ -188,6 +188,34 @@ services:
       - metadata-egress
     restart: unless-stopped
 
+  portal-project-sync:
+    depends_on:
+      portal-api:
+        condition: service_healthy
+    image: ${PORTAL_API_IMAGE}:${PORTAL_IMAGE_TAG:-dev}
+    container_name: ${COMPOSE_PROJECT_NAME:-koda-sbom}-portal-project-sync
+    command: ["python", "-m", "koda_tracker.project_catalog"]
+    environment:
+      TRACKER_DATABASE_URL: ${TRACKER_DATABASE_URL}
+      TRACKER_LDAP_ENCRYPTION_KEY: ${TRACKER_LDAP_ENCRYPTION_KEY}
+      TRACKER_ARTIFACT_DIR: ${ARTIFACT_ROOT:-/var/lib/sbom-tracker/artifacts}
+    volumes:
+      - tracker-artifacts:${ARTIFACT_ROOT:-/var/lib/sbom-tracker/artifacts}
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"from pathlib import Path; raise SystemExit('koda_tracker.project_catalog' not in Path('/proc/1/cmdline').read_bytes().decode(errors='ignore'))\""]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+    networks:
+      - app
+      - metadata-egress
+    restart: unless-stopped
+
   portal-data-updater:
     depends_on:
       portal-api:

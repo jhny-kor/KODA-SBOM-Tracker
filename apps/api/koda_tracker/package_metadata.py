@@ -28,9 +28,10 @@ from .config import get_settings
 from .db import SessionLocal
 from .models import RunComponent
 from .package_metadata_models import PackageMetadataCache, PackageMetadataCursor
+from .version_ordering import MavenVersion, maven_distance, maven_is_stable, numeric_version_distance
 
 SUPPORTED_ECOSYSTEMS = ("npm", "pypi", "maven", "nuget", "golang", "cargo")
-ALLOWED_HOSTS = frozenset({"registry.npmjs.org", "pypi.org", "repo.maven.apache.org", "search.maven.org", "api.nuget.org", "proxy.golang.org", "crates.io"})
+ALLOWED_HOSTS = frozenset({"registry.npmjs.org", "pypi.org", "repo.maven.apache.org", "search.maven.org", "central.sonatype.com", "api.nuget.org", "proxy.golang.org", "crates.io"})
 MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 MAX_QUEUE = 10000
 BACKFILL_BATCH = 100
@@ -276,16 +277,22 @@ def _pypi(target: PackageTarget, client: RegistryClient) -> dict:
             "currentVersionMissing": not bool(current_files), "currentVersionYanked": all(file.get("yanked", False) for file in current_files if isinstance(file, dict)) if current_files else None, "publicationBasis": "earliest_distribution_upload"}
 
 
-def _maven_date(target: PackageTarget, version: str, client: RegistryClient) -> str | None:
+def _maven_date(target: PackageTarget, version: str, client: RegistryClient) -> tuple[str | None, str | None]:
     query = f'g:"{target.namespace}" AND a:"{target.name}" AND v:"{version}"'
-    payload = client.get("https://search.maven.org/solrsearch/select?" + urlencode({"q": query, "rows": 1, "wt": "json", "core": "gav"}))
-    records = payload.get("response", {}).get("docs", [])
-    for record in records:
-        if record.get("g") == target.namespace and record.get("a") == target.name and record.get("v") == version:
-            timestamp = record.get("timestamp")
-            if isinstance(timestamp, (int, float)) and timestamp > 0:
-                return iso(datetime.fromtimestamp(timestamp / 1000, UTC))
-    return None
+    # The official Central search moved to central.sonatype.com. Retain the
+    # published classic search endpoint as a bounded fallback for older data.
+    for host in ("central.sonatype.com", "search.maven.org"):
+        try:
+            payload = client.get(f"https://{host}/solrsearch/select?" + urlencode({"q": query, "rows": 1, "wt": "json", "core": "gav"}))
+            records = payload.get("response", {}).get("docs", [])
+            for record in records:
+                if record.get("g") == target.namespace and record.get("a") == target.name and record.get("v") == version:
+                    timestamp = record.get("timestamp")
+                    if isinstance(timestamp, (int, float)) and timestamp > 0:
+                        return iso(datetime.fromtimestamp(timestamp / 1000, UTC)), "maven_central_index_version_timestamp"
+        except RegistryError:
+            continue
+    return None, None
 
 
 def _maven(target: PackageTarget, client: RegistryClient) -> dict:
@@ -295,38 +302,42 @@ def _maven(target: PackageTarget, client: RegistryClient) -> dict:
         root = ElementTree.fromstring(xml)
     except Exception as exc:
         raise RegistryError("Maven metadata XML 오류", retryable=False) from exc
-    latest = root.findtext("./versioning/release")
-    if not latest or len(latest) > 255 or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.+!_~-]*", latest):
+    declared = root.findtext("./versioning/release")
+    if not declared or len(declared) > 255 or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.+!_~-]*", declared):
         raise RegistryError("Maven release metadata가 없습니다", retryable=False)
-    registry_latest = latest
-    is_pre = lambda version: bool(re.search(r"(?:alpha|beta|snapshot|milestone|(?:^|[.-])(?:rc|cr|[abm]\d))", version, re.I))
-    selection = "maven_release_metadata"
+    versions = [node.text for node in root.findall("./versioning/versions/version") if node.text]
+    if len(versions) > 20000:
+        raise RegistryError("Maven 버전 목록 한도 초과", retryable=False)
+    # A release marker can point to a prerelease. Use Maven ComparableVersion,
+    # including qualifiers/aliases/numeric transitions, rather than lexical or
+    # numeric-only ordering. Unknown vendor qualifiers remain valid releases.
+    stable = [value for value in versions if maven_is_stable(value)]
+    if maven_is_stable(declared):
+        latest, selection = declared, "maven_release_metadata"
+    else:
+        latest = max(stable, key=MavenVersion, default=None)
+        if latest is None:
+            raise RegistryError("Maven 정식 버전 metadata가 없습니다", retryable=False)
+        selection = "maven_highest_stable_comparable_version"
     warnings = []
-    if is_pre(latest):
-        stable = [node.text for node in root.findall("./versioning/versions/version") if node.text and re.fullmatch(r"\d+(?:\.\d+)*", node.text)]
-        if not stable:
-            raise RegistryError("Maven 정식 버전의 안전한 선택에 필요한 metadata가 없습니다", retryable=False)
-        latest = max(stable, key=lambda value: tuple(int(part) for part in value.split(".")))
-        selection = "maven_numeric_stable_subset"
-        warnings.append("Maven release가 prerelease여서 숫자 정식 버전 중 최신을 선택했습니다. 임의 vendor qualifier는 비교하지 않습니다")
+    if latest != declared:
+        warnings.append("Maven release가 사전 출시 버전이므로 ComparableVersion 순서의 최신 정식 버전을 선택했습니다")
+    distance = maven_distance(versions, target.version, latest) if versions else None
     result = {"latestVersion": latest, "latestSelection": selection, "latestIsPrerelease": False,
-              "registryLatestVersion": registry_latest, "registryLatestIsPrerelease": is_pre(registry_latest),
-              "currentVersionPublishedAt": None, "latestPublishedAt": None, "versionDistance": None,
-              "versionDistanceBasis": "unavailable_maven_comparable_version_required", "publicationBasis": "maven_central_index_version_timestamp", "warnings": warnings}
-    # The artifact parent <lastUpdated> belongs to metadata, not a version.
+              "registryLatestVersion": declared, "registryLatestIsPrerelease": not maven_is_stable(declared),
+              "currentVersionPublishedAt": None, "latestPublishedAt": None, "versionDistance": distance,
+              "versionDistanceBasis": "maven_comparable_version_stable_release_count" if distance is not None else "unavailable_version_list",
+              "currentVersionMissing": target.version not in versions if versions else None,
+              "publicationBasis": "maven_central_index_version_timestamp", "warnings": warnings}
+    # Parent <lastUpdated> belongs to metadata, never an individual version.
     for field, version in (("currentVersionPublishedAt", target.version), ("latestPublishedAt", latest)):
-        try:
-            result[field] = _maven_date(target, version, client)
-        except RegistryError as exc:
-            result["warnings"].append(f"{field}: {exc}")
-        basis_field = field + "Basis"
-        result[basis_field] = "maven_central_index_version_timestamp" if result[field] else None
+        result[field], result[field + "Basis"] = _maven_date(target, version, client)
         if result[field] is None:
             artifact = f"https://repo.maven.apache.org/maven2/{path}/{quote(version, safe='')}/{quote(target.name, safe='')}-{quote(version, safe='')}.pom"
             try:
                 result[field] = client.last_modified(artifact)
                 if result[field]:
-                    result[basis_field] = "artifact_last_modified"
+                    result[field + "Basis"] = "artifact_last_modified"
                     result["warnings"].append(f"{field}는 버전별 POM 저장소 Last-Modified입니다. 최초 공개일과 다를 수 있습니다")
             except RegistryError as exc:
                 result["warnings"].append(f"{field} artifact: {exc}")
@@ -353,18 +364,122 @@ def _go_escape(value: str) -> str:
     return "".join("!" + char.lower() if char.isupper() else char for char in value)
 
 
+def _go_version(version: str) -> tuple | None:
+    match = re.fullmatch(r"v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?", version)
+    if not match:
+        return None
+    major, minor, patch, prerelease = match.groups()
+    pre = []
+    if prerelease:
+        for part in prerelease.split("."):
+            if not part or part.isdigit() and len(part) > 1 and part.startswith("0"):
+                return None
+            pre.append((0, int(part)) if part.isdigit() else (1, part))
+    return int(major), int(minor), int(patch), 0 if prerelease else 1, tuple(pre)
+
+
+def _go_retractions(document: bytes) -> list[tuple[tuple, tuple]]:
+    # Tokenize go.mod strings/comments before reading retract directives; words
+    # in comments or a quoted module path cannot become executable directives.
+    text = document.decode("utf-8")
+    tokens = re.findall(r'"(?:\\.|[^"\\])*"|`[^`]*`|//[^\n]*|\n|[()\[\],]|[^\s()\[\],]+', text)
+    lines, line = [], []
+    for token in tokens:
+        if token.startswith("//"):
+            continue
+        if token == "\n":
+            lines.append(line); line = []
+        else:
+            if token.startswith('"'):
+                token = json.loads(token)
+            elif token.startswith("`"):
+                token = token[1:-1]
+            line.append(token)
+    lines.append(line)
+    intervals, block = [], False
+    for line in lines:
+        if not line:
+            continue
+        if block:
+            if line == [")"]:
+                block = False
+                continue
+            entry = line
+        elif line[0] == "retract":
+            entry = line[1:]
+            if entry == ["("]:
+                block = True
+                continue
+        else:
+            continue
+        if len(entry) == 1:
+            lower = upper = _go_version(entry[0])
+        elif len(entry) == 5 and entry[0] == "[" and entry[2] == "," and entry[4] == "]":
+            lower, upper = _go_version(entry[1]), _go_version(entry[3])
+        else:
+            raise RegistryError("Go retract 구문을 해석할 수 없습니다", retryable=False)
+        if lower is None or upper is None or lower > upper:
+            raise RegistryError("Go retract 버전 범위가 올바르지 않습니다", retryable=False)
+        intervals.append((lower, upper))
+        if len(intervals) > 1000:
+            raise RegistryError("Go retract 범위 한도 초과", retryable=False)
+    if block:
+        raise RegistryError("Go retract 블록이 끝나지 않았습니다", retryable=False)
+    return intervals
+
+
 def _golang(target: PackageTarget, client: RegistryClient) -> dict:
     module = _go_escape(f"{target.namespace}/{target.name}")
     path = quote(module, safe="/!")
-    latest_info = client.get(f"https://proxy.golang.org/{path}/@latest")
-    latest = latest_info.get("Version")
-    if not isinstance(latest, str):
+    base = f"https://proxy.golang.org/{path}"
+    listed = client.get(base + "/@v/list", as_json=False).decode("utf-8").splitlines()
+    if len(listed) > 20000:
+        raise RegistryError("Go 버전 목록 한도 초과", retryable=False)
+    valid = {version: key for version in listed if (key := _go_version(version)) is not None}
+    releases = {version: key for version, key in valid.items() if key[3] == 1}
+    registry_latest_info = client.get(base + "/@latest")
+    registry_latest = registry_latest_info.get("Version")
+    registry_latest_key = _go_version(registry_latest) if isinstance(registry_latest, str) else None
+    if registry_latest_key is None:
         raise RegistryError("Go proxy latest 버전이 없습니다", retryable=False)
-    current = latest_info if latest == target.version else client.get(f"https://proxy.golang.org/{path}/@v/{quote(_go_escape(target.version), safe='!')}.info")
-    return {"latestVersion": latest, "latestSelection": "go_proxy_latest", "latestIsPrerelease": _semver(latest) is None,
+    valid[registry_latest] = registry_latest_key
+    if registry_latest_key[3] == 1:
+        releases[registry_latest] = registry_latest_key
+    # Go loads retractions from the highest release (or prerelease if there is
+    # no release), including a version that retracts itself.
+    authority = max(releases or valid, key=(releases or valid).get, default=None)
+    if not isinstance(authority, str) or _go_version(authority) is None:
+        raise RegistryError("Go proxy latest 버전이 없습니다", retryable=False)
+    retractions = _go_retractions(client.get(base + f"/@v/{quote(_go_escape(authority), safe='!')}.mod", as_json=False))
+    def retracted(version):
+        key = _go_version(version)
+        return key is not None and any(lower <= key <= upper for lower, upper in retractions)
+    eligible = {version: key for version, key in releases.items() if not retracted(version)}
+    latest = max(eligible, key=eligible.get, default=None)
+    if latest is None:
+        candidates = {version: key for version, key in valid.items() if not retracted(version)}
+        latest = max(candidates, key=candidates.get, default=None)
+    if latest is None:
+        fallback = registry_latest_info.get("Version")
+        if not isinstance(fallback, str) or _go_version(fallback) is None or retracted(fallback):
+            raise RegistryError("Go에 철회되지 않은 버전이 없습니다", retryable=False)
+        latest = fallback
+    def info(version):
+        payload = registry_latest_info if registry_latest_info.get("Version") == version else client.get(base + f"/@v/{quote(_go_escape(version), safe='!')}.info")
+        if payload.get("Version") != version:
+            raise RegistryError("Go proxy 버전별 응답 식별자가 일치하지 않습니다", retryable=False)
+        return payload
+    latest_info = info(latest)
+    current = latest_info if latest == target.version else info(target.version)
+    distance = _distance(list(eligible), target.version, latest, _go_version) if eligible else None
+    return {"latestVersion": latest, "latestSelection": "go_highest_non_retracted_release" if latest in eligible else "go_highest_non_retracted_prerelease",
+            "latestIsPrerelease": _go_version(latest)[3] == 0,
+            "registryLatestVersion": registry_latest_info.get("Version"), "retractionSourceVersion": authority,
+            "retractedVersionCount": sum(retracted(version) for version in releases), "currentVersionYanked": retracted(target.version),
             "currentVersionPublishedAt": iso(parse_date(current.get("Time"))), "latestPublishedAt": iso(parse_date(latest_info.get("Time"))),
-            "versionDistance": None, "versionDistanceBasis": "unavailable_retraction_aware_order_required",
-            "publicationBasis": "go_module_version_time", "warnings": ["Go proxy 선택 결과이며 모듈 retraction을 별도로 재판정하지 않습니다"]}
+            "currentVersionPublishedAtBasis": "go_module_revision_time", "latestPublishedAtBasis": "go_module_revision_time",
+            "versionDistance": distance, "versionDistanceBasis": "go_non_retracted_stable_release_count" if distance is not None else "unavailable_stable_release_list",
+            "publicationBasis": "go_module_revision_time", "warnings": ["Go 버전 시각은 소스 리비전 생성 시각이며 최초 registry 공개 시각과 다를 수 있습니다"]}
 
 
 def _nuget(target: PackageTarget, client: RegistryClient) -> dict:
@@ -410,11 +525,19 @@ def fetch_metadata(target: PackageTarget, client: RegistryClient, *, at: datetim
         raise
     except (ValueError, TypeError, KeyError, AttributeError, OverflowError, RecursionError) as exc:
         raise RegistryError(f"registry metadata 형식 오류: {type(exc).__name__}", retryable=False) from exc
-    fields = ("latestVersion", "currentVersionPublishedAt", "latestPublishedAt", "versionDistance")
+    result["versionDistanceParts"] = numeric_version_distance(target.version, result["latestVersion"])
+    result["versionDistancePartsBasis"] = "first_numeric_difference_absolute"
+    fields = ("latestVersion", "currentVersionPublishedAt", "latestPublishedAt", "versionDistance", "versionDistanceParts")
     result["fieldStatus"] = {field: "available" if result.get(field) is not None else "unavailable" for field in fields}
     for field in ("currentVersionPublishedAt", "latestPublishedAt"):
-        if result.get(field + "Basis") == "artifact_last_modified":
+        basis = result.get(field + "Basis", result.get("publicationBasis"))
+        result[field + "Basis"] = basis if result.get(field) else None
+        if basis == "artifact_last_modified":
             result["fieldStatus"][field] = "repository_timestamp"
+        elif basis == "go_module_revision_time":
+            result["fieldStatus"][field] = "revision_timestamp"
+        elif result.get(field):
+            result["fieldStatus"][field] = "publication_timestamp"
     result.update({"sourceUrls": list(client.urls[source_start:]), "sourceKind": "public_registry", "fetchedAt": iso(at),
                    "expiresAt": iso(at + timedelta(seconds=int(setting("ttl_seconds", 86400))))})
     return result
@@ -593,6 +716,12 @@ def run(*, once: bool = False) -> None:
                 if setting("enabled", True):
                     backfill_components(db)
                 worked = collect_one(db)
+                db.commit()
+            # Intelligence has its own bounded worker tick and transaction so a
+            # failed upstream feed cannot roll back a completed package cache.
+            from .vulnerability_intelligence import intelligence_collector_tick
+            with SessionLocal() as db:
+                worked = intelligence_collector_tick(db) or worked
                 db.commit()
         except Exception as exc:
             # Never log registry payloads or environment values.

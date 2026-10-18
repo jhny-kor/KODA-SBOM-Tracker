@@ -56,6 +56,8 @@ def main() -> dict:
     for rule, program in compiled:
         indexes = []
         for index, raw in enumerate(contexts.get(rule["target"], [])):
+            if rule["target"] == "vulnerability" and (raw.get("vulnerability") or {}).get("suppressed") is True:
+                continue
             evaluations += 1
             if evaluations > 100_000:
                 raise ValueError("CEL 평가 횟수가 100,000회 한도를 초과했습니다")

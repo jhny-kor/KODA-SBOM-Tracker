@@ -451,6 +451,8 @@ export interface PackageMetadataRow {
   versionDistanceBasis?: string; publicationBasis?: string; latestSelection?: string; latestIsPrerelease?: boolean;
   currentVersionPublishedAtBasis?: string; latestPublishedAtBasis?: string;
   registryLatestVersion?: string | null; registryLatestIsPrerelease?: boolean; warnings?: string[];
+  versionDistanceParts?: {epoch:number;major:number;minor:number;patch:number} | null;
+  versionDistancePartsBasis?: string;
 }
 export interface RunMetadataItem { component: {identityKey?: string; name: string; version?: string | null; purl?: string | null}; metadata: PackageMetadataRow }
 export interface MetadataStatus { enabled: boolean; supportedEcosystems: string[]; counts: Record<string, number>; ttlSeconds: number }
@@ -463,6 +465,7 @@ export const fetchMetadataStatus = () => request<MetadataStatus>("/api/v1/packag
 export const fetchRunMetadata = (id: string, page = 1) => request<PageResult<RunMetadataItem>>(`/api/v1/sbom-runs/${encodeURIComponent(id)}/package-metadata?page=${page}&size=10`);
 export const refreshRunMetadata = (id: string) => workflowMutation<{queued:number;cached:number;unsupported:number;invalid?:number;deferred?:number}>(`/api/v1/sbom-runs/${encodeURIComponent(id)}/package-metadata/refresh`, {});
 export const importMetadata = (bundle: unknown) => workflowMutation<{imported:number;skipped:number}>("/api/v1/package-metadata/import", bundle);
+export const importVulnerabilityIntelligence = (bundle: unknown) => workflowMutation<{imported:number;skipped:number}>("/api/v1/vulnerability-intelligence/import", bundle);
 export const stageMigration = (bundle: unknown) => workflowMutation<MigrationRecord>("/api/v1/legacy-migrations/stage", {bundle});
 export const stageRemoteMigration = (baseUrl: string, apiKey: string) => {
   const parsed = new URL(baseUrl);
@@ -471,3 +474,17 @@ export const stageRemoteMigration = (baseUrl: string, apiKey: string) => {
 };
 export const fetchMigrations = (page = 1) => request<PageResult<MigrationRecord>>(`/api/v1/legacy-migrations?page=${page}&size=20`);
 export const applyMigration = (record: MigrationRecord, expectedPolicyVersion: number, trustSourceReviews: boolean) => workflowMutation<MigrationRecord>(`/api/v1/legacy-migrations/${encodeURIComponent(record.id)}/apply`, {expectedDigest:record.digest,expectedPolicyVersion,trustSourceReviews});
+
+export interface NativeProject {
+  id:string;sourceId:string;sourceProjectId:string;serviceId:string;environmentId:string;releaseId?:string;currentRunId?:string;
+  name:string;version:string;parentProjectId:string|null;tags:string[];isLatest:boolean;active:boolean;revision:number;
+}
+export interface ProjectSyncSource {id:string;name:string;baseUrl:string;enabled:boolean;intervalMinutes:number;state:string;attempts:number;version:number;nextRunAt?:string|null;lastSuccessAt?:string|null;lastError?:string|null;lastMigrationId?:string|null}
+export const fetchProjectCatalog = (page=1) => request<PageResult<NativeProject>>(`/api/v1/project-catalog?page=${page}&size=20`);
+export const createNativeProject = (body:Record<string,unknown>) => workflowMutation<NativeProject>("/api/v1/project-catalog",body);
+export const updateNativeProject = (project:NativeProject, update:Record<string,unknown>) => workflowMutation<NativeProject>(`/api/v1/project-catalog/${encodeURIComponent(project.id)}`,{expectedRevision:project.revision,...update},"PATCH");
+export const fetchProjectSyncSources = (page=1) => request<PageResult<ProjectSyncSource>>(`/api/v1/project-sync-sources?page=${page}&size=20`);
+export const createProjectSyncSource = (body:Record<string,unknown>) => workflowMutation<ProjectSyncSource>("/api/v1/project-sync-sources",body);
+export const updateProjectSyncSource = (source:ProjectSyncSource,update:Record<string,unknown>) => workflowMutation<ProjectSyncSource>(`/api/v1/project-sync-sources/${encodeURIComponent(source.id)}`,{expectedVersion:source.version,...update},"PATCH");
+export const runProjectSync = (id:string) => workflowMutation<ProjectSyncSource>(`/api/v1/project-sync-sources/${encodeURIComponent(id)}/run-now`,{});
+export const fetchProjectSyncEvents = (id:string) => request<PageResult<{id:string;attempt:number;state:string;startedAt:string;finishedAt?:string;detail:Record<string,unknown>}>>(`/api/v1/project-sync-sources/${encodeURIComponent(id)}/events`);

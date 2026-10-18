@@ -68,7 +68,7 @@ def test_native_compose_default_and_opt_in_services() -> None:
     if "not a docker command" in default.stderr:
         pytest.skip("Docker Compose plugin unavailable")
     assert default.returncode == 0, default.stderr
-    assert {"portal-api", "portal-worker", "portal-data-updater", "portal-metadata-collector", "gateway", "postgres", "portal-web"} == set(default.stdout.split())
+    assert {"portal-api", "portal-worker", "portal-data-updater", "portal-metadata-collector", "portal-project-sync", "gateway", "postgres", "portal-web"} == set(default.stdout.split())
     rendered = subprocess.run([*command, "config", "--format", "json"], env=environment, capture_output=True, text=True)
     assert rendered.returncode == 0, rendered.stderr
     services = json.loads(rendered.stdout)["services"]

@@ -13,6 +13,8 @@
 | `portal-api`, `portal-worker` | `apps/api` 실제 이미지 |
 | `postgres` | 계정·회차·정책·검토·알림을 보관하는 `sbom_tracker` DB와 전용 계정 초기화 |
 | `portal-data-updater` | 오프라인 데이터 검증·활성화·롤백 전용 worker |
+| `portal-metadata-collector` | 공식 패키지 저장소·관측 CVE의 EPSS 수집 |
+| `portal-project-sync` | 선택적으로 등록한 원본의 주기 동기화·재시도 |
 
 ## 2. 초기 기동
 
@@ -290,7 +292,7 @@ ENV_FILE=/opt/koda-sbom/.env
 BACKUP_SIGNING_KEY=/etc/koda/keys/backup-signing.pem
 BACKUP_VERIFY_KEY=/etc/koda/trust/backup-public.pem
 docker compose --env-file "$ENV_FILE" -f compose.yaml -f compose.airgap.yaml \
-  stop gateway portal-web portal-api portal-worker portal-data-updater
+  stop gateway portal-web portal-api portal-worker portal-data-updater portal-metadata-collector portal-project-sync
 
 ENV_FILE="$ENV_FILE" BACKUP_ROOT=/media/koda-backup/tracker \
   KODA_BACKUP_SIGNING_KEY="$BACKUP_SIGNING_KEY" \
@@ -522,16 +524,55 @@ TRACKER_NOTIFICATION_WEBHOOK_SECRET=<별도 생성한 충분히 긴 비밀키>
    `GET /api/v1/legacy-migrations`에서 이력을, `GET /{id}/bundle`에서 원본을 확인합니다.
 5. 이관된 과거 결과는 원본 분석 증거입니다. 현재 Grype DB 분석은 별도 새 리비전으로 실행합니다.
 
-지원 변환은 FAIL/WARN/INFO, 조건별 ALL/ANY, 심각도·취약점 ID, 좌표·PURL·CPE·SWID·해시·내부 구성요소,
-단일 라이선스/그룹의 SPDX 식별자·AND/OR, 프로젝트·태그·하위 프로젝트·최신 표시의 이관 시점 범위입니다.
-태그·계층 범위는 현재 원본 스냅샷의 고정 회차 ID로 변환하며 향후 외부 변경을 추적하는 동기화는 아닙니다.
-무기한 정책 예외도 정확한 `runId` 범위를 보존합니다. AGE는 원본 시간대를 `sourceTimeZone: "UTC"`로
-명시하고 일 단위 `PnD`일 때 최신 버전 공개일의 UTC 달력 날짜를 기준으로 변환합니다.
-일반 `ageDays`(현재 버전의 경과 24시간 수)와는 의미가 다릅니다.
+지원 변환은 FAIL/WARN/INFO, 조건별 ALL/ANY, 심각도·취약점 ID·CWE ANY/ALL·EPSS,
+좌표·PURL·CPE·SWID·해시·내부 구성요소·버전 비교, 라이선스/그룹의 혼합·IS_NOT·SPDX
+AND/OR/WITH/PLUS/or-later, 달력 AGE와 단위별 버전 거리입니다.
+출처 버전(`source.version`)이 있어야 버전별 의미가 다른 조건을 변환합니다.
 
-구조화된 단위별 버전 거리, 연·월 달력 기간, 다른 시간대 AGE, CWE/EPSS, 라이선스 혼합·부정 조건,
-SPDX WITH/PLUS 및 Java 전용 정규식처럼 의미를 검증하지 못한 조건은 차단 사유와 원본으로 남깁니다.
-자동 변환 성공이 모든 외부 분석기의 계산식·데이터까지 동일하다는 뜻은 아닙니다.
+- 원본 5.x AGE: **현재 artifact의 공개 시각 + UTC 달력 기간**입니다. `P1Y2M`,
+  주·일 단위를 지원하고 월말·윤년을 처리합니다. 현재 버전 `ageDays`의 경과 24시간 수와 다릅니다.
+- 원본 4.x AGE: **최신 버전의 시각 + 명시한 IANA 시간대**입니다. `sourceTimeZone`을 지정합니다.
+- VERSION_DISTANCE: 직접 의존성만 대상으로 epoch→major→minor→patch 중 처음 다른 단위의
+  절대 차이를 계산합니다. 이후 단위 -1은 미산출입니다. 안정 릴리스 개수와 섞지 않습니다.
+  직접 의존성은 원본 directDependencies 또는 CycloneDX 루트 dependency graph로 확인합니다.
+  그래프가 없으면 추정하지 않고 데이터 부족 경고를 기록합니다.
+- 5.x PURL·CPE·SWID는 원본과 같은 RE2 표현식을 사용합니다. 잘못된 패턴은 적용 전에 차단합니다.
+  4.x Java 전용 lookbehind·backreference 등의 전체 문법은 변환하지 않으며 차단 보고서로 남깁니다.
+  원본에 유효하지 않은 조건이나 버전을 확인할 수 없는 조건을 의미가 다른 규칙으로 바꾸지 않습니다.
+
+프로젝트·태그·하위 프로젝트·최신 표시 범위는 `projectScope`로 저장합니다.
+카탈로그의 부모·태그·활성·최신 버전 표시를 매 새 분석에서 조회하므로 새 회차에도 적용됩니다.
+같은 프로젝트 UUID의 버전이 바뀌면 과거 버전 회차는 최신 버전 범위에서 제외되고, 같은 버전의
+과거 회차는 포함됩니다. 이전 리비전에는 당시 범위와 메타데이터·취약점 근거가 보존됩니다.
+무기한 예외는 정확한 `runId` 범위를 계속 보존합니다.
+
+### 프로젝트 계층·태그·최신 버전과 주기 동기화
+
+설정의 **기존 시스템 이관** 아래에서 카탈로그를 확인하고 자체 프로젝트를 등록합니다.
+부모는 같은 원본의 프로젝트 ID로 지정하며 순환 계층은 거절합니다. 최신 표시를 켜면 같은
+원본·이름의 다른 버전 최신 표시는 해제합니다. 기존 회차를 연결하거나 같은 서비스·환경·버전의
+업로드를 자동 대응시킵니다. 카탈로그 변경은 과거 SBOM·분석을 덮어쓰지 않습니다.
+
+- `GET/POST /api/v1/project-catalog`, `PATCH /api/v1/project-catalog/{id}`
+- `POST /api/v1/project-catalog/{id}/runs`: 기존 회차 연결
+- 변경 시 `expectedRevision`을 보내며 충돌은 HTTP 409로 다시 조회합니다.
+- 정책 `projectScope`는 `sourceId`, `projectIds`, `tags`, `includeChildren`, `onlyLatest`입니다.
+  프로젝트 또는 태그가 맞는 집합에 적용하고, ID·태그를 모두 비우면 같은 원본 전체입니다.
+
+원본을 계속 유지하는 경우에만 **자동 동기화 원본 등록**에서 주소·읽기 키·프로젝트 목록·주기를
+설정하고 활성화합니다. 기본은 비활성입니다. 원본이 종료된 경우 KODA 카탈로그 편집만 사용합니다.
+
+- `GET/POST /api/v1/project-sync-sources`, `PATCH /api/v1/project-sync-sources/{id}`
+- `POST /api/v1/project-sync-sources/{id}/run-now`: 지금 접수·실패 후 재시도
+- `GET /api/v1/project-sync-sources/{id}/events`: 성공·재시도·차단 근거
+- 주기 5~10,080분, 작업 임대 10분, 통신 실패 최대 5회 지수 지연 재시도입니다.
+- 원본 키는 기존 `TRACKER_LDAP_ENCRYPTION_KEY`로 암호화합니다. 이 키를 안전하게 보존해야
+  백업 복원 뒤에도 자격증명을 복호화할 수 있습니다. API 응답·감사에 키나 암호문을 반환하지 않습니다.
+- 전체 스냅샷에서 사라진 프로젝트만 비활성·비최신으로 처리합니다. 일부 프로젝트 수집에서는
+  누락된 다른 프로젝트를 삭제로 해석하지 않습니다. 원본 정책 삭제도 이력과 tombstone을 남깁니다.
+- KODA에서 수정·삭제한 원본 정책과 충돌하면 덮어쓰지 않고 검토 필요 상태로 중단합니다.
+- 내보내기마다 바뀌는 timestamp·serial·도구 정보·저장소 집계는 새 SBOM 회차로 취급하지 않습니다.
+  실제 재고·버전 변경은 새 회차·릴리스로 보존합니다. 원본 분석 변화는 별도 과거 증거 리비전입니다.
 
 번들은 최대 64MiB, 원본 단일 응답은 32MiB, 수집은 최대 5분으로 제한됩니다.
 큰 포트폴리오는 프로젝트를 나눠 수집합니다. 원본 origin 외부 리디렉션·환경 proxy·링크 로컬 주소는
@@ -561,10 +602,11 @@ TRACKER_PACKAGE_METADATA_RETRY_SECONDS=60
 회차 상세에서 최신 버전·현재/최신 공개 시각·출처·수집/만료 시각·필드별 미확인을 확인합니다.
 패키지 관리 체계마다 '최신' 정의가 달라 npm의 latest 태그와 안정 버전, 배포 철회/미공개 여부 등을
 구분해 기록합니다. 지원하지 않는 ecosystem과 잘못된 PURL은 명시적으로 표시합니다.
-Maven 검색 인덱스에서 공개일을 확인하지 못하면 해당 버전 POM의 Last-Modified를
+Maven은 공식 Central의 정확한 좌표별 색인 시각을 수집합니다. 색인에서 시각을 확인하지 못하면 해당 버전 POM의 Last-Modified를
 **저장소 파일 시각(최초 출시일 미확정)**으로 표시합니다. 이를 최초 공개일로 보증하지 않습니다.
 `versionDistance`는 지원하는 체계의 안정 릴리스 개수 차이이며 단위별 버전 차이가 아닙니다.
-Maven·Go의 거리를 임의로 추정하지 않습니다.
+Maven은 ComparableVersion으로 정렬한 안정 릴리스 수, Go는 버전 목록과 최신 go.mod의 철회 범위를 반영한 안정 릴리스 수를 계산합니다. Go 시각은 공식 프로토콜이 제공하는 **소스 리비전 생성 시각**으로 표시하며 최초 저장소 공개일이라고 보증하지 않습니다.
+`versionDistanceParts`와 `versionDistancePartsBasis`는 원본 방식의 단위 거리이며 기존 `versionDistance` 릴리스 개수와 분리합니다.
 
 누락·만료·오류·null 필드는 CEL에 정상 최신 값으로 공급하지 않습니다.
 관련 데이터를 사용하는 조건이 `has()`로 누락을 건너뛰더라도 데이터 부족 경고와
@@ -575,3 +617,34 @@ Maven·Go의 거리를 임의로 추정하지 않습니다.
 폐쇄망은 수집을 끄고 `GET /api/v1/package-metadata/export?page=1&size=1000`으로 받은 캐시를
 `POST /api/v1/package-metadata/import`로 반입합니다. 여러 페이지는 빠짐없이 반입해야 합니다.
 반입 데이터의 원래 시각과 출처를 보존하며 오래된 자료를 새 수집으로 위장하지 않습니다.
+
+### CWE·EPSS 데이터와 폐쇄망 반입
+
+CWE는 실제 Grype 결과·반입 NVD·원본 분석의 구조화된 필드에서 읽습니다.
+별도 수집기는 관측한 CVE만 FIRST 공식 API에 최대 40개씩 조회하며 모든 CVE의 벌크 복제에
+API를 사용하지 않습니다. 출처·EPSS 점수·백분위·원본 기준일·관측/만료 시각을 보존합니다.
+점수는 0~1의 유한수이고, 캐시 유효기간 24시간과 원본 기준일 최대 2일을 함께 확인합니다.
+없음·실패·만료를 0점으로 바꾸지 않습니다. 승인된 VEX는 효과적인 정책 대상에서 제외합니다.
+
+- `GET /api/v1/vulnerability-intelligence/status`
+- `GET /api/v1/vulnerability-intelligence/export?page=1&size=1000`
+- `POST /api/v1/vulnerability-intelligence/import` (설정의 EPSS 캐시 가져오기도 제공)
+
+반입은 `koda-vulnerability-intelligence-v1` 형식, 원본 HTTPS 출처·기준일·관측/만료 시각이
+필요합니다. 더 오래된 기준일·관측 자료가 최신 증거를 덮어쓰지 않습니다. 새 분석에서만 반영됩니다.
+CWE·EPSS 또는 고급 helper가 필요한 데이터를 찾지 못하면 `policyDataComplete=false`와
+억제할 수 없는 데이터 부족 경고를 남깁니다. 읽기 전용 수집기와 동기화 worker에만 별도 외부
+네트워크를 연결하며 일반 분석 worker는 캐시·반입 DB만 사용합니다.
+
+공급원 계약: [FIRST EPSS API](https://api.first.org/epss/),
+[Maven Central 검색](https://central.sonatype.org/search/),
+[Go module proxy](https://go.dev/ref/mod#goproxy-protocol),
+[Go 철회 지시문](https://go.dev/ref/mod#retract).
+
+동기화로 원본 분석·정책·계층·태그·최신 표시가 바뀌면 해당 회차의 Grype 재분석을 자동 접수합니다.
+변경 없는 재수집은 작업을 추가하지 않습니다. 접수 요청은 DB에 보존되며, 대기열이 가득 차면
+다음 tick에 재시도하고 실행 중 분석이 있으면 완료 뒤 새 분석을 실행합니다. 동기화 이력의
+`nativeReanalysisRequested`·`nativeReanalysisEnqueued`로 접수량을 확인합니다. 과거 원본 분석은
+보존하지만 재분석 대기·실행 상태를 표시하므로 이를 새 Grype 완료 결과로 간주하지 않습니다.
+활성 원본의 명시적 재동기화는 자체 편집한 카탈로그를 원본 값으로 다시 맞춥니다.
+자체 값을 계속 유지하려면 해당 원본 동기화를 비활성화합니다. 정책의 로컬 수정 충돌은 계속 차단합니다.

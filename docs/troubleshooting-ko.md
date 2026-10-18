@@ -48,7 +48,7 @@ cd "$TRACKER_ROOT"
 docker compose --env-file .env "${COMPOSE_FILES[@]}" ps
 curl -fsS http://127.0.0.1:8088/healthz
 curl -fsS http://127.0.0.1:8088/api/v1/healthz
-docker compose --env-file .env "${COMPOSE_FILES[@]}" logs --tail 100 portal-api portal-worker portal-data-updater
+docker compose --env-file .env "${COMPOSE_FILES[@]}" logs --tail 100 portal-api portal-worker portal-data-updater portal-metadata-collector portal-project-sync
 ```
 
 gateway·web·API·분석 worker·데이터 updater·PostgreSQL을 각각 확인합니다. health 응답이

@@ -146,6 +146,15 @@ def _xml_payload(root) -> dict:
         "serialNumber": root.attrib.get("serialNumber"),
         "components": [],
     }
+    metadata = next((node for node in root if _local(node.tag) == "metadata"), None)
+    if metadata is not None:
+        primary = next((node for node in metadata if _local(node.tag) == "component"), None)
+        if primary is not None:
+            payload["metadata"] = {"component": {"bom-ref": primary.attrib.get("bom-ref", ""), "name": _text(primary, "name"), "version": _text(primary, "version")}}
+    dependencies = next((node for node in root if _local(node.tag) == "dependencies"), None)
+    if dependencies is not None:
+        payload["dependencies"] = [{"ref": node.attrib.get("ref", ""), "dependsOn": [item.attrib.get("ref", "") for item in node if _local(item.tag) == "dependency"]}
+                                   for node in dependencies if _local(node.tag) == "dependency"]
     components_node = next((node for node in root if _local(node.tag) == "components"), None)
     if components_node is None:
         return payload

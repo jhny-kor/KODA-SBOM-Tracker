@@ -9,6 +9,8 @@ services:
     pull_policy: never
   portal-metadata-collector:
     pull_policy: never
+  portal-project-sync:
+    pull_policy: never
   portal-data-updater:
     pull_policy: never
   postgres:

@@ -14,6 +14,25 @@ from sqlalchemy.orm import Session
 from .cel_executor import CelPolicyError, execute_cel, validate_expression
 from .models import AnalysisRevision, JobState, SbomPolicyRevision, SbomRun
 from .vulnerability import cvss_score, project_cve_findings
+from .vulnerability_intelligence import enrich_findings, enqueue_findings
+from .project_catalog import catalog_context_for_run, project_scope_matches
+from .legacy_policy import validate_legacy_conditions, prepare_legacy_contexts
+
+
+class ProjectScope(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    sourceId: str = Field(min_length=1, max_length=128)
+    projectIds: list[str] = Field(default_factory=list, max_length=10000)
+    tags: list[str] = Field(default_factory=list, max_length=100)
+    includeChildren: bool = False
+    onlyLatest: bool = False
+
+    @field_validator("projectIds", "tags")
+    @classmethod
+    def validate_values(cls, values):
+        if any(not isinstance(value, str) or not value.strip() or len(value) > 255 for value in values):
+            raise ValueError("프로젝트 범위 식별자·태그는 1~255자여야 합니다")
+        return sorted(set(value.strip() for value in values))
 
 
 class PolicyRule(BaseModel):
@@ -31,6 +50,13 @@ class PolicyRule(BaseModel):
     environmentIds: list[str] = Field(default_factory=list, max_length=200)
     releaseVersions: list[str] = Field(default_factory=list, max_length=200)
     runIds: list[str] = Field(default_factory=list, max_length=10000)
+    projectScope: ProjectScope | None = None
+    legacyConditions: list[dict] = Field(default_factory=list, max_length=100)
+
+    @field_validator("legacyConditions")
+    @classmethod
+    def validate_conditions(cls, values):
+        return validate_legacy_conditions(values)
 
     @field_validator("serviceIds", "environmentIds", "releaseVersions", "runIds")
     @classmethod
@@ -52,6 +78,8 @@ class PolicyRule(BaseModel):
 
     @model_validator(mode="after")
     def validate_kind(self) -> PolicyRule:
+        if self.legacyConditions and (self.kind != "cel" or self.target != "component"):
+            raise ValueError("이관 조건은 구성요소 대상 CEL 정책에만 지정할 수 있습니다")
         if self.kind == "cel":
             if not self.expression or len(self.expression.encode()) > 8192 or self.values:
                 raise ValueError("CEL 정책에는 1~8192바이트 표현식이 필요하며 values는 지정하지 않습니다")
@@ -262,24 +290,34 @@ def validate_policy_expressions(document: PolicyDocument) -> None:
         execute_cel({"expressions": rules, "compileOnly": True})
 
 
-def policy_context_for_run(run: SbomRun) -> dict:
+def policy_context_for_run(run: SbomRun, db: Session | None = None) -> dict:
     release = getattr(run, "release", None)
     service = getattr(release, "service", None)
     environment = getattr(release, "environment", None)
     def named(value) -> dict:
         return {key: getattr(value, key) for key in ("id", "slug", "name") if getattr(value, key, None) is not None}
-    return {"project": named(service), "environment": named(environment),
+    context = {"project": named(service), "environment": named(environment),
             "release": {"version": release.version} if release is not None else {},
             "run": {key: value for key, value in {"id": getattr(run, "id", None), "source": getattr(run, "source", None), "roundNumber": getattr(run, "round_number", None)}.items() if value is not None}}
+    if db is not None and isinstance(run, SbomRun):
+        catalog = catalog_context_for_run(db, run.id)
+        context["sourceProject"] = catalog
+        if catalog:
+            context["project"].update({"sourceId": catalog["sourceId"], "sourceProjectId": catalog["projectId"],
+                                      "ancestorIds": catalog.get("ancestorIds", []), "tags": catalog.get("tags", []),
+                                      "isLatest": catalog.get("isLatest", False), "active": catalog.get("active", True)})
+    return context
 
 
 def _rule_applies(rule: PolicyRule, context: dict) -> bool:
+    if rule.projectScope and not project_scope_matches(rule.projectScope.model_dump(), context.get("sourceProject") or {}):
+        return False
     return all(not allowed or (context.get(section) or {}).get(key) in allowed for allowed, section, key in (
         (rule.serviceIds, "project", "id"), (rule.environmentIds, "environment", "id"), (rule.releaseVersions, "release", "version"), (rule.runIds, "run", "id")))
 
 
 def _cel_component(component: dict, at: datetime) -> dict:
-    result = {key: component[key] for key in ("type", "name", "group", "version", "purl") if component.get(key) is not None}
+    result = {key: component[key] for key in ("type", "name", "group", "version", "purl", "legacyLicense", "isDirectDependency") if component.get(key) is not None}
     result["metadataStatus"] = component.get("metadataStatus", "missing")
     cached_metadata = component.get("packageMetadata") or {}
     result["packageMetadata"] = cached_metadata if component.get("metadataStatus") == "fresh" else {key: cached_metadata[key] for key in ("status", "ecosystem", "sourceUrls", "fetchedAt", "expiresAt", "error", "fieldStatus") if key in cached_metadata}
@@ -312,7 +350,7 @@ def _cel_component(component: dict, at: datetime) -> dict:
     return result
 
 
-def build_cel_contexts(components: list[dict], findings: list[dict], project_context: dict | None = None, *, evaluated_at: datetime | None = None, targets: set[str] | None = None) -> dict[str, list[dict]]:
+def build_cel_contexts(components: list[dict], findings: list[dict], project_context: dict | None = None, *, evaluated_at: datetime | None = None, targets: set[str] | None = None, include_peer_vulnerabilities: bool = True) -> dict[str, list[dict]]:
     at = evaluated_at or datetime.now(UTC)
     context = project_context or {}
     base = {key: context.get(key, {}) for key in ("project", "environment", "release", "run")}
@@ -338,8 +376,9 @@ def build_cel_contexts(components: list[dict], findings: list[dict], project_con
         component = indexed.get(name) or indexed.get(f"{name}@{version}")
         if component is None:
             component = {"name": name, "version": version, "purl": name} if name.startswith("pkg:") else {"name": name, "version": version}
-        vulnerability = {key: finding[key] for key in ("id", "severity", "kev", "fixedIn") if finding.get(key) is not None}
+        vulnerability = {key: finding[key] for key in ("id", "severity", "kev", "fixedIn", "cwes", "cweStatus", "epssScore", "epssPercentile", "epssDate", "epssStatus") if finding.get(key) is not None}
         vulnerability["canonicalId"] = finding.get("canonicalId") or finding.get("id") or "unknown"
+        vulnerability["suppressed"] = (finding.get("vex") or {}).get("suppressed") is True
         score = cvss_score(finding)
         if score is not None:
             try:
@@ -349,13 +388,28 @@ def build_cel_contexts(components: list[dict], findings: list[dict], project_con
         if not (finding.get("vex") or {}).get("suppressed"):
             component.setdefault("vulnerabilities", []).append(vulnerability)
         if "vulnerability" in targets:
-            result["vulnerability"].append({**base, "component": component, "vulnerability": vulnerability})
+            activation_component = component if include_peer_vulnerabilities else {key: value for key, value in component.items() if key != "vulnerabilities"}
+            result["vulnerability"].append({**base, "component": activation_component, "vulnerability": vulnerability})
     return result
+
+
+def components_with_dependency_graph(bom: dict) -> list[dict]:
+    components = copy.deepcopy(bom.get("components") or [])
+    root_ref = ((bom.get("metadata") or {}).get("component") or {}).get("bom-ref")
+    direct = None
+    if root_ref:
+        root = next((item for item in (bom.get("dependencies") or []) if item.get("ref") == root_ref), None)
+        if root is not None:
+            direct = set(root.get("dependsOn") or [])
+    for component in components:
+        if direct is not None:
+            component["isDirectDependency"] = component.get("bom-ref") in direct
+    return components
 
 
 def preview_expression(expression: str, target: str, components: list[dict], findings: list[dict], project_context: dict | None = None) -> dict:
     validate_expression(expression, target)
-    contexts = build_cel_contexts(components, findings, project_context, targets={target})
+    contexts = build_cel_contexts(components, findings, project_context, targets={target}, include_peer_vulnerabilities="vulnerabilities" in expression)
     result = execute_cel({"expressions": [{"id": "preview", "expression": expression, "target": target}], "contexts": contexts})
     indexes = result["matches"]["preview"]
     return {"valid": True, "target": target, "evaluatedCount": len(contexts[target]), "matchCount": len(indexes), "matchedIndexes": indexes[:100], "truncated": len(indexes) > 100}
@@ -369,8 +423,10 @@ def evaluate_document(document: PolicyDocument, components: list[dict], findings
     applicable_rules = [rule for rule in document.rules if rule.enabled and _rule_applies(rule, context)]
     cel_rules = [rule for rule in applicable_rules if rule.kind == "cel"]
     cel_matches = {}
+    legacy_warnings = []
     if cel_rules:
-        contexts = build_cel_contexts(components, findings, context, evaluated_at=evaluated_at, targets={rule.target for rule in cel_rules})
+        contexts = build_cel_contexts(components, findings, context, evaluated_at=evaluated_at, targets={rule.target for rule in cel_rules}, include_peer_vulnerabilities=any(rule.target == "vulnerability" and "vulnerabilities" in rule.expression for rule in cel_rules))
+        legacy_warnings = prepare_legacy_contexts([rule.model_dump(mode="json") for rule in cel_rules], contexts, evaluated_at=evaluated_at)
         cel_matches = execute_cel({"expressions": [rule.model_dump(mode="json") for rule in cel_rules], "contexts": contexts})["matches"]
 
     def add(rule: PolicyRule, component: str, vulnerability: str, reason: str, aliases: set[str] | None = None, *, version: str = "", unavailable: bool = False) -> None:
@@ -382,6 +438,8 @@ def evaluate_document(document: PolicyDocument, components: list[dict], findings
             row["target"] = rule.target
             row["expression"] = rule.expression
             row["scope"] = {"serviceIds": list(rule.serviceIds), "environmentIds": list(rule.environmentIds), "releaseVersions": list(rule.releaseVersions), "runIds": list(rule.runIds)}
+            if rule.projectScope:
+                row["scope"]["projectScope"] = rule.projectScope.model_dump(mode="json")
         for exception in document.exceptions:
             if unavailable:
                 break
@@ -398,10 +456,14 @@ def evaluate_document(document: PolicyDocument, components: list[dict], findings
 
     for rule in applicable_rules:
         if rule.kind == "cel":
+            for warning in legacy_warnings:
+                if warning["ruleId"] == rule.id:
+                    add(rule, warning["component"], "", warning["reason"], unavailable=True)
+                    data_warnings.append({"policyId": rule.id, "source": "legacyCondition", **warning})
             tokens = re.findall(r""" "(?:\\.|[^"\\])*" | '(?:\\.|[^'\\])*' | [A-Za-z_][A-Za-z_0-9]* | [^\s] """, rule.expression, re.VERBOSE)
             referenced = {tokens[index + 1] for index, token in enumerate(tokens[:-1]) if token == "."}
             referenced.update(tokens[index + 1][1:-1] for index, token in enumerate(tokens[:-2]) if token == "[" and tokens[index + 2] == "]" and tokens[index + 1].startswith(("\"", "'")))
-            metadata_fields = referenced.intersection({"ageDays", "latestVersion", "versionDistance", "currentVersionPublishedAt", "latestPublishedAt"})
+            metadata_fields = referenced.intersection({"ageDays", "latestVersion", "versionDistance", "versionDistanceParts", "currentVersionPublishedAt", "latestPublishedAt"})
             for activation in contexts.get(rule.target, []) if metadata_fields else []:
                 component_value = activation.get("component") or {}
                 missing = sorted(field for field in metadata_fields if component_value.get(field) is None and (component_value.get("packageMetadata") or {}).get(field) is None)
@@ -410,6 +472,20 @@ def evaluate_document(document: PolicyDocument, components: list[dict], findings
                     reason = "정책에 필요한 패키지 데이터가 없거나 만료되었습니다: " + ", ".join(missing)
                     add(rule, component_key, "", reason, version=str(component_value.get("version") or ""), unavailable=True)
                     data_warnings.append({"policyId": rule.id, "source": "packageMetadata", "component": component_key, "fields": missing, "reason": reason})
+            intelligence_fields = referenced.intersection({"cwes", "epssScore", "epssPercentile"})
+            for activation in contexts.get(rule.target, []) if intelligence_fields else []:
+                component_value = activation.get("component") or {}
+                vulnerabilities = [activation["vulnerability"]] if rule.target == "vulnerability" else component_value.get("vulnerabilities", [])
+                for vulnerability_value in vulnerabilities:
+                    if vulnerability_value.get("suppressed") is True:
+                        continue
+                    missing = sorted(field for field in intelligence_fields if vulnerability_value.get(field) is None or field == "cwes" and not vulnerability_value.get("cwes") and vulnerability_value.get("cweStatus") != "available")
+                    if missing:
+                        component_key = str(component_value.get("purl") or component_value.get("name") or "project")
+                        reason = "정책에 필요한 취약점 데이터가 없거나 만료되었습니다: " + ", ".join(missing)
+                        vuln_id = str(vulnerability_value.get("canonicalId") or vulnerability_value.get("id") or "")
+                        add(rule, component_key, vuln_id, reason, version=str(component_value.get("version") or ""), unavailable=True)
+                        data_warnings.append({"policyId": rule.id, "source": "vulnerabilityIntelligence", "component": component_key, "vulnerabilityId": vuln_id, "fields": missing, "reason": reason})
             for index in cel_matches[rule.id]:
                 if rule.target == "project":
                     add(rule, str((context.get("project") or {}).get("id") or "project"), "", "CEL 프로젝트 조건에 해당")
@@ -500,18 +576,23 @@ def evaluate_revision(db: Session, run: SbomRun, revision: AnalysisRevision) -> 
         revision.policy_version = policy.version
         revision.policy_snapshot = snapshot
         document = PolicyDocument.model_validate(snapshot)
-        components = (getattr(run, "normalized_bom", None) or {}).get("components", [])
+        components = components_with_dependency_graph(getattr(run, "normalized_bom", None) or {})
         from .package_metadata import enrich_components, metadata_summary
         if isinstance(run, SbomRun):
             components = enrich_components(db, components)
+            enqueue_findings(db, revision.findings or [])
+            revision.findings = enrich_findings(db, revision.findings or [])
         metadata_evidence = [value.get("packageMetadata") for value in components if value.get("packageMetadata")]
         sources = revision.data_sources or {}
         kev_source = sources.get("cisaKev") or {}
         available_sources = {"kev"} if isinstance(kev_source, dict) and kev_source.get("available") is True else set()
-        revision.policies, revision.metrics = evaluate_document(document, components, revision.findings or [], available_sources=available_sources, project_context=policy_context_for_run(run))
+        project_context = policy_context_for_run(run, db)
+        revision.policies, revision.metrics = evaluate_document(document, components, revision.findings or [], available_sources=available_sources, project_context=project_context)
+        revision.policy_snapshot = {**snapshot, "projectScopeSnapshot": project_context.get("sourceProject"),
+                                    "vulnerabilityIntelligenceSnapshot": [{"id": value.get("canonicalId") or value.get("id"), "cwes": value.get("cwes"), "epssEvidence": value.get("epssEvidence")} for value in revision.findings or []]}
         revision.metrics["packageMetadataSummary"] = metadata_summary(components)
-        if any(rule.kind == "cel" and any(field in rule.expression for field in ("ageDays", "latestVersion", "versionDistance", "packageMetadata")) for rule in document.rules):
-            revision.policy_snapshot = {**snapshot, "packageMetadataSnapshot": metadata_evidence}
+        if any(rule.kind == "cel" and (any(field in rule.expression for field in ("ageDays", "latestVersion", "versionDistance", "packageMetadata")) or any(spec.get("subject") in {"AGE", "VERSION_DISTANCE"} for spec in rule.legacyConditions)) for rule in document.rules):
+            revision.policy_snapshot = {**revision.policy_snapshot, "packageMetadataSnapshot": metadata_evidence}
         revision.metrics = {**revision.metrics, "policyVersion": policy.version, "dataAsOf": revision.data_as_of, "toolVersion": revision.tool_version}
         revision.policy_state = "completed"
         revision.policy_error = None

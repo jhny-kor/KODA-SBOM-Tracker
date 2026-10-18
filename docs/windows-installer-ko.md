@@ -24,7 +24,7 @@ Docker Desktop 없이 전체 분석까지 수행하는 네이티브 단일 EXE�
 Windows x64에서 Docker Desktop의 Linux 컨테이너로 전체 스택을 실행합니다. 설치파일은 React
 포털만 담은 단일 EXE가 아니라 실행에 필요한 다음 이미지와 Compose 파일을 함께 담습니다.
 
-- gateway, portal-web, portal-api, portal-worker, portal-data-updater
+- gateway, portal-web, portal-api, portal-worker, portal-data-updater, portal-metadata-collector, portal-project-sync
 - PostgreSQL
 - Grype, CycloneDX CLI, Alpine 운영 이미지
 

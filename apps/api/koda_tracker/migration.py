@@ -8,6 +8,7 @@ from __future__ import annotations
 import copy
 from datetime import UTC, datetime
 import hashlib
+from functools import lru_cache
 import http.client
 import ipaddress
 import json
@@ -24,6 +25,8 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .config import get_settings
+from .legacy_policy import condition_spec
+from .project_catalog import upsert_source_projects
 from .migration_models import LegacyMigration, LegacyObjectMap
 from .models import AnalysisRevision, AuditEvent, Environment, Job, JobState, ProcessingState, Release, RunComponent, SbomPolicyRevision, SbomRun, Service, now
 from .policies import PolicyDocument, get_policy_document, evaluate_revision, validate_policy_expressions
@@ -267,7 +270,7 @@ class LegacyExporter:
             source_components = self.pages(f"component/project/{project_id}")
             exported.append({"project": project, "bom": bom, "components": source_components, "findings": fpf, "analyses": analyses, "violations": violations, "violationAnalyses": violation_analyses})
         version_info = self.get("../version", missing_ok=True)[0]
-        bundle = {"format": FORMAT, "version": 1, "source": {"id": hashlib.sha256(self.origin.encode()).hexdigest(), "origin": self.origin, "exportedAt": now().isoformat(), "version": version_info.get("version") if isinstance(version_info, dict) else version_info, **({"timeZone": self.source_timezone} if self.source_timezone else {})}, "projects": exported, "policies": policies, "licenses": licenses, "licenseGroups": groups}
+        bundle = {"format": FORMAT, "version": 1, "source": {"id": hashlib.sha256(self.origin.encode()).hexdigest(), "origin": self.origin, "exportedAt": now().isoformat(), "projectSnapshotComplete": not bool(project_uuids), "version": version_info.get("version") if isinstance(version_info, dict) else version_info, **({"timeZone": self.source_timezone} if self.source_timezone else {})}, "projects": exported, "policies": policies, "licenses": licenses, "licenseGroups": groups}
         if len(_json(bundle)) > MAX_BUNDLE_BYTES:
             raise MigrationError("이관 번들이 64 MiB 한도를 초과했습니다")
         return bundle
@@ -277,9 +280,25 @@ def _literal(value) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
-def _matcher(field: str, value, operator: str) -> str:
+@lru_cache(maxsize=2048)
+def _validate_source_regex(pattern: str) -> None:
+    # Standard CEL compiles regexes at evaluation time. Probe in its existing
+    # isolated process so malformed source patterns fail staging, not import.
+    from .cel_executor import execute_cel
+    execute_cel({"expressions":[{"id":"regex-validation","target":"component","expression":"component.purl.matches("+_literal(pattern)+")"}],"contexts":{"component":[{"component":{"purl":"pkg:npm/validation@1"}}]}})
+
+
+def _matcher(field: str, value, operator: str, *, source_version: str | None = None) -> str:
     if operator not in {"MATCHES", "NO_MATCH"} or not isinstance(value, str):
         raise MigrationError("문자열 조건의 연산자 또는 값이 지원되지 않습니다")
+    # Version 5 compatibility builders use raw CEL RE2 for PURL/CPE/SWID.
+    # Group/name coordinates and pre-5 bundles use legacy wildcard semantics.
+    if str(source_version or "").startswith("5."):
+        if len(value) > 2048:
+            raise MigrationError("정규식이 2048자 한도를 초과했습니다")
+        _validate_source_regex(value)
+        expression = f"((has({field}) ? {field} : '').matches({_literal(value)}))"
+        return f"!{expression}" if operator == "NO_MATCH" else expression
     # Source Matcher.java treats * as regex wildcard and uses Java full-match.
     # Restrict Java-only constructs instead of silently changing regex dialect.
     if "(?" in value or "&&" in value or re.search(r"\[[^\]]*\[|\\[A-Za-z0-9]", value) or len(value) > 2048:
@@ -293,7 +312,7 @@ def _matcher(field: str, value, operator: str) -> str:
     return f"!{expression}" if operator == "NO_MATCH" else expression
 
 
-def _condition(condition: dict, *, source_timezone: str | None = None) -> str:
+def _condition(condition: dict, *, source_timezone: str | None = None, source_version: str | None = None, version_expression: str | None = None) -> str:
     subject, operator, value = condition.get("subject"), condition.get("operator"), condition.get("value")
     if subject == "SEVERITY" and operator in {"IS", "IS_NOT"}:
         if value not in {"CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO", "UNASSIGNED"}:
@@ -305,22 +324,33 @@ def _condition(condition: dict, *, source_timezone: str | None = None) -> str:
         if operator == "IS_NOT":
             comparator = f"!({comparator})"
         return f"component.vulnerabilities.exists(v, has(v.severity) && ({comparator}))"
-    if subject == "AGE":
-        operators = {"NUMERIC_GREATER_THAN": ">", "NUMERIC_GREATER_THAN_OR_EQUAL": ">=", "NUMERIC_EQUAL": "==", "NUMERIC_NOT_EQUAL": "!=", "NUMERIC_LESSER_THAN_OR_EQUAL": "<=", "NUMERIC_LESS_THAN": "<"}
-        period = re.fullmatch(r"P([0-9]+)D", str(value))
-        if source_timezone != "UTC" or period is None or operator not in operators or not (0 < int(period[1]) <= 2147483647):
-            raise MigrationError("AGE는 원본 timeZone=UTC 명시 및 양수 PnD 기간만 동등 변환합니다. 다른 시간대·개월·년은 자동 변환하지 않습니다")
-        # Source reads RepositoryMetaComponent.published (latest publication),
-        # not the currently installed version's publication timestamp.
-        timestamp_value = "int(timestamp(component.packageMetadata.latestPublishedAt))"
-        published_day = f"(({timestamp_value} >= 0) ? ({timestamp_value} / 86400) : (({timestamp_value} - 86399) / 86400))"
-        return f"(has(component.packageMetadata.latestPublishedAt) && ((int(now) / 86400 - {published_day}) {operators[operator]} {int(period[1])}))"
+    if subject == "CWE" and operator in {"CONTAINS_ANY", "CONTAINS_ALL"}:
+        ids = []
+        for entry in str(value).split(","):
+            match = re.fullmatch(r"(?:CWE-)?([0-9]+)", entry.strip(), re.IGNORECASE)
+            if match:
+                ids.append(int(match[1]))
+        if not ids:
+            raise MigrationError("CWE 조건에 유효한 CWE 번호가 없습니다")
+        values = _literal(sorted(set(ids)))
+        predicate = f"{values}.{'exists' if operator == 'CONTAINS_ANY' else 'all'}(cwe, cwe in v.cwes)"
+        return f"component.vulnerabilities.exists(v, has(v.cwes) && ({predicate}))"
+    if subject == "EPSS" and operator in {"NUMERIC_GREATER_THAN", "NUMERIC_GREATER_THAN_OR_EQUAL", "NUMERIC_EQUAL", "NUMERIC_NOT_EQUAL", "NUMERIC_LESSER_THAN_OR_EQUAL", "NUMERIC_LESS_THAN"}:
+        from math import isfinite
+        try:
+            number = float(value)
+        except (ValueError, TypeError) as exc:
+            raise MigrationError("EPSS 점수가 올바르지 않습니다") from exc
+        if not isfinite(number) or not 0 <= number <= 1:
+            raise MigrationError("EPSS 점수는 0~1 범위여야 합니다")
+        from .legacy_policy import NUMERIC
+        return f"component.vulnerabilities.exists(v, has(v.epssScore) && v.epssScore {NUMERIC[operator]} {repr(number)})"
     if subject == "VULNERABILITY_ID" and operator in {"IS", "IS_NOT"} and isinstance(value, str) and value:
         comparison = f"v.id {'==' if operator == 'IS' else '!='} {_literal(value)}"
         return f"component.vulnerabilities.exists(v, has(v.id) && ({comparison}))"
     if subject in {"PACKAGE_URL", "CPE", "SWID_TAGID"}:
         field = {"PACKAGE_URL": "component.purl", "CPE": "component.cpe", "SWID_TAGID": "component.swidTagId"}[subject]
-        return _matcher(field, value, operator)
+        return _matcher(field, value, operator, source_version=source_version)
     if subject == "COORDINATES":
         try:
             coordinates = json.loads(value)
@@ -331,14 +361,20 @@ def _condition(condition: dict, *, source_timezone: str | None = None) -> str:
         parts = []
         for key in ("group", "name", "version"):
             expected = coordinates.get(key)
+            if key == "version" and version_expression is not None:
+                parts.append(version_expression)
+                continue
             if expected is None:
-                parts.append(f"(!has(component.{key}) || component.{key}.matches('^[\\\\x00-\\\\x20]*$'))" if key != "version" else f"!has(component.{key})")
+                if key != "version" and str(source_version or "").startswith("5."):
+                    parts.append("true")
+                else:
+                    parts.append(f"(!has(component.{key}) || component.{key}.matches('^[\\\\x00-\\\\x20]*$'))" if key != "version" else f"!has(component.{key})")
             else:
                 if key == "version" and re.match(r"^[<>=!]", expected):
                     raise MigrationError("패키지별 Java ComponentVersion 비교는 자동 변환하지 않습니다")
                 part = _matcher(f"component.{key}", expected, "MATCHES")
                 # Source group/name matcher treats present blank text as match.
-                parts.append(f"({part} || (has(component.{key}) && component.{key}.matches('^[\\x00-\\x20]*$')))" if key != "version" else part)
+                parts.append(f"({part} || (has(component.{key}) && component.{key}.matches('^[\\x00-\\x20]*$')))" if key != "version" and not str(source_version or "").startswith("5.") else part)
         if operator not in {"MATCHES", "NO_MATCH"}:
             raise MigrationError("좌표 연산자를 지원하지 않습니다")
         expression = "(" + " && ".join(parts) + ")"
@@ -368,9 +404,8 @@ def _source_scope(policy: dict, projects: list[dict]) -> list[str] | None:
     if not assigned and not tags and not only_latest:
         return None
     by_id = {item["project"]["uuid"]: item["project"] for item in projects}
-    missing = assigned - by_id.keys()
-    if missing:
-        raise MigrationError("정책 범위 프로젝트가 번들에 누락되어 있습니다")
+    # Missing assigned projects remain dynamic source-scoped targets; partial
+    # exports need not include every project referenced by a global policy.
     result = set()
     for project_id, project in by_id.items():
         project_tags = {value.get("name") if isinstance(value, dict) else value for value in project.get("tags") or []}
@@ -390,50 +425,116 @@ def _source_scope(policy: dict, projects: list[dict]) -> list[str] | None:
     return sorted(result)
 
 
-def _license_values(policy: dict, bundle: dict) -> list[str] | None:
-    conditions = policy.get("policyConditions") or []
-    if not any(value.get("subject") in {"LICENSE", "LICENSE_GROUP"} for value in conditions):
-        return None
-    if len(conditions) != 1:
-        raise MigrationError("SPDX 라이선스와 다른 조건을 조합한 정책은 동등 변환 검증이 필요합니다")
-    condition = conditions[0]
-    if condition.get("operator") != "IS":
-        raise MigrationError("허용 라이선스(IS_NOT) 및 unresolved 조건은 자동 변환하지 않습니다")
-    licenses = {str(item.get("uuid")): item.get("licenseId") for item in bundle.get("licenses") or []}
-    if condition["subject"] == "LICENSE":
-        identifier = licenses.get(str(condition.get("value")))
-        if not identifier:
-            raise MigrationError("정책의 SPDX 라이선스 UUID를 해석할 수 없습니다")
-        return [identifier]
-    group = next((value for value in bundle.get("licenseGroups") or [] if str(value.get("uuid")) == str(condition.get("value"))), None)
-    if group is None:
-        raise MigrationError("라이선스 그룹이 번들에 없습니다")
-    values = []
-    for item in group.get("licenses") or []:
-        identifier = item.get("licenseId") if isinstance(item, dict) else licenses.get(str(item))
-        if not identifier:
-            raise MigrationError("그룹의 SPDX 라이선스를 해석할 수 없습니다")
-        values.append(identifier)
-    if not values:
-        raise MigrationError("빈 라이선스 그룹은 자동 변환하지 않습니다")
-    return sorted(set(values))
+def _license_entries(condition: dict, bundle: dict) -> list[dict]:
+    if condition.get("value") == "unresolved" and condition.get("subject") == "LICENSE":
+        return []
+    registry = {str(item.get("uuid")): item for item in bundle.get("licenses") or []}
+    if condition.get("subject") == "LICENSE":
+        entries = [registry.get(str(condition.get("value")))]
+    else:
+        group = next((item for item in bundle.get("licenseGroups") or [] if str(item.get("uuid")) == str(condition.get("value"))), None)
+        if group is None:
+            raise MigrationError("라이선스 그룹이 번들에 없습니다")
+        entries = [registry.get(str(item.get("uuid")), item) if isinstance(item, dict) else registry.get(str(item)) for item in group.get("licenses") or []]
+    if any(not isinstance(item, dict) or not (item.get("licenseId") or item.get("name")) for item in entries):
+        raise MigrationError("원본 정책의 라이선스 정의를 해석할 수 없습니다")
+    return [{"id": str(item.get("licenseId") or ""), "name": str(item.get("name") or "")} for item in entries]
+
+
+def _converted_conditions(conditions: list[dict], bundle: dict) -> tuple[list[str], list[dict]]:
+    pieces, specs = [], []
+    source = bundle.get("source") or {}
+    version = str(source.get("version") or "")
+    if not re.match(r"^[45]\.", version) and any(condition.get("subject") in {"AGE", "VERSION_DISTANCE", "VERSION", "LICENSE", "LICENSE_GROUP", "COORDINATES", "PACKAGE_URL", "CPE", "SWID_TAGID"} for condition in conditions):
+        raise MigrationError("버전별 정책 의미가 필요한 조건입니다. 원본 source.version(4.x 또는 5.x)을 확인해야 합니다")
+    for condition in conditions:
+        if condition.get("subject") in {"AGE", "VERSION_DISTANCE", "VERSION", "LICENSE", "LICENSE_GROUP"}:
+            spec = condition_spec(condition, licenses=_license_entries(condition, bundle) if condition.get("subject") in {"LICENSE", "LICENSE_GROUP"} else None, source_version=source.get("version"), source_timezone=source.get("timeZone"))
+            if not any(item["id"] == spec["id"] for item in specs):
+                specs.append(spec)
+            pieces.append(f"component.legacyConditions[{_literal(spec['id'])}]")
+        elif condition.get("subject") == "COORDINATES":
+            try:coordinates=json.loads(condition.get("value"))
+            except (ValueError,TypeError) as exc:raise MigrationError("좌표 조건 JSON이 올바르지 않습니다") from exc
+            expression=None
+            if isinstance(coordinates,dict) and coordinates.get("version") is not None:
+                version=str(coordinates["version"])
+                match=re.match(r"^(>=|<=|==|!=|>|<)\s*(.*)$",version)
+                operators={">":"NUMERIC_GREATER_THAN",">=":"NUMERIC_GREATER_THAN_OR_EQUAL","==":"NUMERIC_EQUAL","!=":"NUMERIC_NOT_EQUAL","<=":"NUMERIC_LESSER_THAN_OR_EQUAL","<":"NUMERIC_LESS_THAN"}
+                spec=condition_spec({"subject":"VERSION","operator":operators[match[1]] if match else "NUMERIC_EQUAL","value":match[2] if match else version},source_version=source.get("version"))
+                if not any(item["id"]==spec["id"] for item in specs):specs.append(spec)
+                expression=f"component.legacyConditions[{_literal(spec['id'])}]"
+            pieces.append(_condition(condition,source_timezone=source.get("timeZone"),source_version=source.get("version"),version_expression=expression))
+        else:
+            pieces.append(_condition(condition, source_timezone=source.get("timeZone"), source_version=source.get("version")))
+    return pieces, specs
+
+
+def _direct_dependency(source_item: dict, component: dict, source_component: dict) -> bool | None:
+    direct = source_item["project"].get("directDependencies")
+    if isinstance(direct, str):
+        try: direct = json.loads(direct)
+        except ValueError: direct = None
+    if isinstance(direct, list):
+        return any((value.get("uuid") if isinstance(value, dict) else value) == source_component.get("uuid") for value in direct)
+    bom = source_item.get("bom") or {}
+    root_ref = ((bom.get("metadata") or {}).get("component") or {}).get("bom-ref")
+    root = next((entry for entry in bom.get("dependencies") or [] if entry.get("ref") == root_ref), None)
+    if root is not None:
+        return component.get("bom-ref") in (root.get("dependsOn") or [])
+    return None
+
+
+def _inventory_hash(item: dict) -> str:
+    bom=copy.deepcopy(item.get("bom") or {})
+    # The source generates a new serial, timestamp and exporter tool record for
+    # each export. Those are retained in its bundle, not inventory identity.
+    bom.pop("serialNumber",None)
+    metadata=bom.get("metadata")
+    if isinstance(metadata,dict):
+        metadata.pop("timestamp",None)
+        metadata.pop("tools",None)
+    def order(node):
+        if not isinstance(node,dict):return
+        for key in ("components","dependencies"):
+            if isinstance(node.get(key),list):
+                for value in node[key]:order(value)
+                node[key]=sorted(node[key],key=digest)
+        if isinstance(node.get("dependsOn"),list):node["dependsOn"]=sorted(node["dependsOn"])
+    order(bom)
+    annotations=[]
+    for value in item.get("components") or []:
+        resolved=value.get("resolvedLicense") or {}
+        annotations.append({"uuid":value.get("uuid"),"purl":value.get("purl"),"name":value.get("name"),"version":value.get("version"),
+                            **{key:value[key] for key in ("isInternal","swidTagId","licenseExpression","license") if key in value},
+                            **({"resolvedLicense":{key:resolved[key] for key in ("licenseId","name") if key in resolved}} if value.get("resolvedLicense") else {})})
+    return digest({"bom":bom,"annotations":sorted(annotations,key=digest)})
 
 
 def _plan_runs(db: Session, bundle: dict) -> dict:
     source_id = bundle["source"]["id"]
     plan = {}
+    old_inventories = {}
     for item in bundle["projects"]:
         project_id = _uuid(item["project"]["uuid"])
         previous = db.get(LegacyObjectMap, (source_id, "project", project_id))
         existing = db.get(SbomRun, previous.target_id) if previous else db.scalar(select(SbomRun).where(SbomRun.dtrack_project_uuid == project_id).limit(1))
-        bom_hash = digest({"bom": item.get("bom"), "components": item.get("components", [])})
+        bom_hash = _inventory_hash(item)
+        previous_hash = previous.provenance.get("bomHash") if previous else None
+        if previous and previous.provenance.get("bomHashBasis") != "canonical_inventory_v2":
+            migration_id=previous.provenance.get("migrationId")
+            if migration_id and migration_id not in old_inventories:
+                old_batch=db.get(LegacyMigration,migration_id)
+                old_inventories[migration_id]={entry["project"]["uuid"]:_inventory_hash(entry) for entry in old_batch.bundle["projects"]} if old_batch else {}
+            previous_hash=old_inventories.get(migration_id,{}).get(project_id,previous_hash)
         # The same exported source BOM reuses its run. Changed source BOMs get
         # another immutable round rather than overwriting original evidence.
-        if existing and (not previous or previous.provenance.get("bomHash") == bom_hash):
+        source_version = str(item["project"].get("version") or "unversioned")
+        if existing and existing.release.version == source_version and (not previous or previous_hash == bom_hash):
             run_id = existing.id
         else:
-            run_id = _id(source_id, "run", project_id + ":" + bom_hash)
-        plan[project_id] = {"runId": run_id, "serviceId": existing.release.service_id if existing else _id(source_id, "service", project_id), "environmentId": existing.release.environment_id if existing else _id(source_id, "environment", "legacy"), "bomHash": bom_hash}
+            run_id = _id(source_id, "run", project_id + ":" + source_version + ":" + bom_hash)
+        plan[project_id] = {"runId": run_id, "serviceId": existing.release.service_id if existing else _id(source_id, "service", project_id), "environmentId": existing.release.environment_id if existing else _id(source_id, "environment", "legacy"), "bomHash": bom_hash, "bomHashBasis": "canonical_inventory_v2"}
     return plan
 
 
@@ -526,6 +627,9 @@ def make_report(db: Session, bundle: dict) -> dict:
                 blockers.append({"projectUuid": project.get("uuid"), "reason": "원본 finding이 내보낸 SBOM의 구성요소와 일치하지 않습니다. 변경 중인 원본을 다시 내보내세요"})
     if len(source_ids) != len(set(source_ids)):
         raise MigrationError("원본 프로젝트 UUID가 중복되었습니다")
+    snapshot_complete = (bundle.get("source") or {}).get("projectSnapshotComplete")
+    if snapshot_complete is not None and not isinstance(snapshot_complete, bool):
+        raise MigrationError("projectSnapshotComplete는 boolean이어야 합니다")
     plan = _plan_runs(db, bundle)
     for policy in bundle["policies"]:
         policy_id = _uuid(policy.get("uuid"))
@@ -541,31 +645,18 @@ def make_report(db: Session, bundle: dict) -> dict:
                 raise MigrationError("빈 정책 조건은 자동 변환하지 않습니다")
             scoped = _source_scope(policy, bundle["projects"])
             if scoped == []:
-                warnings.append({"policyUuid": policy_id, "reason": "선택한 원본 범위에 적용 대상이 없어 비활성 정책으로 보존합니다"})
-            rule = {"id": "legacy-" + _id(source_id, "policy", policy_id), "name": str(policy.get("name") or policy_id)[:255], "action": action, "enabled": scoped != []}
-            if scoped is not None:
-                rule["runIds"] = [plan[value]["runId"] for value in scoped]
-            license_values = _license_values(policy, bundle)
-            if license_values is not None:
-                for source_project in bundle["projects"]:
-                    if scoped is not None and source_project["project"]["uuid"] not in scoped:
-                        continue
-                    for component in (source_project.get("bom") or {}).get("components") or []:
-                        for license_value in component.get("licenses") or []:
-                            expression = license_value if isinstance(license_value, str) else str(license_value.get("expression") or (license_value.get("license") or {}).get("id") or "")
-                            if re.search(r"\bWITH\b|\+", expression):
-                                raise MigrationError("원본 SPDX WITH·PLUS 선택 의미는 기본 라이선스 규칙과 달라 동등 변환을 차단합니다")
-                rule.update({"kind": "license_denied", "values": license_values})
-            else:
-                pieces = [_condition(value, source_timezone=(bundle.get("source") or {}).get("timeZone")) for value in conditions]
-                rule.update({"kind": "cel", "target": "component", "expression": "(" + (" && " if operator == "ALL" else " || ").join(f"({part})" for part in pieces) + ")"})
+                warnings.append({"policyUuid": policy_id, "reason": "현재 일치하는 프로젝트는 없으며 향후 프로젝트·태그 변경 시 동적 범위를 다시 평가합니다"})
+            rule = {"id": "legacy-" + _id(source_id, "policy", policy_id), "name": str(policy.get("name") or policy_id)[:255], "action": action, "enabled": True}
+            rule["projectScope"] = {"sourceId": source_id, "projectIds": sorted({_uuid(value.get("uuid") if isinstance(value, dict) else value) for value in policy.get("projects") or []}), "tags": sorted({str(value.get("name") if isinstance(value, dict) else value) for value in policy.get("tags") or []}), "includeChildren": policy.get("includeChildren") is True, "onlyLatest": policy.get("onlyLatestProjectVersion") is True}
+            pieces, specs = _converted_conditions(conditions, bundle)
+            rule.update({"kind": "cel", "target": "component", "expression": "(" + (" && " if operator == "ALL" else " || ").join(f"({part})" for part in pieces) + ")"})
+            if specs:
+                rule["legacyConditions"] = specs
             validated = PolicyDocument(rules=[rule])
             validate_policy_expressions(validated)
             if any(value.get("subject") == "AGE" for value in conditions):
-                warnings.append({"policyUuid": policy_id, "reason": "AGE는 원본 UTC 달력 날짜와 repository 최신 버전 공개일 기준으로 변환했습니다. 사용 중인 버전 나이 또는 경과 24시간으로 대체하지 않습니다"})
+                warnings.append({"policyUuid": policy_id, "reason": "AGE는 원본 버전에 따른 공개 시각·UTC/명시한 IANA 시간대와 달력 기간 기준으로 평가합니다. 파일 수정 시각을 최초 공개일로 대체하지 않습니다"})
             converted.append({"sourcePolicyUuid": policy_id, "rule": validated.rules[0].model_dump(mode="json"), "original": copy.deepcopy(policy)})
-            if policy.get("tags") or policy.get("includeChildren") or policy.get("onlyLatestProjectVersion"):
-                warnings.append({"policyUuid": policy_id, "reason": "태그·부모 범위를 번들 시점의 회차 ID 집합으로 확장했습니다. 향후 새 원본 프로젝트는 새 이관이 필요합니다"})
         except (ValueError, KeyError, TypeError) as exc:
             blockers.append({"policyUuid": policy_id, "reason": str(exc)[:2000], "original": copy.deepcopy(policy)})
     current_policy = get_policy_document(db)
@@ -629,14 +720,35 @@ def _finding(raw: dict) -> dict:
     score = next((vulnerability[key] for key in ("cvssV4BaseScore", "cvssV3BaseScore", "cvssV2Score") if isinstance(vulnerability.get(key), (int, float))), None)
     if score is not None:
         finding["cvssScore"] = score
+    from .vulnerability_intelligence import extract_cwes
+    finding["cwes"] = extract_cwes(vulnerability)
+    finding["cweStatus"] = "available" if finding["cwes"] else "missing"
+    epss = vulnerability.get("epss") if isinstance(vulnerability.get("epss"), dict) else {}
+    for target, candidates in (("epssScore", (vulnerability.get("epssScore"), epss.get("score"))), ("epssPercentile", (vulnerability.get("epssPercentile"), epss.get("percentile")))):
+        for value in candidates:
+            try: number = float(value)
+            except (TypeError, ValueError, OverflowError): continue
+            if 0 <= number <= 1:
+                finding[target] = number
+                break
+    if "epssScore" in finding:
+        finding["epssStatus"] = "source_evidence"
+        finding["epssDate"] = epss.get("date") or vulnerability.get("epssDate")
     return finding
 
 
 def _analysis_content(source_item: dict) -> dict:
     # FPF meta includes the export timestamp; it is audit provenance rather than
     # a new analysis. Stable content makes repeat exports idempotent.
-    return {"findings": sorted((source_item["findings"].get("findings") or []), key=digest),
-            **{key: sorted(source_item[key], key=digest) for key in ("analyses", "violations", "violationAnalyses")}}
+    def clean(value):
+        if isinstance(value,list):return [clean(item) for item in value]
+        if not isinstance(value,dict):return value
+        result={key:clean(item) for key,item in value.items()}
+        if isinstance(result.get("component"),dict):
+            result["component"]={key:item for key,item in result["component"].items() if key not in {"metrics","repositoryMeta","lastInheritedRiskScore","project"}}
+        return result
+    return {"findings": sorted(clean(source_item["findings"].get("findings") or []), key=digest),
+            **{key: sorted(clean(source_item[key]), key=digest) for key in ("analyses", "violations", "violationAnalyses")}}
 
 
 def _reviews(db: Session, batch: LegacyMigration, source_item: dict, run: SbomRun, actor: str, actor_id: str, trusted: bool) -> int:
@@ -724,6 +836,7 @@ def apply_migration(db: Session, migration_id: str, *, expected_digest: str, exp
                 db.flush()
             else:
                 policy = current
+            upsert_source_projects(db, bundle, report["projectPlan"])
             imported_runs, imported_revisions, imported_reviews, queued = [], 0, 0, 0
             for source_item in bundle["projects"]:
                 project = source_item["project"]
@@ -757,6 +870,10 @@ def apply_migration(db: Session, migration_id: str, *, expected_digest: str, exp
                             component["isInternal"] = source_component["isInternal"] is True
                         if source_component.get("swidTagId"):
                             component["swid"] = {"tagId": source_component["swidTagId"]}
+                        resolved = source_component.get("resolvedLicense") or {}
+                        if any(key in source_component for key in ("resolvedLicense", "licenseExpression", "license")):
+                            component["legacyLicense"] = {"hasResolved": bool(source_component.get("resolvedLicense")), "resolvedId": resolved.get("licenseId") or "", "resolvedName": resolved.get("name") or "", "licenseExpression": source_component.get("licenseExpression") or "", "licenseName": source_component.get("license") or ""}
+                        component["isDirectDependency"] = _direct_dependency(source_item, component, source_component)
                     checksum = hashlib.sha256(raw).hexdigest()
                     path = root / (plan["runId"] + ".json")
                     if path.exists():
@@ -791,8 +908,12 @@ def apply_migration(db: Session, migration_id: str, *, expected_digest: str, exp
                     run.analysis_state, run.state = JobState.COMPLETED, ProcessingState.COMPLETED
                     _map(db, source_id, "analysis", project_id, revision.id, _analysis_content(source_item), {"runId": run.id, "migrationId": batch.id})
                     imported_revisions += 1
-                _map(db, source_id, "project", project_id, run.id, source_item["project"], {"bomHash": plan["bomHash"], "migrationId": batch.id, "sourceProject": project})
+                _map(db, source_id, "project", project_id, run.id, source_item["project"], {"bomHash": plan["bomHash"], "bomHashBasis": "canonical_inventory_v2", "migrationId": batch.id, "sourceProject": project})
                 imported_runs.append(run.id)
+            incoming_policy_ids = {value["sourcePolicyUuid"] for value in report["convertedPolicies"]}
+            for previous_policy in db.scalars(select(LegacyObjectMap).where(LegacyObjectMap.source_id == source_id, LegacyObjectMap.object_type == "policy")):
+                if previous_policy.object_id not in incoming_policy_ids:
+                    previous_policy.provenance = {**previous_policy.provenance, "retired": True, "retiredAt": previous_policy.provenance.get("retiredAt") or now().isoformat(), "retiredRule": previous_policy.provenance.get("retiredRule") or previous_policy.provenance.get("rule"), "rule": None, "migrationId": batch.id}
             for value in report["convertedPolicies"]:
                 _map(db, source_id, "policy", value["sourcePolicyUuid"], value["rule"]["id"], value["original"], {"migrationId": batch.id, "rule": value["rule"]})
             if trust_source_reviews:

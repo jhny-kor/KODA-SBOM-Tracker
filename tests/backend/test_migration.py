@@ -16,8 +16,16 @@ from koda_tracker import migration, package_metadata_models
 from koda_tracker.migration import LegacyExporter, MigrationError, apply_migration, make_report, stage_bundle, validate_source_url
 from koda_tracker.migration_models import LegacyMigration, LegacyObjectMap
 from koda_tracker.models import AnalysisRevision, JobState, SbomRun, SbomPolicyRevision, Service
-from koda_tracker.policies import PolicyDocument, evaluate_document, get_policy_document
+from koda_tracker.policies import PolicyDocument, evaluate_document as evaluate_native_document, get_policy_document
 from koda_tracker.workflow_models import FindingReview, ReviewEvent
+
+
+def evaluate_document(document, components, findings, **kwargs):
+    # Imported rules apply to their native source catalog, including global rules.
+    # Supply a real source scope to isolate condition semantics from scope tests.
+    context = kwargs.pop("project_context", {})
+    context.setdefault("sourceProject", {"sourceId": "source-a", "projectId": uid("project"), "tags": ["prod"], "isLatest": True, "active": True, "ancestorIds": []})
+    return evaluate_native_document(document, components, findings, project_context=context, **kwargs)
 
 
 def uid(label):
@@ -42,7 +50,7 @@ def policy(subject="SEVERITY", operator="IS", value="HIGH", **kwargs):
 def bundle(policies=None, suppressed=False, analysis_state="NOT_AFFECTED"):
     component = {"uuid": uid("component"), "name": "sample", "version": "1", "purl": "pkg:pypi/sample@1"}
     vulnerability = {"uuid": uid("vulnerability"), "vulnId": "CVE-2026-12345", "severity": "HIGH", "source": "NVD", "cvssV3BaseScore": 8.1}
-    return {"format": migration.FORMAT, "version": 1, "source": {"id": "source-a", "origin": "http://source.test", "exportedAt": "2026-10-18T00:00:00Z"}, "projects": [{"project": {"uuid": uid("project"), "name": "Original", "version": "1", "tags": [{"name": "prod"}], "isLatest": True}, "bom": {"bomFormat": "CycloneDX", "specVersion": "1.6", "version": 1, "components": [{"type": "library", "bom-ref": component["uuid"], "name": "sample", "version": "1", "purl": component["purl"], "licenses": [{"license": {"id": "MIT"}}]}]}, "components": [component], "findings": {"version": "1.2", "findings": [{"component": component, "vulnerability": vulnerability, "analysis": {"state": analysis_state, "isSuppressed": suppressed}}]}, "analyses": [{"componentUuid": component["uuid"], "vulnerabilityUuid": vulnerability["uuid"], "analysis": {"analysisState": analysis_state, "isSuppressed": suppressed, "analysisDetails": "Source analyst note", "analysisComments": [{"comment": "audit history"}]}}], "violations": [], "violationAnalyses": []}], "policies": policies if policies is not None else [policy()], "licenses": [], "licenseGroups": []}
+    return {"format": migration.FORMAT, "version": 1, "source": {"version": "5.0.3", "id": "source-a", "origin": "http://source.test", "exportedAt": "2026-10-18T00:00:00Z"}, "projects": [{"project": {"uuid": uid("project"), "name": "Original", "version": "1", "tags": [{"name": "prod"}], "isLatest": True}, "bom": {"bomFormat": "CycloneDX", "specVersion": "1.6", "version": 1, "components": [{"type": "library", "bom-ref": component["uuid"], "name": "sample", "version": "1", "purl": component["purl"], "licenses": [{"license": {"id": "MIT"}}]}]}, "components": [component], "findings": {"version": "1.2", "findings": [{"component": component, "vulnerability": vulnerability, "analysis": {"state": analysis_state, "isSuppressed": suppressed}}]}, "analyses": [{"componentUuid": component["uuid"], "vulnerabilityUuid": vulnerability["uuid"], "analysis": {"analysisState": analysis_state, "isSuppressed": suppressed, "analysisDetails": "Source analyst note", "analysisComments": [{"comment": "audit history"}]}}], "violations": [], "violationAnalyses": []}], "policies": policies if policies is not None else [policy()], "licenses": [], "licenseGroups": []}
 
 
 def apply(db, staged, tmp_path, **kwargs):
@@ -156,7 +164,7 @@ def test_operational_java_wildcard_conversion_uses_real_cel(db, operator, expect
     assert bool(rows) is expected
 
 
-def test_project_tag_child_and_latest_scopes_become_exact_run_ids(db):
+def test_project_tag_child_and_latest_scopes_are_dynamic_source_catalog_filters(db):
     raw = bundle([policy(tags=[{"name": "prod"}], onlyLatestProjectVersion=True)])
     first = raw["projects"][0]
     child = copy.deepcopy(first)
@@ -165,10 +173,14 @@ def test_project_tag_child_and_latest_scopes_become_exact_run_ids(db):
     report = make_report(db, raw)
     assert report["canApply"]
     rule = report["convertedPolicies"][0]["rule"]
-    assert rule["runIds"] == [report["projectPlan"][uid("project")]["runId"]]
+    assert rule["runIds"] == []
+    assert rule["projectScope"] == {"sourceId":"source-a","projectIds":[],"tags":["prod"],"includeChildren":False,"onlyLatest":True}
     raw["policies"][0].update({"tags": [], "projects": [{"uuid": uid("project")}], "includeChildren": True, "onlyLatestProjectVersion": False})
     report = make_report(db, raw)
-    assert len(report["convertedPolicies"][0]["rule"]["runIds"]) == 2
+    scope=report["convertedPolicies"][0]["rule"]["projectScope"]
+    assert scope["includeChildren"] and scope["projectIds"] == [uid("project")]
+    from koda_tracker.project_catalog import project_scope_matches
+    assert project_scope_matches(scope,{"sourceId":"source-a","projectId":uid("future-child"),"ancestorIds":[uid("project")],"active":True})
 
 
 def test_license_group_is_converted_without_flattening_spdx_choices(db):
@@ -181,13 +193,20 @@ def test_license_group_is_converted_without_flattening_spdx_choices(db):
         assert bool(evaluate_document(doc, [{"name": "x", "licenses": [{"expression": expression}]}], [])[0]) is violation
 
 
-def test_unsupported_mixed_license_regex_and_special_versions_are_reported(db):
-    values = [policy("PACKAGE_URL", "MATCHES", "(?<=pkg:)pypi"), policy("VERSION", "NUMERIC_GREATER_THAN", "2"), policy("AGE", "NUMERIC_GREATER_THAN", "P1M")]
-    for value in values:
-        assert not make_report(db, bundle([value]))["canApply"]
-    raw = bundle([policy("LICENSE", "IS", uid("license"))])
-    raw["policies"][0]["policyConditions"].append({"subject": "SEVERITY", "operator": "IS", "value": "HIGH"})
-    assert "SPDX" in make_report(db, raw)["blockers"][0]["reason"]
+def test_mixed_license_and_security_conditions_preserve_source_all_semantics(db):
+    raw=bundle([policy("LICENSE", "IS", uid("license"))])
+    raw["licenses"]=[{"uuid":uid("license"),"licenseId":"MIT","name":"MIT License"}]
+    raw["policies"][0]["operator"]="ALL"
+    raw["policies"][0]["policyConditions"].append({"subject":"SEVERITY","operator":"IS","value":"HIGH"})
+    report=make_report(db,raw)
+    assert report["canApply"],report["blockers"]
+    doc=PolicyDocument(rules=[report["convertedPolicies"][0]["rule"]])
+    component=raw["projects"][0]["bom"]["components"][0]
+    assert not evaluate_document(doc,[component],[])[0]
+    assert evaluate_document(doc,[component],[{"id":"CVE-2026-12345","component":component["purl"],"version":"1","severity":"HIGH"}])[0]
+    # Raw source5 regex is kept intact instead of applying the legacy wildcard rewrite.
+    regex = make_report(db,bundle([policy("PACKAGE_URL","MATCHES",r"^pkg:pypi/[a-z]+@[0-9]+$")]))
+    assert regex["canApply"] and "[a-z]+" in regex["convertedPolicies"][0]["rule"]["expression"]
 
 
 def test_stale_policy_digest_and_partial_bundle_never_apply(db, tmp_path):
@@ -318,7 +337,7 @@ def test_pinned_transport_connects_validated_address_without_resolving_again(mon
 def test_age_utc_calendar_uses_latest_publication_not_elapsed_hours_or_installed_version(db, operator, expected):
     from datetime import UTC, datetime
     raw = bundle([policy("AGE", operator, "P1D")])
-    raw["source"]["timeZone"] = "UTC"
+    raw["source"].update(version="4.12.7",timeZone="UTC")
     report = make_report(db, raw)
     assert report["canApply"]
     rule = report["convertedPolicies"][0]["rule"]
@@ -328,19 +347,19 @@ def test_age_utc_calendar_uses_latest_publication_not_elapsed_hours_or_installed
     rows, metrics = evaluate_document(PolicyDocument(rules=[rule]), [component], [], evaluated_at=datetime(2026, 10, 18, 0, 0, 1, tzinfo=UTC))
     assert bool(rows) is expected
     assert metrics["policyDataComplete"]
-    assert any("최신 버전 공개일" in value["reason"] for value in report["warnings"])
+    assert any("달력 기간" in value["reason"] for value in report["warnings"])
 
 
 def test_age_unknown_or_stale_latest_publication_is_explicit_data_warning(db):
     raw = bundle([policy("AGE", "NUMERIC_GREATER_THAN", "P30D")])
-    raw["source"]["timeZone"] = "UTC"
+    raw["source"].update(version="4.12.7",timeZone="UTC")
     report = make_report(db, raw)
     component = copy.deepcopy(raw["projects"][0]["bom"]["components"][0])
     component.update({"metadataStatus": "stale", "packageMetadata": {"status": "stale", "latestPublishedAt": "2020-01-01T00:00:00Z"}})
     rows, metrics = evaluate_document(PolicyDocument(rules=[report["convertedPolicies"][0]["rule"]]), [component], [])
     assert len(rows) == 1 and rows[0]["type"] == "data_unavailable"
     assert not metrics["policyDataComplete"] and metrics["policyStatus"] == "warn"
-    for source_zone, period in [(None, "P30D"), ("Asia/Seoul", "P30D"), ("UTC", "P1M"), ("UTC", "P1Y"), ("UTC", "P0D")]:
+    for source_zone, period in [(None, "P30D"), ("Unknown/Zone", "P30D"), ("UTC", "P0D")]:
         raw["source"]["timeZone"] = source_zone
         raw["policies"][0]["policyConditions"][0]["value"] = period
         assert not make_report(db, raw)["canApply"]
@@ -371,7 +390,10 @@ def test_licenses_with_exception_or_plus_are_never_silently_approximated(db):
     for expression in ("GPL-2.0-only WITH Classpath-exception-2.0", "GPL-2.0+"):
         raw["projects"][0]["bom"]["components"][0]["licenses"] = [{"expression": expression}]
         report = make_report(db, raw)
-        assert not report["canApply"] and "WITH" in report["blockers"][0]["reason"]
+        assert report["canApply"],report["blockers"]
+        doc=PolicyDocument(rules=[report["convertedPolicies"][0]["rule"]])
+        rows,_=evaluate_document(doc,raw["projects"][0]["bom"]["components"],[])
+        assert bool(rows) is (expression == "GPL-2.0+")
 
 
 def test_real_source_unset_violation_analysis_is_optional_empty_200(monkeypatch):
@@ -399,3 +421,74 @@ def test_postgres_review_author_width_and_source_not_set_enums(db, tmp_path):
     assert review.justification == "" and review.response == []
     event = db.scalar(select(ReviewEvent))
     assert "NOT_SET" in event.comment  # Preserve original enums in the audit evidence.
+
+
+def test_source5_regex_preserves_raw_re2_and_rejects_invalid_patterns_during_stage(db):
+    raw=bundle([policy('PACKAGE_URL','MATCHES',r'(?i)^PKG:PYPI/[a-z]+@\d+$')])
+    report=make_report(db,raw)
+    assert report['canApply'],report['blockers']
+    assert evaluate_document(PolicyDocument(rules=[report['convertedPolicies'][0]['rule']]),raw['projects'][0]['bom']['components'],[])[0]
+    for pattern in [r'(?<=pkg:)pypi',r'(pypi)\1','[unclosed']:
+        raw['policies'][0]['policyConditions'][0]['value']=pattern
+        invalid=make_report(db,raw)
+        assert not invalid['canApply'] and invalid['blockers']
+
+
+def test_converted_cwe_all_is_per_vulnerability_and_epss_is_score(db):
+    cwe=policy('CWE','CONTAINS_ALL','CWE-79, 89')
+    epss=policy('EPSS','NUMERIC_GREATER_THAN','0.5',uuid=uid('epss-policy'))
+    raw=bundle([cwe,epss]);report=make_report(db,raw)
+    assert report['canApply'],report['blockers']
+    doc=PolicyDocument(rules=[row['rule'] for row in report['convertedPolicies']])
+    component=raw['projects'][0]['bom']['components'][0]
+    findings=[{'id':'CVE-2026-12345','component':component['purl'],'version':'1','cwes':[79],'cweStatus':'available','epssScore':0.8,'epssPercentile':0.95,'epssStatus':'fresh'}, {'id':'CVE-2026-99999','component':component['purl'],'version':'1','cwes':[89],'cweStatus':'available','epssScore':0.1,'epssStatus':'fresh'}]
+    rows,metrics=evaluate_document(doc,[component],findings)
+    assert len(rows)==1 and rows[0]['policyId']==doc.rules[1].id and metrics['policyDataComplete']
+    findings[0]['cwes']=[79,89]
+    assert len(evaluate_document(doc,[component],findings)[0])==2
+
+
+def test_version_and_coordinate_comparison_import_use_generic_source_comparator(db):
+    raw=bundle([policy('VERSION','NUMERIC_GREATER_THAN','0.9')])
+    report=make_report(db,raw)
+    assert report['canApply'],report['blockers']
+    assert evaluate_document(PolicyDocument(rules=[report['convertedPolicies'][0]['rule']]),raw['projects'][0]['bom']['components'],[])[0]
+    raw['policies']=[policy('COORDINATES','MATCHES',json.dumps({'name':'sample','version':'>= 1'}))]
+    report=make_report(db,raw)
+    assert report['canApply'],report['blockers']
+    assert evaluate_document(PolicyDocument(rules=[report['convertedPolicies'][0]['rule']]),raw['projects'][0]['bom']['components'],[])[0]
+
+
+def test_source5_age_uses_current_artifact_calendar_without_timezone_prompt(db):
+    from datetime import UTC,datetime
+    raw=bundle([policy('AGE','NUMERIC_EQUAL','P1M')]);report=make_report(db,raw)
+    assert report['canApply'],report['blockers']
+    component=raw['projects'][0]['bom']['components'][0]
+    component.update(metadataStatus='fresh',packageMetadata={'currentVersionPublishedAt':'2024-01-31T12:00:00Z','latestPublishedAt':'2024-02-20T12:00:00Z'})
+    rows,metrics=evaluate_document(PolicyDocument(rules=[report['convertedPolicies'][0]['rule']]),[component],[],evaluated_at=datetime(2024,2,29,tzinfo=UTC))
+    assert rows and metrics['policyDataComplete']
+
+
+def test_version_sensitive_import_requires_explicit_source_profile(db):
+    raw=bundle([policy('PACKAGE_URL','MATCHES',r'(?i)^pkg:')]);raw['source'].pop('version')
+    report=make_report(db,raw)
+    assert not report['canApply'] and 'source.version' in report['blockers'][0]['reason']
+    raw['policies']=[policy('SEVERITY','IS','HIGH')]
+    assert make_report(db,raw)['canApply']
+
+
+def test_exporter_timestamps_serials_and_repository_telemetry_do_not_create_rounds(db,tmp_path):
+    raw=bundle();raw['projects'][0]['bom'].update(serialNumber='urn:uuid:'+uid('export1'),metadata={'timestamp':'2026-10-18T00:00:00Z','tools':[{'name':'original exporter'}]})
+    raw['projects'][0]['components'][0].update(metrics={'critical':1},repositoryMeta={'latestVersion':'1','lastCheck':1})
+    first=stage_bundle(db,raw,'admin');apply(db,first,tmp_path);db.commit()
+    changed=copy.deepcopy(raw);changed['projects'][0]['bom'].update(serialNumber='urn:uuid:'+uid('export2'),metadata={'timestamp':'2026-10-19T00:00:00Z','tools':[{'name':'updated exporter'}]})
+    changed['projects'][0]['components'][0].update(metrics={'critical':2},repositoryMeta={'latestVersion':'2','lastCheck':2})
+    second=stage_bundle(db,changed,'admin');apply(db,second,tmp_path);db.commit()
+    assert second.result['runIds']==first.result['runIds']
+    assert db.scalar(select(func.count()).select_from(SbomRun))==1
+    assert db.scalar(select(func.count()).select_from(AnalysisRevision))==1
+    # Policy-relevant source annotations still create immutable inventory rounds.
+    changed['projects'][0]['components'][0]['isInternal']=True
+    third=stage_bundle(db,changed,'admin');apply(db,third,tmp_path)
+    assert third.result['runIds']!=first.result['runIds']
+    assert db.scalar(select(func.count()).select_from(SbomRun))==2
