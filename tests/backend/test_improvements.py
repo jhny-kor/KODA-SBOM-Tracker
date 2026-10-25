@@ -201,7 +201,6 @@ def test_completed_run_delete_requires_admin_and_removes_tracker_data_only(monke
             project_uuid = f"project-{suffix}"
             run.state = ProcessingState.PARTIAL
             shared_run.state = ProcessingState.COMPLETED
-            run.dtrack_project_uuid = project_uuid
             for job in db.scalars(select(Job).where(Job.run_id.in_([run_id, shared_run_id]))):
                 job.state = JobState.COMPLETED
             db.add(
@@ -235,14 +234,9 @@ def test_completed_run_delete_requires_admin_and_removes_tracker_data_only(monke
             assert viewer_login.status_code == 200
             assert viewer_client.delete(f"/api/v1/sbom-runs/{run_id}", headers={"X-CSRF-Token": viewer_login.json()["csrfToken"]}).status_code == 403
 
-        class ForbiddenDependencyTrackClient:
-            def __init__(self, *_args, **_kwargs):
-                raise AssertionError("회차 삭제에서 Dependency-Track 클라이언트를 호출하면 안 됩니다")
-
-        monkeypatch.setattr(main_module, "DependencyTrackClient", ForbiddenDependencyTrackClient)
         deleted = admin.delete(f"/api/v1/sbom-runs/{run_id}", headers=headers)
         assert deleted.status_code == 200
-        assert deleted.json() == {"runId": run_id, "deleted": True, "dependencyTrackProjectUuid": project_uuid, "artifactCleanupPending": False}
+        assert deleted.json() == {"runId": run_id, "deleted": True, "artifactCleanupPending": False}
         assert artifact.exists()
         assert admin.get(f"/api/v1/sbom-runs/{shared_run_id}/artifact").status_code == 200
         assert admin.get(f"/api/v1/sbom-runs/{run_id}").status_code == 404
@@ -289,7 +283,6 @@ def test_cve_projection_counts_dates_and_comparison_stay_consistent() -> None:
                 run = db.get(SbomRun, run_id)
                 run.state = ProcessingState.COMPLETED
                 run.analysis_state = JobState.COMPLETED
-                run.dtrack_state = JobState.COMPLETED
                 for job in db.scalars(select(Job).where(Job.run_id == run_id)):
                     job.state = JobState.COMPLETED
                 db.add(AnalysisRevision(run_id=run_id, sequence=1, state=JobState.COMPLETED, data_as_of=data_as_of, data_sources=sources, findings=findings, policies=[]))
@@ -314,45 +307,6 @@ def test_cve_projection_counts_dates_and_comparison_stay_consistent() -> None:
             assert len(db.scalar(select(AnalysisRevision).where(AnalysisRevision.run_id == run_ids[0])).findings) == 3
 
 
-def test_run_state_changes_all_request_the_same_row_lock(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(main_module.get_settings(), "dependency_track_enabled", True)
-    suffix = uuid.uuid4().hex[:10]
-    with TestClient(app) as client:
-        headers = _admin(client)
-        service_id, environment_id = _catalogs(client, headers, f"lock-{suffix}")
-        uploaded = client.post(
-            "/api/v1/sbom-runs",
-            data={"serviceId": service_id, "environmentId": environment_id, "releaseVersion": f"lock-{suffix}"},
-            files={"sbom": ("lock.cdx.json", _sbom(f"lock-{suffix}"), "application/json")},
-            headers=headers,
-        )
-        run_id = uploaded.json()["runId"]
-
-        def complete_jobs() -> None:
-            with SessionLocal() as db:
-                run = db.get(SbomRun, run_id)
-                run.state = ProcessingState.COMPLETED
-                run.analysis_state = JobState.COMPLETED
-                run.dtrack_state = JobState.COMPLETED
-                for job in db.scalars(select(Job).where(Job.run_id == run_id)):
-                    job.state = JobState.COMPLETED
-                db.commit()
-
-        complete_jobs()
-        original = main_module._load_run
-        lock_requests: list[bool] = []
-
-        def tracking_load(*args, **kwargs):
-            lock_requests.append(kwargs.get("for_update", False))
-            return original(*args, **kwargs)
-
-        monkeypatch.setattr(main_module, "_load_run", tracking_load)
-        assert client.post(f"/api/v1/sbom-runs/{run_id}/analyses", headers=headers).status_code == 202
-        complete_jobs()
-        assert client.post(f"/api/v1/sbom-runs/{run_id}/retry-dependency-track", headers=headers).status_code == 202
-        complete_jobs()
-        assert client.delete(f"/api/v1/sbom-runs/{run_id}", headers=headers).status_code == 200
-        assert lock_requests == [True, True, True]
 
 
 def test_committed_run_delete_reports_pending_artifact_cleanup_instead_of_500(monkeypatch: pytest.MonkeyPatch) -> None:

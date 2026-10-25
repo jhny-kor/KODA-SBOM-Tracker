@@ -17,6 +17,13 @@ load_env() {
     set -a
     source "$EXAMPLE_ENV_FILE"
     set +a
+    candidate="$EXAMPLE_ENV_FILE"
+  fi
+  # Compose resolves bind mounts against its project directory. Preserve the
+  # operator's .env-relative trust-key path even for an external ENV_FILE.
+  if [[ -n "${TRACKER_DATA_UPDATE_VERIFY_KEY_FILE:-}" && "$TRACKER_DATA_UPDATE_VERIFY_KEY_FILE" != /* ]]; then
+    TRACKER_DATA_UPDATE_VERIFY_KEY_FILE="$(cd "$(dirname "$candidate")" && pwd)/$TRACKER_DATA_UPDATE_VERIFY_KEY_FILE"
+    export TRACKER_DATA_UPDATE_VERIFY_KEY_FILE
   fi
 }
 
@@ -171,23 +178,13 @@ except (tarfile.TarError, OSError) as error:
 PY
 }
 
-dependency_track_enabled() {
-  case "${TRACKER_DEPENDENCY_TRACK_ENABLED:-false}" in
-    true|TRUE|1|yes|YES|on|ON) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
 compose() {
-  local profile_args=()
-  dependency_track_enabled && profile_args+=(--profile dependency-track)
-
   if [[ -f "$ENV_FILE" ]]; then
     docker compose --project-directory "$ROOT_DIR" --env-file "$ENV_FILE" \
-      -f "$ROOT_DIR/compose.yaml" ${profile_args[@]+"${profile_args[@]}"} "$@"
+      -f "$ROOT_DIR/compose.yaml" "$@"
   else
     docker compose --project-directory "$ROOT_DIR" --env-file "$EXAMPLE_ENV_FILE" \
-      -f "$ROOT_DIR/compose.yaml" ${profile_args[@]+"${profile_args[@]}"} "$@"
+      -f "$ROOT_DIR/compose.yaml" "$@"
   fi
 }
 
@@ -199,9 +196,6 @@ compose_services_ready() {
   [[ -n "$services" ]] || return 1
   while IFS= read -r service; do
     [[ -n "$service" ]] || continue
-    case "$service" in
-      dtrack-apiserver|dtrack-frontend) dependency_track_enabled || continue ;;
-    esac
     checked=$((checked + 1))
     ids="$(docker compose "$@" ps -a -q "$service" 2>/dev/null)" || return 1
     [[ -n "$ids" ]] || return 1

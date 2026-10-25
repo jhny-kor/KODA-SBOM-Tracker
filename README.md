@@ -1,6 +1,10 @@
 # KODA SBOM Tracker
 
-**폐쇄망에서 운영하는 한국어 SBOM 관리 포털입니다.** 서비스별로 CycloneDX SBOM을
+현재 폐쇄망 구성은 OSV 직접 조회를 제외하고 자체 Grype 분석을 사용합니다.
+[SSVC](docs/ssvc-offline-ko.md), [오프라인 CPE](docs/offline-cpe-ko.md),
+[EPSS 반입·외부 호출 차단](docs/offline-intelligence-ko.md)을 제공합니다.
+
+**폐쇄망에서 운영하는 한국어 SBOM 관리 포털입니다.** 서비스별로 CycloneDX 또는 SPDX SBOM을
 회차 단위로 업로드하면 구성요소와 CVE 취약점, 정책 위반을 분석해 보관하고, 회차 간
 변경점을 비교합니다. 인터넷이 없는 서버에서 Docker Compose 한 벌로 동작하도록
 이미지·취약점 데이터·백업 도구까지 함께 제공합니다.
@@ -9,14 +13,13 @@
 
 ## 무엇을 할 수 있나
 
-- **SBOM 회차 관리** — 서비스·환경·릴리스별로 CycloneDX JSON/XML을 업로드하고 분석 상태를 추적합니다.
+- **SBOM 회차 관리** — 서비스·환경·릴리스별로 CycloneDX 1.4·1.5·1.6·1.7 JSON/XML 또는 [SPDX 2.3 JSON](docs/spdx-import-ko.md)을 업로드하고 분석 상태를 추적합니다.
 - **취약점·정책 분석** — Grype DB로 CVE를 분석하고 KODA가 구성요소·심각도·KEV 지표와 SBOM 정책 위반을 직접 산출합니다. CVSS·KEV·제안 버전과 CVE 기준일을 함께 표시합니다.
 - **Collection 지표** — 부모별 직접 자식·최신 버전·태그·전체 하위 범위를 집계합니다. 중첩 Collection과 미분석·오래된 결과의 커버리지를 구분합니다.
 - **사내 취약점 DB** — 내부 ID·영향 패키지/버전·수정 버전을 등록하고 초안·게시·철회와 변경 이력을 관리합니다. 게시·변경·철회 시 영향 회차를 자동 재분석하며 Grype 결과와 함께 정책·VEX에 적용합니다.
 - **고급 정책·검토** — 서비스·환경·릴리스와 동적 계층·태그·최신 버전 범위, CWE·EPSS·달력 AGE·단위별 버전 거리·SPDX를 포함한 표준 CEL 조건, 독립 승인형 VEX와 검토 이력, CycloneDX VEX 가져오기/내보내기를 제공합니다.
 - **자동 재분석·알림** — 전체 보관 전 SBOM을 기본 매일 재분석하고 데이터 번들 변경 시 후속 분석을 접수합니다. 결과 변경 보관함과 선택적 서명 Webhook·전송 재시도를 제공합니다. [운영 설정](docs/operations-ko.md#고급-정책vex자동-재분석)을 참조하세요.
 - **회차 비교** — 두 회차를 골라 구성요소·취약점·정책 위반 변경점을 탭으로 확인합니다.
-- **기존 자료 이관** — 원본 API·번들에서 SBOM·분석·검토·정책을 읽어 변환 검사 후 원자적으로 적용합니다. 원본 변경의 주기 동기화·재시도와 자체 프로젝트 편집도 제공합니다. 미지원 조건은 생략하지 않고 적용을 차단합니다.
 - **패키지 최신성** — npm·PyPI·Maven·NuGet·Go·Cargo의 최신 버전·공개 시각을 별도 수집하고 출처·유효기간과 함께 제공합니다. 폐쇄망에서는 캐시를 반입합니다.
 - **승인형 계정과 역할 정책** — `admin`·`manager`·`analyst`·`uploader`·`viewer` 역할, 화면 접근 권한과 기능 제어, 감사 로그 CSV를 제공합니다.
 - **폐쇄망 운영** — 오프라인 번들, 취약점 데이터 반입·롤백, 백업·복원 스크립트를 포함합니다.
@@ -34,7 +37,6 @@
 | `postgres` | 계정·회차·정책·검토·알림을 보관하는 `sbom_tracker` DB | PostgreSQL |
 | `portal-data-updater` | 오프라인 취약점 데이터 검증·활성화·롤백 | 동일 API 이미지의 전용 worker |
 | `portal-metadata-collector` | 공식 패키지 저장소·EPSS 수집·캐시 갱신 | 동일 API 이미지의 전용 수집기 |
-| `portal-project-sync` | 선택적 원본 주기 동기화·재시도 | 동일 API 이미지의 전용 worker |
 
 기본 공개 포트는 `8088`(`PUBLIC_HTTP_PORT`) 하나이며, 경로는 다음과 같습니다.
 
@@ -68,12 +70,9 @@ Grype DB와 NVD/KEV 오프라인 데이터의 반입·기준일·롤백 절차�
 KEV 데이터가 없으면 KEV 정책은 데이터 부족 경고를 남깁니다. 분석 완료와 정책 통과는
 별개이며, 기본 정책과 예외는 운영 기준에 맞춰 검토합니다.
 
-기존 시스템의 분석 기록과 정책을 옮길 때는 원본을 보존하고, 식별자·조건·범위·예외의
-의미를 확인한 뒤 이관 결과를 검증합니다. 이전 결과가 있다는 사실만으로 현재 정책
-평가가 완료된 것으로 표시하지 않습니다. 기능 범위와 확인 기준은
+SBOM 원본과 분석 리비전의 기준일·정책 버전을 보존하고 현재 결과를 검증합니다. 이전 결과만으로 현재 정책 평가 완료를 판단하지 않습니다.
 [기능 지원 범위](docs/feature-coverage-ko.md)를 따릅니다.
-현재 Docker 인수 결과와 미지원·미검증 범위는 [고급 기능 검증](docs/verification-complete-20261018-ko.md)과 [Java 정규식 추가 검증](docs/verification-java-regex-20261018-ko.md)에 정리했습니다. [구버전 리터럴 이관](docs/verification-literal-20261018-ko.md)과
-[Collection·사내 DB 검증](docs/verification-collection-private-20261018-ko.md), [SBOM 정확성 보완](docs/verification-sbom-corrections-20261018-ko.md)과 [외부 플랫폼 대비 미구현·제한 기능](docs/native-parity-audit-ko.md)도 확인하세요.
+[Collection·사내 DB 검증](docs/verification-collection-private-20261018-ko.md), [SBOM 정확성 보완](docs/verification-sbom-corrections-20261018-ko.md), [자체 기능의 제한](docs/native-parity-audit-ko.md)을 확인하세요.
 
 ## 배포 방식
 

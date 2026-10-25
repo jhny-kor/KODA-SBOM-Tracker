@@ -22,7 +22,6 @@ backup_dir="$(cd "$backup_dir" && pwd)"
 [[ -z "$(find "$backup_dir" -type l -print -quit)" ]] || { echo "backup must not contain symbolic links" >&2; exit 1; }
 test -f "${backup_dir}/manifest.sha256"
 test -f "${backup_dir}/metadata.env"
-test -f "${backup_dir}/postgres-globals.sql"
 test -f "${backup_dir}/${TRACKER_DB_NAME}.dump"
 test -f "${backup_dir}/tracker-artifacts.tar.gz"
 test -f "${backup_dir}/vuln-data.tar.gz"
@@ -74,28 +73,19 @@ validate_backup_metadata() {
 
 validate_backup_metadata
 validate_tar_archive "${backup_dir}/tracker-artifacts.tar.gz"
-# Old backups have no feature flags and contain both optional artifacts.
-dtrack_db_backup=1
-dtrack_data_backup=1
-if grep -q '^BACKUP_DEPENDENCY_TRACK_DB=' "${backup_dir}/metadata.env"; then
-  dtrack_db_backup="$(metadata_value BACKUP_DEPENDENCY_TRACK_DB)"
-fi
-if grep -q '^BACKUP_DEPENDENCY_TRACK_DATA=' "${backup_dir}/metadata.env"; then
-  dtrack_data_backup="$(metadata_value BACKUP_DEPENDENCY_TRACK_DATA)"
-fi
-[[ "$dtrack_db_backup" =~ ^[01]$ && "$dtrack_data_backup" =~ ^[01]$ ]] || { echo "invalid optional backup flags" >&2; exit 1; }
-if [[ "$dtrack_db_backup" == 1 ]]; then
-  require_metadata_value DTRACK_DB_NAME "${DTRACK_DB_NAME:-dtrack}"
-  test -f "${backup_dir}/${DTRACK_DB_NAME:-dtrack}.dump"
-else
-  [[ ! -e "${backup_dir}/${DTRACK_DB_NAME:-dtrack}.dump" ]] || { echo "unexpected optional database dump" >&2; exit 1; }
-fi
-if [[ "$dtrack_data_backup" == 1 ]]; then
-  require_metadata_value DTRACK_DATA_VOLUME_NAME "${DTRACK_DATA_VOLUME_NAME:-koda-sbom-dtrack-data}"
-  validate_tar_archive "${backup_dir}/dtrack-data.tar.gz"
-else
-  [[ ! -e "${backup_dir}/dtrack-data.tar.gz" ]] || { echo "unexpected optional data archive" >&2; exit 1; }
-fi
 validate_tar_archive "${backup_dir}/vuln-data.tar.gz"
+
+# Accept only native restore inputs; old global-role SQL is inert compatibility
+# material and is never executed by restore-system.sh.
+python3 - "$backup_dir" "$TRACKER_DB_NAME" <<'PY_CHECK'
+import pathlib
+import sys
+root, database = pathlib.Path(sys.argv[1]), sys.argv[2]
+allowed = {'manifest.sha256', 'manifest.sha256.sig', 'metadata.env', database + '.dump',
+           'tracker-artifacts.tar.gz', 'vuln-data.tar.gz', 'compose.yaml', '.env.example', '.env', 'postgres-globals.sql'}
+for path in root.iterdir():
+    if path.name == 'deploy' and path.is_dir(): continue
+    if path.name not in allowed: raise SystemExit('unexpected non-native backup content')
+PY_CHECK
 
 echo "Backup verified: ${backup_dir}"

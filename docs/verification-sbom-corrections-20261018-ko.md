@@ -1,6 +1,6 @@
 # SBOM 정확성 오류 3건·NuGet 수집 제한 수정 검증
 
-2026-10-18 격리 Docker 샘플 검증입니다. Dependency-Track 없이 기존 8개 자체 서비스를
+2026-10-18 격리 Docker 샘플 검증입니다. 기존 자체 서비스를
 사용하며 실제 Grype 0.109.1 / 2026-10-10 DB 분석과 실제 공개 NuGet API를 사용했습니다.
 
 ## 수정과 재현
@@ -77,7 +77,7 @@ Chrome/Playwright로 실제 gateway 화면의 Collection 소유 모호함·불�
 
 전체 Docker 서비스 8개를 재시작한 뒤 기동 완료를 확인했습니다. 다시 API로 JSON/XML의
 구성요소 2개, 원본 SHA-256·과거 분석 보존, Collection의 모호함 1건·불완전 표시,
-Dependency-Track 비활성 상태가 유지됨을 확인했습니다. 정규화 재실행도 모두 0건입니다.
+자체 분석 구성이 유지됨을 확인했습니다. 정규화 재실행도 모두 0건입니다.
 재시작 증거는 `output/sbom-corrections-20261018/restart-proof.json`에 보관했습니다.
 
 ## 한계와 후속 제안

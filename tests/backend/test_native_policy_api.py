@@ -70,7 +70,6 @@ def test_policy_api_versions_validation_csrf_and_read_only_role(admin):
 def test_native_upload_analysis_metrics_policy_version_and_reanalysis(admin, monkeypatch):
     client, headers = admin
     settings = get_settings()
-    monkeypatch.setattr(settings, "dependency_track_enabled", False)
     original = client.get("/api/v1/sbom-policies").json()
     rule = {"id": "test-high", "name": "High 취약점", "kind": "severity", "action": "fail", "enabled": True, "values": ["high"]}
     configured = client.put("/api/v1/sbom-policies", json={"expectedVersion": original["version"], "rules": [rule], "exceptions": []}, headers=headers).json()
@@ -84,8 +83,8 @@ def test_native_upload_analysis_metrics_policy_version_and_reanalysis(admin, mon
     run_id = uploaded.json()["runId"]
     pending = client.get(f"/api/v1/sbom-runs/{run_id}").json()
     assert pending["policyStatus"] == "not_evaluated"
-    assert client.post(f"/api/v1/sbom-runs/{run_id}/retry-dependency-track", headers=headers).status_code == 409
-    assert client.get("/api/v1/dependency-track/status").json()["enabled"] is False
+    assert client.post(f"/api/v1/sbom-runs/{run_id}/retry-dependency-track", headers=headers).status_code == 404
+    assert client.get("/api/v1/dependency-track/status").status_code == 404
     calls = []
 
     def grype(args, **kwargs):
@@ -113,7 +112,7 @@ def test_native_upload_analysis_metrics_policy_version_and_reanalysis(admin, mon
     assert calls[0][1]["env"]["GRYPE_DB_CACHE_DIR"]
     result = client.get(f"/api/v1/sbom-runs/{run_id}").json()
     assert result["state"] == "completed"
-    assert result["dependencyTrackEnabled"] is False
+    assert "dependencyTrackEnabled" not in result
     assert result["policyStatus"] == "fail"
     assert result["policyViolationCount"] == result["analysisMetrics"]["policyFailCount"] == 1
     assert result["vulnerabilityCount"] == result["analysisMetrics"]["vulnerabilityCount"] == 1

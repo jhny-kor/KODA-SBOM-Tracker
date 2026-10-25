@@ -1,4 +1,4 @@
-"""Native review audit and notification outbox, independent of optional DTrack."""
+"""Native review audit and notification outbox."""
 from __future__ import annotations
 
 from datetime import datetime

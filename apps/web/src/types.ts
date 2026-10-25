@@ -36,6 +36,9 @@ export interface SbomPolicyDocument {
   createdBy?: string;
 }
 export interface NativePolicyFields {
+  analysisAvailable?: boolean;
+  analysisUnavailableReason?: string | null;
+  analysisState?: JobState;
   analysisId?: string | null;
   policyState?: PolicyState;
   policyStatus?: PolicyStatus;
@@ -67,15 +70,30 @@ export interface SbomRun extends NativePolicyFields {
   filename?: string;
   specVersion?: string;
   analysisState?: JobState;
-  dependencyTrackEnabled?: boolean;
-  dependencyTrackUrl?: string | null;
-  dependencyTrackState?: JobState;
-  dependencyTrackError?: string | null;
   analysisDataSources?: Record<string, unknown>;
-  dependencyTrackMetrics?: Record<string, unknown> | null;
-  dependencyTrackPolicies?: Record<string, unknown>[];
   source?: "manual" | "api" | "scheduled" | string;
   sourceMetadata?: Record<string, unknown>;
+}
+
+export interface CpeApplicabilitySummary {
+  version?: string;
+  status?: string;
+  reason?: string;
+  inputCpes?: number;
+  invalidCpes?: number;
+  unmatchedProducts?: number;
+  evaluatedCves?: number;
+  unknownCves?: number;
+  indexIncompleteCves?: number;
+  unresolved?: { id: string; reason: string }[];
+  affectedCves?: number;
+  addedFindings?: number;
+  matchedExisting?: number;
+  legacyDetailsOnly?: number;
+  inventoryComplete?: boolean;
+}
+export interface AnalysisDataSources extends Record<string, unknown> {
+  cpeApplicability?: CpeApplicabilitySummary;
 }
 
 export interface AnalysisRevisionSummary extends NativePolicyFields {
@@ -85,7 +103,7 @@ export interface AnalysisRevisionSummary extends NativePolicyFields {
   dataAsOf: string | null;
   cveDataAsOf?: string | null;
   toolVersion?: string | null;
-  dataSources?: Record<string, unknown>;
+  dataSources?: AnalysisDataSources;
   error?: string | null;
   findingCount?: number;
   policyCount?: number;
@@ -138,8 +156,8 @@ export interface RecordChange {
 }
 
 export interface Comparison {
-  base: { runId: string; sha256: string; dataAsOf: string | null; cveDataAsOf?: string | null; artifactUrl?: string; dependencyTrackEnabled?: boolean; policyState?: PolicyState; policyVersion?: number | null };
-  target: { runId: string; sha256: string; dataAsOf: string | null; cveDataAsOf?: string | null; artifactUrl?: string; dependencyTrackEnabled?: boolean; policyState?: PolicyState; policyVersion?: number | null };
+  base: { runId: string; sha256: string; dataAsOf: string | null; cveDataAsOf?: string | null; artifactUrl?: string; policyState?: PolicyState; policyVersion?: number | null };
+  target: { runId: string; sha256: string; dataAsOf: string | null; cveDataAsOf?: string | null; artifactUrl?: string; policyState?: PolicyState; policyVersion?: number | null };
   summary: {
     componentsAdded: number;
     componentsRemoved: number;
@@ -179,8 +197,8 @@ export interface VulnerabilityBundle {
 
 export interface VulnerabilityDataJob {
   id: string;
-  kind: "grype-db" | "vuln-data";
-  action?: "validate" | "apply" | "rollback";
+  kind: "grype-db" | "vuln-data" | "unified";
+  action?: "validate" | "apply" | "rollback" | "purge";
   state: JobState;
   attempts: number;
   error?: string | null;
@@ -235,17 +253,6 @@ export interface RolePolicyCatalog {
   roles: RolePolicy[];
 }
 
-export interface DependencyTrackStatus {
-  enabled?: boolean;
-  configured: boolean;
-  reachable: boolean;
-  authenticated: boolean;
-  version?: string | null;
-  team?: string | null;
-  permissions: string[];
-  missingPermissions: string[];
-  error?: string;
-}
 
 export interface LdapSettings {
   enabled: boolean;

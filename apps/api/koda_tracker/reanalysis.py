@@ -1,4 +1,4 @@
-"""Durable, bounded reanalysis of stored SBOMs; independent of Dependency-Track."""
+"""Durable, bounded reanalysis of stored SBOMs."""
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
@@ -116,6 +116,9 @@ def recover_analysis_jobs(db: Session, *, at: datetime | None = None) -> int:
 
 
 def scheduler_tick(db: Session, *, data_revision: str | None = None, at: datetime | None = None, batch_size: int = 25) -> None:
+    from .data_updates import reference_import_allowed
+    try: reference_import_allowed(get_settings())
+    except ValueError: return None
     at = at or now()
     schedule = db.scalar(select(ReanalysisSchedule).where(ReanalysisSchedule.id == 'default').with_for_update(skip_locked=True))
     if schedule is None:

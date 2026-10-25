@@ -26,7 +26,6 @@ def main():
   return c.request('PUT','/api/v1/quality-profiles?projectId='+project['id'],data={'expectedVersion':old['version'],'name':'Docker 품질 기준','mode':mode,'maxErrors':0,'maxWarnings':maxwarnings,'maxMissingIdentityRatio':0,'maxUnresolvedRefs':0,'maxAgeDays':365})
  def quality(rid):return c.request('GET',f'/api/v1/sbom-runs/{rid}/quality-revisions')['items'][0]
  try:
-  check('Dependency-Track disabled',c.request('GET','/api/v1/dependency-track/status')['enabled'] is False)
   suffix=uuid.uuid4().hex[:8];service=c.request('POST','/api/v1/services',expected=201,data={'slug':'quality-'+suffix,'name':'SBOM 품질 검증 '+suffix});environment=c.request('GET','/api/v1/environments')[0]
   project=c.request('POST','/api/v1/project-catalog',expected=201,data={'sourceId':'quality-docker-'+suffix,'sourceProjectId':'sample','name':'품질 기준 샘플 '+suffix,'version':'quality','serviceId':service['id'],'environmentId':environment['id']})
   project_profile=profile(project,'warn')

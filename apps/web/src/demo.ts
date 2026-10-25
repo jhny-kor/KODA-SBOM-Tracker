@@ -14,16 +14,16 @@ export const demoLdapSettings: LdapSettings = {
 
 const permissions = [
   "dashboard.view", "services.view", "runs.view", "compare.view", "vulnerability.view", "audit.view", "settings.view",
-  "sbom.upload", "artifact.download", "analysis.create", "dtrack.retry", "sbom.archive", "sbom.delete",
-  "catalog.manage", "vulnerability.manage", "dtrack.settings", "users.manage", "tokens.manage", "roles.manage", "policies.view", "policies.manage",
+  "sbom.upload", "artifact.download", "analysis.create", "sbom.archive", "sbom.delete",
+  "catalog.manage", "vulnerability.manage", "users.manage", "tokens.manage", "roles.manage", "policies.view", "policies.manage",
 ];
 
 export const demoRolePolicyCatalog: RolePolicyCatalog = {
   catalog: permissions,
   roles: [
     { role: "admin", permissions },
-    { role: "manager", permissions: ["dashboard.view", "services.view", "runs.view", "compare.view", "settings.view", "sbom.upload", "artifact.download", "analysis.create", "dtrack.retry", "sbom.archive", "catalog.manage", "users.manage"] },
-    { role: "analyst", permissions: ["dashboard.view", "services.view", "runs.view", "compare.view", "sbom.upload", "artifact.download", "analysis.create", "dtrack.retry"] },
+    { role: "manager", permissions: ["dashboard.view", "services.view", "runs.view", "compare.view", "settings.view", "sbom.upload", "artifact.download", "analysis.create", "sbom.archive", "catalog.manage", "users.manage"] },
+    { role: "analyst", permissions: ["dashboard.view", "services.view", "runs.view", "compare.view", "sbom.upload", "artifact.download", "analysis.create"] },
     { role: "uploader", permissions: ["dashboard.view", "services.view", "runs.view", "compare.view", "sbom.upload", "artifact.download"] },
     { role: "viewer", permissions: ["dashboard.view", "services.view", "runs.view", "compare.view", "artifact.download"] },
   ],
@@ -64,7 +64,6 @@ export const demoRuns: SbomRun[] = names.map((value, index) => ({
   policyState: value[7] === "processing" ? "not_evaluated" : "completed",
   policyStatus: value[7] === "processing" ? "not_evaluated" : value[6] ? "fail" : "pass",
   policyVersion: value[7] === "processing" ? null : 1,
-  dependencyTrackEnabled: false,
   policyViolations: Array.from({ length: value[6] }, (_, i) => ({ policyId: "critical-high", policyName: "Critical·High 취약점", component: `샘플 구성요소 ${i + 1}`, vulnerabilityId: `CVE-2025-DEMO-${i + 1}`, type: "SECURITY", action: "fail", reason: "샘플 정책 평가 결과", suppressed: false })),
   state: value[7],
   dataAsOf: index < 3 ? "2025-05-21" : `2025-05-${String(Math.max(13, 20 - Math.floor(index / 2))).padStart(2, "0")}`,
@@ -79,7 +78,7 @@ export const demoChanges: ComponentChange[] = [
   ["removed", [], "purl:slf4j", "org.slf4j:slf4j-log4j12", "pkg:maven/org.slf4j/slf4j-log4j12@1.7.30", "1.7.30", undefined],
   ["changed", ["version"], "purl:httpclient", "org.apache.httpcomponents:httpclient", "pkg:maven/org.apache.httpcomponents/httpclient@4.5.14", "4.5.14", "4.5.14.1"],
   ["changed", ["version"], "purl:netty", "io.netty:netty-handler", "pkg:maven/io.netty/netty-handler@4.1.109.Final", "4.1.100.Final", "4.1.109.Final"],
-  ["changed", ["sha256"], "purl:dtrack", "org.owasp:dependency-check-core", "pkg:maven/org.owasp/dependency-check-core@9.0.9", "9.0.9", "9.0.9"],
+  ["changed", ["sha256"], "purl:dependency-check", "org.owasp:dependency-check-core", "pkg:maven/org.owasp/dependency-check-core@9.0.9", "9.0.9", "9.0.9"],
   ["added", [], "purl:text", "org.apache.commons:commons-text", "pkg:maven/org.apache.commons/commons-text@1.11.0", undefined, "1.11.0"],
   ["changed", ["version"], "purl:logback", "ch.qos.logback:logback-classic", "pkg:maven/ch.qos.logback/logback-classic@1.4.14", "1.2.11", "1.4.14"],
   ["removed", [], "purl:logging", "commons-logging:commons-logging", "pkg:maven/commons-logging/commons-logging@1.2", "1.2", undefined],

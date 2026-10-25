@@ -13,11 +13,6 @@ source "$env_file"
 set +a
 source "$script_dir/lib.sh"
 compose_args=(--env-file "$env_file" -f "$root_dir/compose.yaml" -f "$root_dir/compose.airgap.yaml")
-dependency_track_enabled && compose_args+=(--profile dependency-track)
-if dependency_track_enabled; then
-  docker compose "${compose_args[@]}" up -d --no-build --pull never --wait --wait-timeout "${AIRGAP_HEALTH_TIMEOUT:-420}" postgres
-  docker compose "${compose_args[@]}" exec -T postgres sh /docker-entrypoint-initdb.d/10-init-multi-db.sh
-fi
 docker compose "${compose_args[@]}" up -d --no-build --pull never
 
 deadline=$((SECONDS + ${AIRGAP_HEALTH_TIMEOUT:-420}))
@@ -25,9 +20,6 @@ while (( SECONDS < deadline )); do
   if compose_services_ready "${compose_args[@]}"; then
     echo "Air-gap services are running behind the configured HTTPS origin."
     echo "Portal: ${TRACKER_PUBLIC_ORIGIN%/}/"
-    if dependency_track_enabled; then
-      echo "Dependency-Track: ${TRACKER_PUBLIC_ORIGIN%/}/dependency-track/"
-    fi
     exit 0
   fi
   sleep 5

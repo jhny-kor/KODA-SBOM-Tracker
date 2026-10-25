@@ -77,7 +77,6 @@ def main():
     original_policy = client.request('GET', '/api/v1/sbom-policies')
     private = None
     try:
-        check('native deployment without external analysis server', client.request('GET', '/api/v1/dependency-track/status')['enabled'] is False)
         suffix = uuid.uuid4().hex[:8]
         private_id = 'KODA-INTERNAL-' + suffix.upper()
         package = 'koda-private-' + suffix

@@ -29,7 +29,9 @@ config_dir="${bundle_dir}/config"
 ensure_dir "$image_dir"
 ensure_dir "$config_dir"
 
-DOCKER_DEFAULT_PLATFORM=linux/amd64 compose build portal-web portal-api portal-worker
+source "$ROOT_DIR/scripts/release-images.sh"
+prepare_release_images
+DOCKER_DEFAULT_PLATFORM=linux/amd64 compose build portal-web portal-api portal-worker --build-arg KODA_IMAGE_CREATED="$KODA_IMAGE_CREATED" --build-arg KODA_IMAGE_REVISION="$KODA_IMAGE_REVISION" --build-arg KODA_IMAGE_VERSION="$PORTAL_IMAGE_TAG"
 
 remote_images=()
 while IFS= read -r image; do
@@ -42,11 +44,6 @@ ${CYCLONEDX_CLI_IMAGE}
 ${ALPINE_BASE_IMAGE}
 EOF
 
-dependency_track_included=false
-if dependency_track_enabled || [[ "${KODA_INCLUDE_DEPENDENCY_TRACK:-false}" == true || "${KODA_INCLUDE_DEPENDENCY_TRACK:-false}" == 1 ]]; then
-  dependency_track_included=true
-  remote_images+=("$DTRACK_APISERVER_IMAGE" "$DTRACK_FRONTEND_IMAGE")
-fi
 for image in "${remote_images[@]}"; do
   docker pull --platform linux/amd64 "$image"
 done
@@ -79,6 +76,8 @@ cp "$ROOT_DIR/compose.yaml" "$config_dir/"
 cp "$ROOT_DIR/LICENSE" "$ROOT_DIR/NOTICE" "$ROOT_DIR/THIRD_PARTY_NOTICES.md" "$bundle_dir/"
 cp "$EXAMPLE_ENV_FILE" "$config_dir/.env.example"
 cp "$ROOT_DIR/deploy/manifests/images.lock" "$config_dir/"
+write_release_images "$config_dir/release-images.env"
+apply_release_images "$config_dir/release-images.env" "$config_dir/.env.example"
 cp -R "$ROOT_DIR/deploy" "$config_dir/"
 cp -R "$ROOT_DIR/docs" "$config_dir/"
 cp -R "$ROOT_DIR/scripts" "$config_dir/"
@@ -86,12 +85,12 @@ cp -R "$ROOT_DIR/scripts" "$config_dir/"
 cat > "${bundle_dir}/metadata.env" <<EOF
 BUNDLE_CREATED_AT=${timestamp}
 TARGET_PLATFORM=linux/amd64
+IMAGE_TAG=$PORTAL_IMAGE_TAG
+IMAGE_BUILT_AT=$KODA_IMAGE_CREATED
+IMAGE_REVISION=$KODA_IMAGE_REVISION
 DISTRIBUTION_SCOPE=internal-only
-DEPENDENCY_TRACK_INCLUDED=$dependency_track_included
-DTRACK_VERSION=5.0.3
+ANALYSIS_BACKEND=koda-native
 POSTGRES_IMAGE=${POSTGRES_IMAGE}
-DTRACK_APISERVER_IMAGE=${DTRACK_APISERVER_IMAGE}
-DTRACK_FRONTEND_IMAGE=${DTRACK_FRONTEND_IMAGE}
 GRYPE_IMAGE=${GRYPE_IMAGE}
 CYCLONEDX_CLI_IMAGE=${CYCLONEDX_CLI_IMAGE}
 ALPINE_BASE_IMAGE=${ALPINE_BASE_IMAGE}

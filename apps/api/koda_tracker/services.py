@@ -10,7 +10,6 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from .config import get_settings
-from .dtrack import DependencyTrackClient
 from .models import (
     AnalysisRevision,
     AuditEvent,
@@ -29,6 +28,7 @@ from .sbom_normalization import mark_current
 from .policies import evaluate_revision
 from .quality import evaluate_quality, revision_payload as quality_payload
 from .vulnerability import active_bundle, load_context, normalize_finding
+from .cpe_analysis import enrich_cpe_findings
 
 
 def create_components(db: Session, run: SbomRun, *, refresh: bool = False) -> None:
@@ -76,6 +76,12 @@ def create_components(db: Session, run: SbomRun, *, refresh: bool = False) -> No
 
 
 def analyze_offline(db: Session, run: SbomRun) -> AnalysisRevision:
+    from .data_updates import release_read_lease
+    with release_read_lease(get_settings()):
+        return _analyze_offline(db, run)
+
+
+def _analyze_offline(db: Session, run: SbomRun) -> AnalysisRevision:
     sequence = int(db.scalar(select(func.max(AnalysisRevision.sequence)).where(AnalysisRevision.run_id == run.id)) or 0) + 1
     revision = AnalysisRevision(run_id=run.id, sequence=sequence, state=JobState.RUNNING)
     db.add(revision)
@@ -90,6 +96,8 @@ def analyze_offline(db: Session, run: SbomRun) -> AnalysisRevision:
     try:
         settings = get_settings()
         initial_bundle = active_bundle(settings)
+        from .data_updates import assert_approved_release
+        assert_approved_release(settings, initial_bundle.path if initial_bundle else None)
         context = load_context(settings, release_path=initial_bundle.path) if initial_bundle else load_context(settings)
         revision.data_sources = {**context.sources, "sbomNormalization": {"version": 2}, "sbomQuality": quality_evidence}
         revision.data_as_of = context.bundle.data_as_of if context.bundle else "unknown"
@@ -104,6 +112,8 @@ def analyze_offline(db: Session, run: SbomRun) -> AnalysisRevision:
         )
         env["GRYPE_DB_AUTO_UPDATE"] = "false"
         env["GRYPE_DB_VALIDATE_AGE"] = "false"
+        env["GRYPE_CHECK_FOR_APP_UPDATE"] = "false"
+        env["GRYPE_EXTERNAL_SOURCES_ENABLE"] = "false"
         process = subprocess.run(
             [settings.grype_binary, f"sbom:{run.artifact_path}", "-o", "json"],
             text=True,
@@ -139,6 +149,10 @@ def analyze_offline(db: Session, run: SbomRun) -> AnalysisRevision:
                     }
                 )
             if isinstance(run, SbomRun):
+                findings, cpe_evidence = enrich_cpe_findings(
+                    (run.normalized_bom or {}).get("components", []), context, findings
+                )
+                revision.data_sources = {**revision.data_sources, "cpeApplicability": cpe_evidence}
                 private_findings, private_snapshot = match_private_vulnerabilities(
                     db, (run.normalized_bom or {}).get("components", [])
                 )
@@ -152,6 +166,9 @@ def analyze_offline(db: Session, run: SbomRun) -> AnalysisRevision:
     except Exception as exc:
         revision.state = JobState.FAILED
         revision.error = str(exc)[-2000:]
+        from .data_updates import DataUpdateError
+        if isinstance(exc,DataUpdateError):
+            revision.data_sources = {**revision.data_sources,"vulnerabilityDataStatus":{"status":"unavailable","reason":revision.error}}
     revision.findings = findings
     run.analysis_state = revision.state
     # Feed aggregate CEL rules the approved effective vulnerability set while
@@ -177,56 +194,6 @@ def _metadata_value(path: Path, key: str) -> str | None:
     return None
 
 
-async def sync_dependency_track(db: Session, run: SbomRun) -> None:
-    if not get_settings().dependency_track_enabled:
-        return
-    client = DependencyTrackClient()
-    if not client.configured:
-        run.dtrack_state = JobState.FAILED
-        run.dtrack_error = "Dependency-Track 연결이 구성되지 않았습니다"
-        return
-    release = run.release
-    try:
-        if not release.service.dtrack_collection_uuid:
-            release.service.dtrack_collection_uuid = await client.ensure_collection(
-                f"KODA::{release.service.slug}"
-            )
-            db.flush()
-        payload = await client.upload(
-            project_name=f"KODA::{release.service.slug}::{release.environment.slug}",
-            project_version=f"{release.version}::r{run.round_number}",
-            artifact=Path(run.artifact_path),
-            parent_uuid=release.service.dtrack_collection_uuid,
-            tags=["koda", f"env:{release.environment.slug}", f"run:{run.id}"],
-        )
-        run.dtrack_token = str(payload.get("token") or "")
-        run.dtrack_project_uuid = str(payload.get("project") or payload.get("projectUuid") or "")
-        if run.dtrack_token:
-            await client.wait_for_token(run.dtrack_token)
-        if not run.dtrack_project_uuid:
-            project = await client.lookup_project(
-                f"KODA::{release.service.slug}::{release.environment.slug}",
-                f"{release.version}::r{run.round_number}",
-            )
-            run.dtrack_project_uuid = str(project["uuid"])
-        run.dtrack_metrics, run.dtrack_policies = await client.project_snapshot(run.dtrack_project_uuid)
-        run.dtrack_state = JobState.COMPLETED
-        run.dtrack_error = None
-        if run.state == ProcessingState.COMPLETED:
-            latest_round = db.scalar(
-                select(func.max(SbomRun.round_number)).where(
-                    SbomRun.release_id == run.release_id,
-                    SbomRun.analysis_state == JobState.COMPLETED,
-                    SbomRun.dtrack_state == JobState.COMPLETED,
-                    SbomRun.archived_at.is_(None),
-                )
-            )
-            if latest_round == run.round_number:
-                await client.promote_latest(run.dtrack_project_uuid)
-    except Exception as exc:
-        run.dtrack_state = JobState.FAILED
-        run.dtrack_error = str(exc)[-2000:]
-    db.flush()
 
 
 def _derive_state(run: SbomRun, revision: AnalysisRevision | None = None) -> None:

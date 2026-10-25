@@ -155,10 +155,6 @@ def run(args) -> tuple[dict, list[str]]:
         user = admin.login(env.get("TRACKER_BOOTSTRAP_ADMIN_USERNAME", "admin"), password)
         hidden.append(admin.csrf)
         check("admin cookie authentication", "policies.manage" in user["permissions"])
-        status = admin.request("GET", "/api/v1/dependency-track/status")
-        check("Dependency-Track disabled", status.get("enabled") is False, status)
-        admin.request("GET", "/dependency-track/", expected=404, as_bytes=True)
-        check("Dependency-Track gateway route unavailable", True)
         original_policy = admin.request("GET", "/api/v1/sbom-policies")
         unique = uuid.uuid4().hex[:10]
         runtime_rule = {"id": f"runtime-severity-{unique}", "name": "실제 Grype 검증용 심각도 정책", "kind": "severity",
@@ -188,7 +184,7 @@ def run(args) -> tuple[dict, list[str]]:
         report["evidence"].update({"initialRun": first, "initialPolicies": first_records})
         tool_version = str(first_analysis.get("toolVersion") or "")
         check("real Grype tool version", bool(re.fullmatch(r"v?\d+\.\d+\.\d+(?:[-+].*)?", tool_version)), tool_version)
-        check("native analysis completed without DTrack", first["state"] == "completed" and first["analysisState"] == "completed" and first["policyState"] == "completed")
+        check("native Grype analysis completed", first["state"] == "completed" and first["analysisState"] == "completed" and first["policyState"] == "completed")
         check("real vulnerable SBOM has CVE findings", first["vulnerabilityCount"] > 0, {"count": first["vulnerabilityCount"], "dataAsOf": first["dataAsOf"]})
         check("real policy violation produced", first["policyStatus"] == "fail" and any(row.get("policyId") == runtime_rule["id"] and row.get("vulnerabilityId", "").startswith("CVE-") and not row.get("suppressed") for row in first_records), {"status": first["policyStatus"], "count": first["policyViolationCount"]})
         check("native metrics agree with API", first["componentCount"] == 2 and first["analysisMetrics"]["componentCount"] == 2 and first["analysisMetrics"]["vulnerabilityCount"] == first["vulnerabilityCount"])
@@ -249,8 +245,6 @@ def run(args) -> tuple[dict, list[str]]:
         token_id = token["id"]
         integration = Client(args.base_url, bearer=token["token"]).request("GET", f"/api/v1/integrations/koda/runs/{first_id}")
         check("service token result integration", integration["run"]["id"] == first_id and integration["analysis"]["policyVersion"] == changed["version"])
-        admin.request("POST", f"/api/v1/sbom-runs/{first_id}/retry-dependency-track", expected=409)
-        check("disabled optional retry rejected", True)
         archived = admin.request("POST", f"/api/v1/sbom-runs/{later['id']}/archive", data={"reason": "실제 런타임 검증 완료 후 논리 보관"})
         check("logical archive preserves artifact", archived["state"] == "archived" and hashlib.sha256(admin.request("GET", f"/api/v1/sbom-runs/{later['id']}/artifact", as_bytes=True)).hexdigest() == later["sha256"])
         admin.request("POST", f"/api/v1/sbom-runs/{later['id']}/analyses", expected=409)

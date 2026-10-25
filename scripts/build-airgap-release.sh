@@ -8,7 +8,6 @@ source "$(cd "$(dirname "$0")" && pwd)/lib.sh"
 # local runtime .env.  The latter is intentionally supplied only on the
 # closed-network server.
 ENV_FILE="$EXAMPLE_ENV_FILE"
-include_dtrack="${KODA_INCLUDE_DEPENDENCY_TRACK:-false}"
 load_env "$EXAMPLE_ENV_FILE"
 usage() { local rc="${1:-2}"; echo "usage: $0 [output.tar.gz] [--vuln-bundle DIR]" >&2; exit "$rc"; }
 distribution_scope="${KODA_DISTRIBUTION_SCOPE:-internal}"
@@ -53,11 +52,10 @@ cleanup() { rm -rf "$stage_dir"; }
 trap cleanup EXIT
 image_dir="$stage_dir/images"
 mkdir -p "$image_dir" "$stage_dir/config" "$stage_dir/deploy" "$stage_dir/scripts" "$stage_dir/docs" "$stage_dir/source"
-DOCKER_DEFAULT_PLATFORM=linux/amd64 compose build portal-web portal-api portal-worker
+source "$ROOT_DIR/scripts/release-images.sh"
+prepare_release_images
+DOCKER_DEFAULT_PLATFORM=linux/amd64 compose build portal-web portal-api portal-worker --build-arg KODA_IMAGE_CREATED="$KODA_IMAGE_CREATED" --build-arg KODA_IMAGE_REVISION="$KODA_IMAGE_REVISION" --build-arg KODA_IMAGE_VERSION="$PORTAL_IMAGE_TAG"
 remote_images=("$POSTGRES_IMAGE" "$NGINX_IMAGE" "$GRYPE_IMAGE" "$CYCLONEDX_CLI_IMAGE" "$ALPINE_BASE_IMAGE")
-if [[ "$include_dtrack" == true || "$include_dtrack" == 1 ]]; then
-  remote_images+=("$DTRACK_APISERVER_IMAGE" "$DTRACK_FRONTEND_IMAGE")
-fi
 for image in "${remote_images[@]}"; do docker pull --platform linux/amd64 "$image"; done
 local_images=("${PORTAL_WEB_IMAGE}:${PORTAL_IMAGE_TAG:-dev}" "${PORTAL_API_IMAGE}:${PORTAL_IMAGE_TAG:-dev}" "${PORTAL_WORKER_IMAGE}:${PORTAL_IMAGE_TAG:-dev}")
 for image in "${local_images[@]}"; do
@@ -73,8 +71,14 @@ cp "$ROOT_DIR/compose.airgap.yaml" "$stage_dir/compose.airgap.yaml"
 cp "$ROOT_DIR/LICENSE" "$ROOT_DIR/NOTICE" "$ROOT_DIR/THIRD_PARTY_NOTICES.md" "$stage_dir/"
 cp "$EXAMPLE_ENV_FILE" "$stage_dir/config/.env.example"
 cp "$ROOT_DIR/deploy/manifests/images.lock" "$stage_dir/config/images.lock"
+write_release_images "$stage_dir/config/release-images.env"
+apply_release_images "$stage_dir/config/release-images.env" "$stage_dir/config/.env.example"
 cp -a "$ROOT_DIR/deploy/." "$stage_dir/deploy/"
 cp -a "$ROOT_DIR/scripts/." "$stage_dir/scripts/"
+# Verifiers run from the installed scripts directory before API sources/images
+# are available. Ship the stdlib parser explicitly, even in development bundles
+# whose optional source archive omits untracked application modules.
+cp "$ROOT_DIR/apps/api/koda_tracker/offline_intelligence.py" "$stage_dir/scripts/offline_intelligence.py"
 cp -a "$ROOT_DIR/docs/." "$stage_dir/docs/"
 
 # Keep the checked-in application and test source in the same archive as the
@@ -87,6 +91,8 @@ while IFS= read -r -d '' relative_path; do
   case "$relative_path" in
     .env|*.env) continue ;;
   esac
+  # A working-tree release must also honor tracked deletions.
+  [[ -f "$ROOT_DIR/$relative_path" ]] || continue
   destination="$stage_dir/source/$relative_path"
   mkdir -p "$(dirname "$destination")"
   cp -p "$ROOT_DIR/$relative_path" "$destination"
@@ -106,9 +112,12 @@ find "$stage_dir" -type f \( -name '*.pyc' -o -name '.DS_Store' \) -delete
 cat > "$stage_dir/metadata.env" <<EOF
 RELEASE_CREATED_AT=$(date -u +%Y%m%dT%H%M%SZ)
 TARGET_PLATFORM=linux/amd64
+IMAGE_TAG=$PORTAL_IMAGE_TAG
+IMAGE_BUILT_AT=$KODA_IMAGE_CREATED
+IMAGE_REVISION=$KODA_IMAGE_REVISION
 DISTRIBUTION_SCOPE=internal-only
 COMPOSE_FILE=compose.yaml:compose.airgap.yaml
-DEPENDENCY_TRACK_INCLUDED=$include_dtrack
+ANALYSIS_BACKEND=koda-native
 VULNERABILITY_BUNDLE=$([[ -n "$vuln_bundle" ]] && echo included || echo absent)
 TRACKER_GIT_REVISION=$git_revision
 TRACKER_WORKTREE_DIRTY=$([[ "$worktree_dirty" == 1 ]] && echo true || echo false)

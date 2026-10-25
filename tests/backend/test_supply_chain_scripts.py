@@ -183,10 +183,8 @@ def test_backup_verifier_checks_signed_metadata_and_tar_paths(tmp_path: Path) ->
     env_file = tmp_path / "test.env"
     values = {
         "COMPOSE_PROJECT_NAME": "test-project",
-        "DTRACK_DB_NAME": "dtrack",
         "TRACKER_DB_NAME": "tracker",
         "TRACKER_ARTIFACTS_VOLUME_NAME": "test_tracker_artifacts",
-        "DTRACK_DATA_VOLUME_NAME": "test_dtrack_data",
         "VULN_DATA_VOLUME_NAME": "test_vuln_data",
     }
     env_file.write_text("".join(f"{key}={value}\n" for key, value in values.items()), encoding="utf-8")
@@ -195,9 +193,8 @@ def test_backup_verifier_checks_signed_metadata_and_tar_paths(tmp_path: Path) ->
         encoding="utf-8",
     )
     (backup / "postgres-globals.sql").write_text("sql", encoding="utf-8")
-    (backup / "dtrack.dump").write_bytes(b"dump")
     (backup / "tracker.dump").write_bytes(b"dump")
-    for name in ("tracker-artifacts", "dtrack-data", "vuln-data"):
+    for name in ("tracker-artifacts", "vuln-data"):
         with tarfile.open(backup / f"{name}.tar.gz", "w:gz") as archive:
             archive.add(payload / "item", arcname="item")
     _write_signed_manifest(backup, private_key)

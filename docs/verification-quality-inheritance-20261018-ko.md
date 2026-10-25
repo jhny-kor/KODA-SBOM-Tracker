@@ -10,7 +10,7 @@
 ## 실제 Docker 인수
 
 환경은 Mac의 격리 Compose `koda-native-verify-20261017`, gateway `http://127.0.0.1:18088`입니다.
-API·worker·web을 새 이미지로 실행했으며 Dependency-Track은 비활성입니다.
+API·worker·web을 새 이미지로 실행한 자체 분석 구성입니다.
 실제 Grype 실행 파일·기존 반입 DB·CEL 런타임·PostgreSQL·CI 명령을 사용했습니다.
 
 `scripts/verify-quality-inheritance-runtime.py`의 **24개 항목이 통과**했습니다.

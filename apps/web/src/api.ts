@@ -1,7 +1,7 @@
 import type { ReanalysisSchedule, ReanalysisCycle, VexReview, VexReviewInput, ReviewEvent, InboxNotification, NotificationDelivery } from "./types";
 import { demoChanges, demoRolePolicyCatalog, demoRuns } from "./demo";
 import { compareStandaloneRuns, getStandaloneCatalogs, getStandaloneRun, getStandaloneRuns, importStandaloneSbom } from "./standalone";
-import type { AuditEvent, AuthUser, CatalogItem, Comparison, ComponentSnapshot, DependencyTrackStatus, JobState, LdapSettings, PageResult, RolePolicy, RolePolicyCatalog, SbomRun, SbomRunDetail, SbomPolicyDocument, UserSummary, VulnerabilityBundle, VulnerabilityDataJob } from "./types";
+import type { AuditEvent, AuthUser, CatalogItem, Comparison, ComponentSnapshot, JobState, LdapSettings, PageResult, RolePolicy, RolePolicyCatalog, SbomRun, SbomRunDetail, SbomPolicyDocument, UserSummary, VulnerabilityBundle, VulnerabilityDataJob } from "./types";
 
 export const standaloneMode = import.meta.env.VITE_STANDALONE_MODE === "true";
 export const demoMode = !standaloneMode && import.meta.env.VITE_DEMO_MODE !== "false";
@@ -241,7 +241,7 @@ export async function activateVulnerabilityBundle(version: string) {
   return request<VulnerabilityBundle>(`/api/v1/vulnerability-data-bundles/${encodeURIComponent(version)}/activate`, { method: "POST" });
 }
 
-export function uploadVulnerabilityData(kind: "grype-db" | "vuln-data", file: File) {
+export function uploadVulnerabilityData(kind: "grype-db" | "vuln-data" | "unified", file: File) {
   if (previewMode) return Promise.resolve({ id: `preview-${Date.now()}`, kind, action: "validate", state: "completed", attempts: 1, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } as VulnerabilityDataJob);
   return request<VulnerabilityDataJob>(`/api/v1/vulnerability-data-bundles/upload?kind=${encodeURIComponent(kind)}`, { method: "POST", body: file });
 }
@@ -280,11 +280,6 @@ export async function fetchApiTokens() {
   return request<Array<{ id: string; name: string; serviceId?: string; active: boolean; createdAt: string }>>("/api/v1/api-tokens");
 }
 
-export async function fetchDependencyTrackStatus(): Promise<DependencyTrackStatus> {
-  if (standaloneMode) return { configured: false, reachable: false, authenticated: false, version: "standalone-preview", team: "local", permissions: [], missingPermissions: [] };
-  if (demoMode) return { configured: true, reachable: true, authenticated: true, version: "5.0.3", team: "demo", permissions: [], missingPermissions: [] };
-  return request<DependencyTrackStatus>("/api/v1/dependency-track/status");
-}
 
 export async function fetchLdapSettings(): Promise<LdapSettings> {
   return request<LdapSettings>("/api/v1/settings/ldap");
@@ -335,9 +330,6 @@ export async function uploadRun(form: FormData): Promise<{ runId: string; jobId:
   return request("/api/v1/sbom-runs", { method: "POST", body: form });
 }
 
-export async function retryDependencyTrack(runId: string) {
-  return request<{ runId: string; jobId: string }>(`/api/v1/sbom-runs/${encodeURIComponent(runId)}/retry-dependency-track`, { method: "POST" });
-}
 
 export async function createAnalysis(runId: string) {
   return request<{ runId: string; jobId: string }>(`/api/v1/sbom-runs/${encodeURIComponent(runId)}/analyses`, { method: "POST" });
@@ -352,7 +344,7 @@ export async function archiveRun(runId: string, reason: string) {
 }
 
 export async function deleteRun(runId: string) {
-  return request<{ runId: string; deleted: boolean; dependencyTrackProjectUuid?: string | null; artifactCleanupPending: boolean }>(`/api/v1/sbom-runs/${encodeURIComponent(runId)}`, { method: "DELETE" });
+  return request<{ runId: string; deleted: boolean; artifactCleanupPending: boolean }>(`/api/v1/sbom-runs/${encodeURIComponent(runId)}`, { method: "DELETE" });
 }
 
 export async function fetchComparison(baseRunId: string, targetRunId: string, baseAnalysisId?: string, targetAnalysisId?: string): Promise<Comparison> {
@@ -456,38 +448,26 @@ export interface PackageMetadataRow {
 }
 export interface RunMetadataItem { component: {identityKey?: string; name: string; version?: string | null; purl?: string | null}; metadata: PackageMetadataRow }
 export interface MetadataStatus { enabled: boolean; supportedEcosystems: string[]; counts: Record<string, number>; ttlSeconds: number }
-export interface MigrationRecord {
-  id: string; digest: string; sourceId?: string; state: "staged" | "blocked" | "applied"; createdAt?: string; appliedAt?: string | null;
-  report: { currentPolicyVersion: number; canApply: boolean; blockers: Array<{reason: string}>; warnings: Array<{reason: string}>; counts: Record<string, number>; convertedPolicies?: unknown[]; [key: string]: unknown };
-  result?: {runIds?: string[]; analysisRevisionsCreated?: number; reviewsCreated?: number; policyVersion?: number; trustSourceReviews?: boolean; actor?: string; grypeReanalysis?: string} | null;
-}
 export const fetchMetadataStatus = () => request<MetadataStatus>("/api/v1/package-metadata/status");
 export const fetchRunMetadata = (id: string, page = 1) => request<PageResult<RunMetadataItem>>(`/api/v1/sbom-runs/${encodeURIComponent(id)}/package-metadata?page=${page}&size=10`);
 export const refreshRunMetadata = (id: string) => workflowMutation<{queued:number;cached:number;unsupported:number;invalid?:number;deferred?:number}>(`/api/v1/sbom-runs/${encodeURIComponent(id)}/package-metadata/refresh`, {});
 export const importMetadata = (bundle: unknown) => workflowMutation<{imported:number;skipped:number}>("/api/v1/package-metadata/import", bundle);
 export const importVulnerabilityIntelligence = (bundle: unknown) => workflowMutation<{imported:number;skipped:number}>("/api/v1/vulnerability-intelligence/import", bundle);
-export const stageMigration = (bundle: unknown) => workflowMutation<MigrationRecord>("/api/v1/legacy-migrations/stage", {bundle});
-export const stageRemoteMigration = (baseUrl: string, apiKey: string) => {
-  const parsed = new URL(baseUrl);
-  if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password) return Promise.reject(new ApiError("원본 주소는 계정 정보 없는 HTTP(S) URL이어야 합니다.", 0));
-  return workflowMutation<MigrationRecord>("/api/v1/legacy-migrations/export-stage", {baseUrl,apiKey,allowedOrigins:[parsed.origin]});
-};
-export const fetchMigrations = (page = 1) => request<PageResult<MigrationRecord>>(`/api/v1/legacy-migrations?page=${page}&size=20`);
-export const applyMigration = (record: MigrationRecord, expectedPolicyVersion: number, trustSourceReviews: boolean) => workflowMutation<MigrationRecord>(`/api/v1/legacy-migrations/${encodeURIComponent(record.id)}/apply`, {expectedDigest:record.digest,expectedPolicyVersion,trustSourceReviews});
+export function importEpssSnapshot(file: File) {
+  if (previewMode) return Promise.reject(new ApiError("샘플 모드에서는 EPSS를 반입하지 않습니다.", 0));
+  const form = new FormData();
+  form.append("file", file);
+  return request<{imported:number;skipped:number;date:string;modelVersion:string;sha256:string;policyEligible:boolean}>("/api/v1/vulnerability-intelligence/import-csv", {method:"POST",body:form});
+}
 
 export interface NativeProject {
   id:string;sourceId:string;sourceProjectId:string;serviceId:string;environmentId:string;releaseId?:string;currentRunId?:string;
   name:string;version:string;parentProjectId:string|null;tags:string[];isLatest:boolean;active:boolean;revision:number;collectionLogic?:CollectionLogic;collectionTag?:string|null;
 }
-export interface ProjectSyncSource {id:string;name:string;baseUrl:string;enabled:boolean;intervalMinutes:number;state:string;attempts:number;version:number;nextRunAt?:string|null;lastSuccessAt?:string|null;lastError?:string|null;lastMigrationId?:string|null}
 export const fetchProjectCatalog = (page=1) => request<PageResult<NativeProject>>(`/api/v1/project-catalog?page=${page}&size=20`);
+export const fetchProjectRuns = (id:string,page=1) => request<PageResult<SbomRun>>(`/api/v1/project-catalog/${encodeURIComponent(id)}/runs?page=${page}&size=10`);
 export const createNativeProject = (body:Record<string,unknown>) => workflowMutation<NativeProject>("/api/v1/project-catalog",body);
 export const updateNativeProject = (project:NativeProject, update:Record<string,unknown>) => workflowMutation<NativeProject>(`/api/v1/project-catalog/${encodeURIComponent(project.id)}`,{expectedRevision:project.revision,...update},"PATCH");
-export const fetchProjectSyncSources = (page=1) => request<PageResult<ProjectSyncSource>>(`/api/v1/project-sync-sources?page=${page}&size=20`);
-export const createProjectSyncSource = (body:Record<string,unknown>) => workflowMutation<ProjectSyncSource>("/api/v1/project-sync-sources",body);
-export const updateProjectSyncSource = (source:ProjectSyncSource,update:Record<string,unknown>) => workflowMutation<ProjectSyncSource>(`/api/v1/project-sync-sources/${encodeURIComponent(source.id)}`,{expectedVersion:source.version,...update},"PATCH");
-export const runProjectSync = (id:string) => workflowMutation<ProjectSyncSource>(`/api/v1/project-sync-sources/${encodeURIComponent(id)}/run-now`,{});
-export const fetchProjectSyncEvents = (id:string) => request<PageResult<{id:string;attempt:number;state:string;startedAt:string;finishedAt?:string;detail:Record<string,unknown>}>>(`/api/v1/project-sync-sources/${encodeURIComponent(id)}/events`);
 
 export type CollectionLogic = "NONE" | "AGGREGATE_DIRECT_CHILDREN" | "AGGREGATE_DIRECT_CHILDREN_WITH_TAG" | "AGGREGATE_LATEST_VERSION_CHILDREN" | "AGGREGATE_ALL_DESCENDANTS";
 export interface CollectionTotals {rawVulnerabilityCount?:number;policyFailCount?:number;policyWarnCount?:number;policyInfoCount?:number;policySuppressedCount?:number;componentCount:number;vulnerabilityCount:number;vulnerableComponentCount:number;kevCount:number;policyViolationCount:number;suppressedVulnerabilityCount:number;severityCounts:Record<string,number>;uniqueVulnerabilityCount:number}
@@ -501,3 +481,26 @@ export const fetchPrivateAdvisories = (page=1) => request<PageResult<PrivateAdvi
 export const createPrivateAdvisory = (body:PrivateAdvisoryInput) => workflowMutation<PrivateAdvisory>("/api/v1/private-vulnerabilities",body);
 export const updatePrivateAdvisory = (advisory:PrivateAdvisory,body:PrivateAdvisoryInput) => workflowMutation<PrivateAdvisory>(`/api/v1/private-vulnerabilities/${encodeURIComponent(advisory.id)}`,{...body,expectedRevision:advisory.revision},"PUT");
 export const fetchPrivateAdvisoryHistory = (id:string) => request<unknown>(`/api/v1/private-vulnerabilities/${encodeURIComponent(id)}/history`);
+
+export interface UnifiedVulnerabilityStatus {
+  state: "active" | "empty" | "purged" | "purging" | "unavailable";
+  available: boolean;
+  currentVersion: string | null;
+  expectedBaseVersion: string | null;
+  managed: boolean;
+  signatureRequired: boolean;
+  referenceSources: {kind: string; id: string; dataDate?: string | null; status?: string; maxAgeDays?: number}[];
+  datasets?: {kind: string; dataDate?: string | null; status?: string; records?: number | null}[];
+  pendingJobs: VulnerabilityDataJob[];
+  canPurge: boolean;
+  blockedReason?: string | null;
+}
+export function fetchUnifiedVulnerabilityStatus() {
+  return request<UnifiedVulnerabilityStatus>("/api/v1/vulnerability-data-bundles/unified/status");
+}
+export function purgeUnifiedVulnerabilityData(expectedBaseVersion: string | null) {
+  return request<VulnerabilityDataJob>("/api/v1/vulnerability-data-bundles/unified/purge", {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({confirm: "DELETE VULNERABILITY DATA", expectedBaseVersion}),
+  });
+}

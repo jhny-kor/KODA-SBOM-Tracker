@@ -45,4 +45,11 @@ find "${staged_bundle}/images" -type f -name '*.tar' | sort | while read -r tar_
   docker load -i "$tar_file"
 done
 
+source "$ROOT_DIR/scripts/release-images.sh"
+if [[ -f "$staged_bundle/config/release-images.env" ]]; then
+  [[ -f "$ENV_FILE" ]] || { echo "runtime .env required to select imported images" >&2; exit 1; }
+  apply_release_images "$staged_bundle/config/release-images.env" "$ENV_FILE"
+fi
 echo "Imported images from ${input_path}"
+echo "Configured application images:"
+[[ ! -f "$staged_bundle/config/release-images.env" ]] || cat "$staged_bundle/config/release-images.env"

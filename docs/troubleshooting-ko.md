@@ -185,7 +185,7 @@ sudo cp -a "$MAIN" "$MAIN.bak.$(date +%Y%m%d%H%M%S)"
 docker exec -u 0 -i nginx sh -c \
   'cat > /usr/local/openresty/nginx/conf/nginx.conf' < "$MAIN"
 docker exec nginx nginx -t
-docker exec nginx nginx -T 2>&1 | grep -n 'server_name koda\.ssis\.or\.kr'
+docker exec nginx nginx -T 2>&1 | grep -n 'server_name koda\.example\.internal'
 docker exec nginx nginx -s reload
 ```
 

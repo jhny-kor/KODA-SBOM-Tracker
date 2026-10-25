@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
+import importlib.util
 
 
 def sha256(path: Path) -> str:
@@ -63,6 +64,12 @@ def build(kind: str, source: Path, output: Path, version: str, data_date: str) -
                             KEV_CATALOG='kev.json', KEV_DATASET_DATE=str(payload.get('dateReleased') or data_date),
                             KEV_SHA256=sha256(root / 'kev.json'),
                             SOURCE_URL='https://nvd.nist.gov/feeds/json/cve/2.0/;https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json')
+            sidecar_spec = importlib.util.spec_from_file_location('stage_intelligence', Path(__file__).with_name('stage-intelligence.py'))
+            sidecars = importlib.util.module_from_spec(sidecar_spec)
+            sidecar_spec.loader.exec_module(sidecars)
+            epss = next((source / name for name in ('epss.csv.gz', 'epss.csv') if (source / name).is_file()), None)
+            intelligence_index = source / 'intelligence.json'
+            metadata.update(sidecars.stage(root, epss=epss, intelligence_index=intelligence_index if intelligence_index.is_file() else None))
         for path in root.rglob('*'):
             if path.is_symlink():
                 raise ValueError('source symlinks are not allowed')

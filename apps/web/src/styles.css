@@ -256,6 +256,9 @@ tbody tr:hover { background: #f4fbfb; }
 .settings-tabs button svg { width: 18px; height: 18px; }
 .settings-tabs button:hover { color: var(--teal-dark); background: var(--teal-pale); }
 .settings-tabs button.active { color: var(--teal-dark); border-bottom-color: var(--teal); background: #f6fbfb; }
+.vulnerability-data-heading { display: flex; align-items: center; justify-content: space-between; gap: 24px; }
+.vulnerability-data-tabs { margin: 0; flex-wrap: nowrap; }
+.vulnerability-data-tabs button { white-space: nowrap; }
 .settings-panel { margin-top: 16px; }
 .settings-panel.generic-page { min-height: 0; padding: 0; }
 .settings-panel .page-heading { margin-bottom: 13px; }
@@ -296,9 +299,9 @@ button.danger.compact { min-height: 30px; padding: 0 10px; font-size: 12px; }
 .role-policy-section-heading p { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
 .permission-group h4 { margin: 6px 0 2px; font-size: 14px; }
 .role-policy-actions { padding: 0 16px 16px; }
-.dtrack-status { margin-top: 20px; }
-.dtrack-status-body { padding: 16px; display: flex; gap: 18px; align-items: center; flex-wrap: wrap; font-size: 13px; }
-.dtrack-status-body p { flex-basis: 100%; margin: 0; color: var(--muted); }
+.integration-status { margin-top: 20px; }
+.integration-status-body { padding: 16px; display: flex; gap: 18px; align-items: center; flex-wrap: wrap; font-size: 13px; }
+.integration-status-body p { flex-basis: 100%; margin: 0; color: var(--muted); }
 .integration-settings-panel > .table-frame + .table-frame { margin-top: 16px; }
 .table-title { margin: 0; padding: 14px 16px; border-bottom: 1px solid var(--border); font-size: 15px; }
 .compact { min-height: 30px; padding: 0 10px; font-size: 12px; }
@@ -478,3 +481,139 @@ button.danger.compact { min-height: 30px; padding: 0 10px; font-size: 12px; }
 /* Advisory authoring is one continuous form, including its package fieldsets. */
 .private-advisory-form { grid-template-columns: minmax(0, 1fr); }
 .private-advisory-form fieldset { min-width: 0; display: grid; gap: 12px; }
+
+/* Keep the administrator workflow inside the viewport on narrow devices. */
+@media (max-width: 520px) {
+  .app-shell, .app-shell.is-collapsed, .app-shell:not(.is-collapsed) { --sidebar: 72px; }
+  .app-shell .sidebar { transform: none; position: sticky; width: 72px; }
+  .page { padding: 14px 16px; }
+  .topbar { min-width: 0; }
+  .topbar .global-search { width: auto; min-width: 0; }
+  .settings-tabs { flex-wrap: nowrap; overflow-x: auto; max-width: 100%; align-items: stretch; }
+  .settings-tabs button { flex: 0 0 auto; white-space: nowrap; }
+  .settings-panel, .workflow-panel, .workflow-panel > *, .table-frame { min-width: 0; max-width: 100%; }
+  .workflow-panel { overflow-wrap: anywhere; }
+  .workflow-panel .button-row { flex-wrap: wrap; }
+  .workflow-panel .button-row > * { min-width: 0; max-width: 100%; }
+  .workflow-panel input[type="file"] { max-width: 100%; }
+  .workflow-panel .table-scroll { max-width: 100%; overflow-x: auto; }
+  .workflow-panel table { min-width: 440px; }
+  .workflow-panel .modal { width: calc(100vw - 24px); max-height: calc(100dvh - 24px); overflow-y: auto; overflow-wrap: anywhere; }
+  .workflow-panel .modal footer { flex-wrap: wrap; }
+}
+
+/* Desktop action bars keep results visible; the existing narrow-screen layout is unchanged. */
+@media (min-width: 900px) {
+  .detail-modal > .drawer-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 20px; background: #fff; box-shadow: 0 -3px 12px rgba(6,36,56,.05); }
+  .drawer-actions > .drawer-action-row { display: flex; flex: 0 0 auto; }
+  .drawer-actions > .archive-form { display: flex; align-items: center; flex: 1 1 260px; gap: 8px; }
+  .drawer-actions .archive-form input { flex: 1; width: 140px; }
+  .drawer-actions .secondary, .drawer-actions > button.danger { min-height: 36px; height: 36px; margin: 0; padding: 0 12px; font-size: 12px; white-space: nowrap; }
+  .drawer-actions > .form-message, .drawer-actions > .preview-note { flex-basis: 100%; margin: 0; }
+  .unified-data-actions > button { min-height: 40px; height: 40px; padding: 0 16px; font-size: 13px; white-space: nowrap; }
+}
+
+.vulnerability-data-samples { margin-top: 24px; border-top: 1px solid var(--border); padding-top: 18px; min-width: 0; }
+.vulnerability-data-samples > summary { font-weight: 650; cursor: pointer; }
+.data-sample-picker { display: flex; align-items: center; gap: 12px; margin: 18px 0; font-size: 13px; font-weight: 600; }
+.data-sample-picker select { min-width: 300px; height: 40px; padding: 0 12px; border: 1px solid var(--border-dark); border-radius: 4px; background: #fff; color: var(--text); }
+.data-sample-content { min-width: 0; }
+.data-sample-content h3 span { margin-left: 8px; font-size: 12px; font-weight: 400; }
+.data-sample-content pre { max-width: 100%; overflow: auto; margin: 16px 0 0; padding: 18px; border: 1px solid var(--border); border-radius: 4px; background: var(--surface); font-size: 12px; line-height: 1.7; tab-size: 2; }
+.data-sample-content td { vertical-align: top; }
+
+.data-sample-usage { margin: 16px 0; padding: 16px 18px; border: 1px solid var(--border); border-left: 3px solid var(--teal); border-radius: 4px; background: var(--surface); font-size: 13px; line-height: 1.8; }
+.data-sample-usage h4 { margin: 0 0 8px; font-size: 14px; }
+.data-sample-usage p { margin: 6px 0; }
+.data-sample-usage strong { margin-right: 10px; }
+.data-sample-usage ol { margin: 10px 0 0; padding-left: 22px; }
+
+@media (min-width: 900px) {
+  .detail-modal > .offline-run-evidence { margin: 20px; min-width: 0; font-size: 13px; }
+  .offline-run-evidence h3, .offline-run-evidence h4 { margin: 18px 0 12px; }
+  .offline-run-evidence p { line-height: 1.7; }
+  .tracker-view .tracker-table-scroll { min-width: 0; max-width: 100%; overflow-x: auto; }
+  .tracker-view .tracker-table-scroll:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
+  .tracker-view .tracker-evidence-table { table-layout: auto; width: 100%; min-width: 1400px; }
+  .tracker-view .tracker-evidence-findings { min-width: 1500px; }
+  .tracker-view .tracker-evidence-table th, .tracker-view .tracker-evidence-table td {
+    white-space: nowrap; overflow-wrap: normal; word-break: normal; vertical-align: top; padding: 10px 12px; line-height: 1.6;
+  }
+  .offline-run-evidence small { display: block; }
+  .offline-run-evidence form { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 12px; margin-top: 18px; }
+  .offline-run-evidence form h4, .offline-run-evidence form p { grid-column: 1 / -1; }
+  .offline-run-evidence form label { display: grid; gap: 6px; min-width: 0; }
+  .offline-run-evidence form input, .offline-run-evidence form select, .offline-run-evidence form textarea { width: 100%; min-width: 0; border: 1px solid var(--border-dark); border-radius: 4px; padding: 8px; }
+  .offline-run-evidence form button { justify-self: start; align-self: end; height: 40px; min-height: 40px; border: 1px solid var(--border-dark); border-radius: 4px; padding: 0 12px; background: white; }
+}
+
+/* New data and review screens follow the established desktop settings/detail scale. */
+@media (min-width: 900px) {
+  .tracker-view { min-width: 0; font-size: 13px; line-height: 1.6; }
+  .tracker-view.tracker-data-panel { gap: 0; border: 1px solid var(--border-dark); border-radius: 4px; background: #fff; }
+  .tracker-panel-body { display: grid; gap: 14px; padding: 16px; min-width: 0; }
+  .tracker-panel-body > p { margin: 0; }
+  .tracker-view h2, .tracker-view h3 { margin: 0; font-size: 15px; line-height: 1.4; font-weight: 650; }
+  .tracker-view h4 { font-size: 14px; line-height: 1.5; }
+  .tracker-view > p, .tracker-view .quality-heading p { margin: 0; }
+  .tracker-view .quality-heading p { margin-top: 6px; }
+  .tracker-view .muted, .tracker-view small { color: var(--muted); font-size: 12px; line-height: 1.6; }
+  .tracker-view label, .tracker-view legend { font-size: 13px; }
+  .tracker-view label { align-content: start; }
+  .tracker-view input:not([type="checkbox"]):not([type="file"]), .tracker-view select, .tracker-view textarea {
+    min-width: 0; border: 1px solid var(--border-dark); border-radius: 4px; background: #fff; color: inherit; font-family: inherit; font-size: 13px; font-weight: 400; padding: 9px 11px;
+  }
+  .tracker-view input:not([type="checkbox"]):not([type="file"]), .tracker-view select { height: 38px; }
+  .tracker-view select[multiple] { height: auto; min-height: 74px; }
+  .tracker-view textarea { line-height: 1.6; }
+  .tracker-view > .detail-table-heading { margin: 0; }
+  .tracker-view .tracker-raw-code {
+    max-width: 100%; margin: 12px 0; padding: 16px; border: 1px solid var(--border); border-radius: 4px; background: var(--surface); color: inherit;
+    max-height: 420px; overflow: auto; white-space: pre; overflow-wrap: normal; word-break: normal; font: 12px/1.7 ui-monospace, SFMono-Regular, Menlo, monospace; tab-size: 2;
+  }
+  .tracker-view .tracker-purge-modal { max-height: calc(100vh - 48px); overflow-y: auto; }
+  .tracker-view .tracker-purge-modal h2 { font-size: 20px; }
+  .tracker-view .tracker-purge-modal form p { margin: 0; line-height: 1.6; }
+  .tracker-view .tracker-purge-modal form label { font-size: 13px; }
+}
+
+/* Project-to-run navigation uses the existing desktop card and table scale. */
+@media (min-width: 900px) {
+  .project-catalog-card { padding: 16px; min-width: 0; grid-template-columns: minmax(0, 1fr); }
+  .project-catalog-card fieldset { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 16px; padding: 14px; border: 1px solid var(--border); border-radius: 4px; min-width: 0; }
+  .project-catalog-card fieldset > label { min-width: 0; }
+  .project-catalog-card fieldset input:not([type="checkbox"]), .project-catalog-card fieldset select { width: 100%; }
+  .project-catalog-card fieldset > button { justify-self: start; align-self: end; }
+  .project-catalog-card-heading, .project-linked-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+  .project-catalog-card-heading h3, .project-linked-heading h4 { margin: 0; }
+  .project-catalog-open { display: inline-flex; align-items: center; gap: 12px; border: 0; padding: 0; min-height: 30px; background: transparent; color: var(--teal-dark); font: inherit; font-weight: 650; text-align: left; }
+  .project-catalog-open:hover { text-decoration: underline; }
+  .project-catalog-open:focus-visible { outline: 2px solid var(--teal); outline-offset: 4px; }
+  .project-linked-runs { display: grid; gap: 12px; padding: 16px; border: 1px solid var(--border); border-radius: 4px; background: #fff; min-width: 0; }
+  .project-linked-runs > p { margin: 0; }
+  .project-runs-scroll { max-width: 100%; min-width: 0; overflow-x: auto; }
+  .project-runs-scroll:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
+  .project-runs-table { width: 100%; min-width: 1000px; }
+  .project-runs-table th, .project-runs-table td { white-space: nowrap; }
+  .project-result-link { color: var(--teal-dark); text-decoration: underline; font-weight: 650; }
+}
+
+/* Contain desktop table overflow in its own region, including grid cards. */
+.table-frame, .table-scroll, .project-runs-scroll { min-width: 0; max-width: 100%; }
+.table-scroll { overflow-x: auto; }
+.table-scroll > table { width: max-content; min-width: 100%; }
+.table-scroll:focus-visible { outline: 2px solid var(--teal); outline-offset: -2px; }
+.diff-table .mono { max-width: none; overflow: visible; text-overflow: clip; }
+.inspector dl { grid-template-columns: 72px minmax(0, 1fr); min-width: 0; }
+.inspector dt, .inspector dd { min-width: 0; white-space: normal; overflow-wrap: anywhere; }
+.inspector > div { overflow-wrap: anywhere; }
+.inspector .paths, .inspector .paths li, .inspector .vulnerabilities li { min-width: 0; overflow-wrap: anywhere; }
+.inspector .vulnerabilities li { flex-wrap: wrap; }
+@media (min-width: 900px) {
+  .settings-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); min-width: 0; }
+  .settings-grid > * { min-width: 0; }
+}
+@media (min-width: 900px) {
+  .cpe-coverage.tracker-view .table-scroll > .cpe-coverage-table { table-layout: auto; width: max-content; min-width: 100%; }
+  .cpe-coverage.tracker-view .cpe-coverage-table th, .cpe-coverage.tracker-view .cpe-coverage-table td { width: auto; white-space: nowrap; }
+}

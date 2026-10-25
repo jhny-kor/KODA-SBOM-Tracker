@@ -4,6 +4,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field
 
 
 class Settings(BaseSettings):
@@ -34,6 +35,10 @@ class Settings(BaseSettings):
     bootstrap_admin_username: str = "admin"
     bootstrap_admin_password: str = ""
     ldap_encryption_key: str = ""
+    # Closed-network installations use imported data. Enabling an older online
+    # feature flag cannot override this boundary.
+    offline_mode: bool = True
+    epss_policy_max_age_days: int = Field(default=7, ge=0, le=365)
     package_metadata_enabled: bool = True
     package_metadata_ttl_seconds: int = 86400
     package_metadata_request_timeout_seconds: int = 10
@@ -44,16 +49,13 @@ class Settings(BaseSettings):
     notification_webhook_url: str = ""
     notification_webhook_secret: str = ""
     notification_allowed_hosts: str = ""
-    dependency_track_enabled: bool = False
-    dependency_track_url: str = ""
-    dependency_track_api_key: str = ""
-    dependency_track_ui_url: str = "/dependency-track/"
     cyclonedx_cli_binary: str = ""
     grype_binary: str = "grype"
     grype_db_dir: Path = Path("./data/vuln-data/current/grype-db")
     # Optional second pinned binary used to prove KODA/Tracker DB compatibility
     # during an offline update.  Empty keeps standalone Tracker installs valid.
     data_update_koda_grype_binary: str = ""
+    data_update_verify_key: Path | None = None
     data_update_spool_dir: Path = Path("./data/vuln-data/staging")
     koda_provisioning_token_file: Path | None = None
 

@@ -4,7 +4,6 @@ These produce JSON booleans consumed by ordinary CEL. They do not expose host
 callbacks or evaluate arbitrary policy code. Java compatibility regexes use a
 separate bounded JVM; all other helpers are pure value calculations.
 Semantics checked against the 5.0.3 upstream policy compatibility tests:
-https://github.com/DependencyTrack/dependency-track/tree/5.0.3/apiserver/src/main/java/org/dependencytrack/policy
 Generic version token rules checked against versatile v0.18.3 ComponentVersion:
 https://github.com/nscuro/versatile/blob/v0.18.3/versatile-core/src/main/java/io/github/nscuro/versatile/version/ext/ComponentVersion.java
 """

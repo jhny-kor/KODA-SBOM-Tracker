@@ -13,7 +13,8 @@ function valueLabel(value: unknown): string {
   if (value === null || value === undefined || value === "") return "없음";
   return typeof value === "string" ? value : JSON.stringify(value);
 }
-function delta(value: number): string { return value > 0 ? `+${value}` : String(value); }
+function qualityNumber(value: number, fractionDigits = 2): string { return String(Number(value.toFixed(fractionDigits))); }
+function delta(value: number): string { return value > 0 ? `+${qualityNumber(value)}` : qualityNumber(value); }
 const inheritanceLabels: Record<string, string> = { project: "프로젝트 직접 기준", tag: "프로젝트 태그 기준", parent: "부모 프로젝트 기준", parent_tag: "부모 태그 기준", global: "공통 기본 기준" };
 function InheritanceEvidence({ profile }: { profile: QualityProfile }) {
   const resolution = profile.resolution;
@@ -27,13 +28,13 @@ function InheritanceEvidence({ profile }: { profile: QualityProfile }) {
 function QualityScore({ summary }: { summary: QualitySummary }) {
   const details = summary.scoreDetails;
   return <div className="quality-score" aria-label="가중 품질 점수">
-    <p><strong>{summary.score === null ? "점수 없음 · 이전 엔진 또는 적용 불가" : `가중 품질 점수 ${summary.score.toFixed(2)} / 100`}</strong></p>
-    {summary.minScore !== undefined && summary.minScore !== null && <p>점수 하한 {summary.minScore.toFixed(2)}점{summary.scoreThresholdViolated ? " · 점수 하한 미달" : ""}</p>}
+    <p><strong>{summary.score === null ? "점수 없음 · 이전 엔진 또는 적용 불가" : `가중 품질 점수 ${qualityNumber(summary.score)} / 100`}</strong></p>
+    {summary.minScore !== undefined && summary.minScore !== null && <p>점수 하한 {qualityNumber(summary.minScore)}점{summary.scoreThresholdViolated ? " · 점수 하한 미달" : ""}</p>}
     {!!summary.blockingIssueCount && <p className="quality-issue-error">필수 오류 {summary.blockingIssueCount}건 · 높은 점수로 필수 오류를 상쇄할 수 없습니다.</p>}
     {details?.domains && <><div className="table-scroll"><table><thead><tr><th>영역</th><th>영역 점수</th><th>통과 / 검사 단위</th><th>설정 가중치</th><th>합산 기여점수</th></tr></thead><tbody>{QUALITY_DOMAINS.map(domain => {
       const item = details.domains?.[domain];
       if (!item) return null;
-      return <tr key={domain}><th>{fieldLabels[domain]}</th><td>{item.applicable === false || item.score === null ? "적용 불가" : item.score.toFixed(2)}</td><td>{item.numerator ?? item.passed ?? 0} / {item.denominator ?? item.total ?? 0}</td><td>{item.weight ?? 0}%</td><td>{item.weightedContribution === null || item.weightedContribution === undefined ? "제외" : item.weightedContribution.toFixed(2)}</td></tr>;
+      return <tr key={domain}><th>{fieldLabels[domain]}</th><td>{item.applicable === false || item.score === null ? "적용 불가" : qualityNumber(item.score)}</td><td>{item.numerator ?? item.passed ?? 0} / {item.denominator ?? item.total ?? 0}</td><td>{item.weight ?? 0}%</td><td>{item.weightedContribution === null || item.weightedContribution === undefined ? "제외" : qualityNumber(item.weightedContribution)}</td></tr>;
     })}</tbody></table></div><p className="muted">적용 불가 영역은 합산 분모에서 제외합니다. 누락된 필수 자료는 정상으로 계산하지 않습니다. 점수는 KODA 기준이며 공식 표준 인증 점수가 아닙니다.</p></>}
   </div>;
 }
@@ -42,7 +43,7 @@ const emptyIssues: QualityPage<QualityIssue> = { items: [], total: 0, page: 1, s
 export function SbomQualityPanel({ runId, canRerun, canViewProfiles, canManage, archived = false, analysisId = "" }: {
   runId: string; canRerun: boolean; canViewProfiles: boolean; canManage: boolean; archived?: boolean; analysisId?: string;
 }) {
-  if (previewMode) return <section className="quality-panel"><h3>SBOM 품질</h3><p className="muted">품질 진단은 서버에 저장된 SBOM에서 실행합니다. 미리보기에서는 진단 결과를 생성하지 않습니다.</p></section>;
+  if (previewMode) return <section className="quality-panel tracker-view"><h3>SBOM 품질</h3><p className="muted">품질 진단은 서버에 저장된 SBOM에서 실행합니다. 미리보기에서는 진단 결과를 생성하지 않습니다.</p></section>;
   return <QualityResults key={runId} runId={runId} canRerun={canRerun} canViewProfiles={canViewProfiles} canManage={canManage} archived={archived} analysisId={analysisId} />;
 }
 
@@ -92,7 +93,7 @@ function QualityResults({ runId, canRerun, canViewProfiles, canManage, archived,
     catch (reason) { setError(reason instanceof Error ? reason.message : "품질 진단을 실행하지 못했습니다."); }
     finally { setBusy(false); }
   }
-  return <section className="quality-panel" aria-label="SBOM 품질 진단">
+  return <section className="quality-panel tracker-view" aria-label="SBOM 품질 진단">
     <div className="quality-heading"><div><h3>SBOM 품질</h3><p className="muted">취약점 위험과 별도로 SBOM의 식별·관계·라이선스·무결성·출처를 진단합니다.</p></div>
       {canRerun && <button type="button" className="secondary compact" disabled={busy || archived} onClick={() => void rerun()}>{busy ? "진단 중…" : "품질 재진단"}</button>}
     </div>
@@ -111,11 +112,11 @@ function QualityResults({ runId, canRerun, canViewProfiles, canManage, archived,
         <InheritanceEvidence profile={selected.profileSnapshot} />
         {selected.error && <p role="alert" className="form-message">{selected.error}</p>}
         {selected.state === "completed" && <>
-          <div className="quality-metrics"><span>구성요소 <strong>{selected.summary.componentCount}</strong></span><span>오류 <strong>{selected.summary.errorCount}</strong></span><span>경고 <strong>{selected.summary.warningCount}</strong></span><span>식별자 누락 <strong>{selected.summary.missingIdentityCount} ({selected.summary.missingIdentityRatio === null ? "적용 불가" : `${(selected.summary.missingIdentityRatio * 100).toFixed(1)}%`})</strong></span><span>끊어진 참조 <strong>{selected.summary.unresolvedRefCount}</strong></span></div>
+          <div className="quality-metrics"><span>구성요소 <strong>{selected.summary.componentCount}</strong></span><span>오류 <strong>{selected.summary.errorCount}</strong></span><span>경고 <strong>{selected.summary.warningCount}</strong></span><span>식별자 누락 <strong>{selected.summary.missingIdentityCount} ({selected.summary.missingIdentityRatio === null ? "적용 불가" : `${qualityNumber(selected.summary.missingIdentityRatio * 100, 1)}%`})</strong></span><span>끊어진 참조 <strong>{selected.summary.unresolvedRefCount}</strong></span></div>
           <QualityScore summary={selected.summary} />
-          {Object.keys(selected.summary.fieldStatus || {}).length > 0 && <details><summary>필드별 적용·누락·미확인 상태</summary><dl className="quality-fields">{Object.entries(selected.summary.fieldStatus).map(([name, value]) => <div key={name}><dt>{fieldLabels[name] || name}</dt><dd>{typeof value === "string" ? fieldStatusLabels[value] || value : valueLabel(value)}</dd></div>)}</dl></details>}
+          {Object.keys(selected.summary.fieldStatus || {}).length > 0 && <details className="quality-field-details"><summary>필드별 적용·누락·미확인 상태</summary><dl className="quality-fields">{Object.entries(selected.summary.fieldStatus).map(([name, value]) => <div key={name} className={name === "integrity" || name === "license" ? "quality-field-wide" : undefined}><dt>{fieldLabels[name] || name}</dt><dd>{typeof value === "string" ? fieldStatusLabels[value] || value : valueLabel(value)}</dd></div>)}</dl></details>}
         </>}
-        {selected.comparison && <p className="muted">직전 품질 진단 대비 오류 {delta(selected.comparison.errorDelta)}건 · 경고 {delta(selected.comparison.warningDelta)}건{typeof selected.comparison.scoreDelta === "number" ? ` · 점수 ${selected.comparison.scoreDelta > 0 ? "+" : ""}${selected.comparison.scoreDelta.toFixed(2)}점` : ""}. 평가 기준·엔진 변경 여부도 함께 확인하세요.</p>}
+        {selected.comparison && <p className="muted">직전 품질 진단 대비 오류 {delta(selected.comparison.errorDelta)}건 · 경고 {delta(selected.comparison.warningDelta)}건{typeof selected.comparison.scoreDelta === "number" ? ` · 점수 ${selected.comparison.scoreDelta > 0 ? "+" : ""}${qualityNumber(selected.comparison.scoreDelta)}점` : ""}. 평가 기준·엔진 변경 여부도 함께 확인하세요.</p>}
         <small className="quality-evidence">엔진 {selected.engineVersion} · 원본 SHA-256 <span className="mono">{selected.originalSha256}</span></small>
         {selected.summary.sourceBasis && <p className="muted">진단 근거: {selected.summary.sourceBasis === "verified_original_artifact" ? "SHA-256 확인을 마친 원본 SBOM" : "저장된 정규화 JSON (원본 파일 확인 전 · CI 통과 불가)"}</p>}
         <div className="quality-toolbar"><label>심각도<select aria-label="품질 심각도" value={severity} onChange={event => { setSeverity(event.target.value); setPage(1); }}><option value="">전체</option><option value="error">오류</option><option value="warning">경고</option></select></label><label>규칙 ID<input aria-label="품질 규칙 ID" placeholder="예: identity.missing" value={ruleId} onChange={event => { setRuleId(event.target.value); setPage(1); }} /></label><span>전체 {issues.total}건</span></div>

@@ -1,20 +1,27 @@
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import { demoMode, previewMode, standaloneMode, activateVulnerabilityBundle, approveUser, archiveRun, createApiToken, createAnalysis, createEnvironment, createService, createUser, deleteRun, deleteUser, fetchAuditEvents, fetchApiTokens, fetchCatalogs, fetchComparison, fetchDependencyTrackStatus, fetchJob, fetchLdapSettings, fetchRun, fetchRunComponents, fetchRunFindings, fetchRuns, fetchUsers, fetchVulnerabilityBundles, login, patchEnvironment, patchService, patchUser, logout, register, resumeSession, retryDependencyTrack, revokeApiToken, updateLdapSettings, uploadRun, syncVulnerabilityBundles, fetchRolePolicies, updateRolePolicies, setForbiddenHandler, uploadVulnerabilityData, fetchVulnerabilityDataJob, applyVulnerabilityDataJob, rollbackVulnerabilityData } from "./api";
+import { demoMode, previewMode, standaloneMode, activateVulnerabilityBundle, approveUser, archiveRun, createApiToken, createAnalysis, createEnvironment, createService, createUser, deleteRun, deleteUser, fetchAuditEvents, fetchApiTokens, fetchCatalogs, fetchComparison, fetchJob, fetchLdapSettings, fetchRun, fetchRunComponents, fetchRunFindings, fetchRuns, fetchUsers, fetchVulnerabilityBundles, login, patchEnvironment, patchService, patchUser, logout, register, resumeSession, revokeApiToken, updateLdapSettings, uploadRun, syncVulnerabilityBundles, fetchRolePolicies, updateRolePolicies, setForbiddenHandler } from "./api";
 import { demoChanges, demoLdapSettings, demoRolePolicyCatalog, demoRuns } from "./demo";
 import { formatSeoulDateTime } from "./format";
 import { Icon } from "./icons";
 import { ReanalysisSchedulePanel } from "./ReanalysisSchedule";
-import { PackageMetadataPanel, LegacyMigrationPanel } from "./OperationsData";
+import { PackageMetadataPanel } from "./OperationsData";
+import { UnifiedVulnerabilityDataPanel } from "./UnifiedVulnerabilityData";
 import { ProjectCatalogPanel } from "./ProjectCatalog";
 import { PrivateVulnerabilitiesPanel } from "./PrivateVulnerabilities";
 import { NotificationsPanel } from "./Notifications";
 import { VexReviewsPanel } from "./VexReviews";
+import { OfflineIntelligencePanel, OfflineRunEvidence } from "./OfflineIntelligence";
+import { SsvcAssessmentsPanel } from "./SsvcAssessments";
+import { EpssEvidence } from "./EpssEvidence";
+import { CpeCoverage } from "./CpeCoverage";
+import { latestAnalysisRevision } from "./analysisRevision";
 import { SbomQualityPanel } from "./SbomQuality";
 import { SbomPoliciesPanel } from "./SbomPolicies";
 import { AnalysisPolicyHistory, NativePolicyResult } from "./NativePolicyResult";
 import { policyCountLabel } from "./policy";
+import { analysisAvailable, analysisUnavailableReason } from "./analysisAvailability";
 import { canPage, dataAccess, hasPermissions, pageForPermissions, permissionSet, type Page } from "./permissions";
-import type { AnalysisRevisionSummary, AuditEvent, AuthUser, CatalogItem, Comparison, ComponentChange, ComponentSnapshot, DependencyTrackStatus, LdapSettings, RecordChange, RolePolicy, SbomRun, SbomRunDetail, UserSummary, VulnerabilityBundle } from "./types";
+import type { AnalysisRevisionSummary, AuditEvent, AuthUser, CatalogItem, Comparison, ComponentChange, ComponentSnapshot, LdapSettings, RecordChange, RolePolicy, SbomRun, SbomRunDetail, UserSummary, VulnerabilityBundle } from "./types";
 
 const nav: { id: Page; label: string; icon: string }[] = [
   { id: "dashboard", label: "대시보드", icon: "dashboard" },
@@ -23,7 +30,7 @@ const nav: { id: Page; label: string; icon: string }[] = [
   { id: "settings", label: "설정", icon: "settings" }];
 const guideNav = { id: "guide" as Page, label: "사용 가이드", icon: "guide" };
 
-type SettingsTab = "private-vulnerabilities" | "metadata" | "migration" | "reanalysis" | "notifications" | "sbom-policies" | "users" | "roles" | "vulnerability" | "audit" | "integration" | "ldap" | "services";
+type SettingsTab = "private-vulnerabilities" | "metadata" | "projects" | "reanalysis" | "notifications" | "sbom-policies" | "users" | "roles" | "vulnerability" | "audit" | "integration" | "ldap" | "services";
 
 const ROLE_LABELS: Record<string, string> = {
   admin: "관리자",
@@ -44,27 +51,25 @@ const PERMISSION_LABELS: Record<string, string> = {
   "sbom.upload": "SBOM 업로드",
   "artifact.download": "원본 SBOM 다운로드",
   "analysis.create": "분석 리비전 생성",
-  "dtrack.retry": "기존 외부 시스템 재시도",
   "sbom.archive": "회차 보관",
   "sbom.delete": "회차 영구 삭제",
   "catalog.manage": "서비스·환경 관리",
   "vulnerability.manage": "취약점 데이터 관리",
   "users.manage": "사용자 관리",
   "tokens.manage": "API 토큰 관리",
-  "dtrack.settings": "기존 외부 시스템 연결 설정",
   "roles.manage": "권한 정책 관리",
   "policies.view": "SBOM 정책 조회",
   "policies.manage": "SBOM 정책 관리",
   "reanalysis.view": "재분석 일정 조회", "reanalysis.manage": "재분석 일정 관리",
   "vex.view": "VEX 검토 조회", "vex.manage": "VEX 검토 요청", "vex.approve": "VEX 검토 승인",
-  "metadata.view": "패키지 메타데이터 조회", "metadata.manage": "패키지 메타데이터 수집", "migrations.manage": "기존 시스템 이관",
+  "metadata.view": "패키지 메타데이터 조회", "metadata.manage": "패키지 메타데이터 수집",
   "notifications.view": "알림 조회", "notifications.manage": "알림 전송 관리",
 };
 
 const PERMISSION_GROUPS: { label: string; permissions: string[] }[] = [
   { label: "화면 조회", permissions: ["dashboard.view", "runs.view", "compare.view", "settings.view"] },
-  { label: "SBOM·분석", permissions: ["sbom.upload", "artifact.download", "analysis.create", "dtrack.retry", "sbom.archive", "sbom.delete"] },
-  { label: "운영 관리", permissions: ["catalog.manage", "vulnerability.manage", "metadata.view", "metadata.manage", "migrations.manage", "policies.view", "policies.manage", "reanalysis.view", "reanalysis.manage", "vex.view", "vex.manage", "vex.approve", "notifications.view", "notifications.manage", "dtrack.settings"] },
+  { label: "SBOM·분석", permissions: ["sbom.upload", "artifact.download", "analysis.create", "sbom.archive", "sbom.delete"] },
+  { label: "운영 관리", permissions: ["catalog.manage", "vulnerability.manage", "metadata.view", "metadata.manage", "policies.view", "policies.manage", "reanalysis.view", "reanalysis.manage", "vex.view", "vex.manage", "vex.approve", "notifications.view", "notifications.manage"] },
   { label: "계정·권한", permissions: ["users.manage", "tokens.manage", "roles.manage"] },
 ];
 
@@ -328,7 +333,7 @@ export function Dashboard({ runs, onUpload,
               run.service.id === "standalone-service" || run.id.startsWith("standalone-")))
     .sort((left, right) => left.createdAt.localeCompare(right.createdAt)), [runs, standalone]);
   // ponytail: chart the latest 12 uploads to keep the local preview readable; add pagination when history needs to scale.
-  const chartRuns = useMemo(() => uploadedRuns.slice(-12), [uploadedRuns]);
+  const chartRuns = useMemo(() => uploadedRuns.filter(analysisAvailable).slice(-12), [uploadedRuns]);
   const [trendTooltip, setTrendTooltip] = useState<ChartTooltip | null>(null);
 
   const latest = uploadedRuns.at(-1);
@@ -351,7 +356,7 @@ export function Dashboard({ runs, onUpload,
             </p></div>{canUpload && (<button className="primary" onClick={onUpload}><Icon name="upload" />SBOM 업로드
             </button>)}
         </div>
-    <div className="preview-empty"><Icon name="upload" /><h2>아직 업로드한 SBOM이 없습니다.</h2><p>SBOM 회차에서 CycloneDX JSON/XML을 업로드하면 이 화면에 분석
+    <div className="preview-empty"><Icon name="upload" /><h2>아직 업로드한 SBOM이 없습니다.</h2><p>SBOM 회차에서 CycloneDX 1.4~1.7 JSON/XML 또는 SPDX 2.3 JSON을 업로드하면 이 화면에 분석
             그래프가 표시됩니다.
           </p>{canUpload && (<button className="primary" onClick={onUpload}>첫 SBOM 업로드
             </button>)}
@@ -373,11 +378,11 @@ export function Dashboard({ runs, onUpload,
     <div className="preview-metrics">
       <PreviewMetric label="구성요소 유형" value={componentTypeCount.toLocaleString()} description="최신 SBOM의 고유 유형" values={chartRuns.map((run) => Object.keys(run.componentTypeCounts || {}).length)} color="#32c6d1" pointLabels={chartRuns.map(pointLabel)} />
       <PreviewMetric label="구성요소" value={(latest?.componentCount || 0).toLocaleString()} description={`최신 · ${latest?.filename || "SBOM"}`} values={chartRuns.map((run) => run.componentCount)} color="#32c6d1" pointLabels={chartRuns.map(pointLabel)} />
-      <PreviewMetric label="취약 구성요소" value={(latest ? vulnerableComponents(latest) : 0).toLocaleString()} description="취약점이 있는 고유 구성요소" values={chartRuns.map(vulnerableComponents)} color="#a970ff" pointLabels={chartRuns.map(pointLabel)} />
-      <PreviewMetric label="KEV" value={kevCount.toLocaleString()} description={standalone ?"내장 KEV 플래그" : "분석 결과 KEV 플래그"} values={chartRuns.map((run) => run.kevCount || 0)} color="#ff8b8b" pointLabels={chartRuns.map(pointLabel)} />
+      <PreviewMetric label="취약 구성요소" value={analysisAvailable(latest) ? vulnerableComponents(latest!).toLocaleString() : "미평가"} description="취약점이 있는 고유 구성요소" values={chartRuns.map(vulnerableComponents)} color="#a970ff" pointLabels={chartRuns.map(pointLabel)} />
+      <PreviewMetric label="KEV" value={analysisAvailable(latest) ? kevCount.toLocaleString() : "미평가"} description={standalone ?"내장 KEV 플래그" : "분석 결과 KEV 플래그"} values={chartRuns.map((run) => run.kevCount || 0)} color="#ff8b8b" pointLabels={chartRuns.map(pointLabel)} />
     </div>
     <div className="preview-chart-grid">
-      <article className="preview-chart-card preview-trend-card"><header><div><h2>업로드별 분석 추이</h2><p>최근 SBOM 회차의 구성요소·취약 구성요소 변화</p></div><span className="preview-chart-meta">{cveBaseline(latest)}</span></header>
+      <article className="preview-chart-card preview-trend-card"><header><div><h2>업로드별 분석 추이</h2><p>분석 완료 회차의 구성요소·취약 구성요소 변화</p></div><span className="preview-chart-meta">{cveBaseline(latest)}</span></header>
         <div className="preview-legend">{series.map((item) => (<span key={item.label}><i style={{ background: item.color }} />{item.label}</span>))}</div>
         <div className="preview-chart-scroll"><div className="preview-chart-canvas"><svg className="preview-chart" viewBox="0 0 760 250" role="img" aria-label="업로드별 구성요소와 취약 구성요소 추이">
           <title>업로드별 구성요소와 취약 구성요소 추이</title>
@@ -386,9 +391,9 @@ export function Dashboard({ runs, onUpload,
           {chartRuns.map((run, index) => (<text key={run.id} x={chartRuns.length === 1 ? 390 : 36 + (index / (chartRuns.length - 1)) * 708} y="238" textAnchor="middle" className="preview-axis-label">#{uploadedRuns.length - chartRuns.length + index + 1}</text>))}
         </svg><ImmediateChartTooltip tooltip={trendTooltip} /></div></div>
       </article>
-      <article className="preview-chart-card"><header><div><h2>최신 SBOM 심각도</h2><p>{latest?.filename || "업로드 파일"}</p></div><span className="preview-chart-total">{latest?.vulnerabilityCount || 0}건</span></header>
-        <PreviewBars items={severityItems} emptyLabel="최신 분석에 취약점 레코드가 없습니다." />
-        <div className="preview-chart-footnote">CVE 기준일 {cveBaseline(latest)} · KEV {kevCount}건
+      <article className="preview-chart-card"><header><div><h2>최신 SBOM 심각도</h2><p>{latest?.filename || "업로드 파일"}</p></div><span className="preview-chart-total">{analysisAvailable(latest) ? `${latest?.vulnerabilityCount || 0}건` : "미평가"}</span></header>
+        {analysisAvailable(latest) ? <PreviewBars items={severityItems} emptyLabel="최신 분석에 취약점 레코드가 없습니다." /> : <p role="alert">{analysisUnavailableReason(latest)}</p>}
+        <div className="preview-chart-footnote">CVE 기준일 {cveBaseline(latest)} · KEV {analysisAvailable(latest) ? `${kevCount}건` : "미평가"}
           </div>
       </article>
     </div>
@@ -466,7 +471,7 @@ function RunsPage({ runs, services, environments, search, onUpload, onSelect,
                 <tr key={run.id} onClick={() => onSelect(run)} tabIndex={0}>
                   <td className="sticky-name">{run.service.name}</td><td>{run.environment.name}</td><td>{run.releaseVersion}</td>
                   <td>{run.roundNumber}차</td><td>{cveBaseline(run)}</td><td>{run.componentCount.toLocaleString()}</td>
-                  <td>{run.vulnerabilityCount}</td><td>{policyCountLabel(run)}</td>
+                  <td title={analysisAvailable(run) ? undefined : analysisUnavailableReason(run)}>{analysisAvailable(run) ? run.vulnerabilityCount : <>미평가<small className="workflow-id">{analysisUnavailableReason(run)}</small></>}</td><td>{policyCountLabel(run)}</td>
                   <td><span className={`state ${run.state}`}>{stateLabel(run.state)}</span></td>
                   <td>{formatSeoulDateTime(run.createdAt)}</td>
                 </tr>
@@ -561,6 +566,9 @@ function ComparePage({ runs, can }: { runs: SbomRun[]; can: (permission: string)
     // Initial selections only; subsequent comparisons are explicit.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [baseAnalysisId, baseId, comparison, targetAnalysisId, targetId]);
+  const baseRevision = baseAnalyses.find(item => item.id === baseAnalysisId);
+  const targetRevision = targetAnalyses.find(item => item.id === targetAnalysisId);
+  const securityAvailable = !!comparison && analysisAvailable(baseRevision || baseRun) && analysisAvailable(targetRevision || targetRun);
   const summary = comparison?.summary;
   const changes = comparison?.components || [];
   return (
@@ -575,6 +583,7 @@ function ComparePage({ runs, can }: { runs: SbomRun[]; can: (permission: string)
       </div>
       <div className="analysis-pickers"><label><span>기준 분석 리비전</span><select value={baseAnalysisId} onChange={(event) => { setBaseAnalysisId(event.target.value); setComparison(null);}}><option value="">최신 리비전</option>{baseAnalyses.map((item) => (<option key={item.id} value={item.id}>r{item.sequence} · {dataBaselineLabel(preferredCveDate(item.cveDataAsOf, item.dataAsOf), "CVE 기준일 확인 필요")}</option>))}</select></label><label><span>비교 분석 리비전</span><select value={targetAnalysisId} onChange={(event) => { setTargetAnalysisId(event.target.value); setComparison(null);}}><option value="">최신 리비전</option>{targetAnalyses.map((item) => (<option key={item.id} value={item.id}>r{item.sequence} · {dataBaselineLabel(preferredCveDate(item.cveDataAsOf, item.dataAsOf), "CVE 기준일 확인 필요")}</option>))}</select></label></div>
       {message && (<p className="form-message" role="status">{message}</p>)}
+      {!securityAvailable && <p role="alert">취약점·정책 비교 미평가: {analysisUnavailableReason(!analysisAvailable(baseRevision || baseRun) ? baseRevision || baseRun : targetRevision || targetRun)}</p>}
       <div className="diff-summary">
         {[
           ["구성요소 추가", summary?.componentsAdded ?? 0, "teal"],
@@ -582,7 +591,7 @@ function ComparePage({ runs, can }: { runs: SbomRun[]; can: (permission: string)
           ["구성요소 변경", summary?.componentsChanged ?? 0, "amber"],
           ["신규 취약점", summary?.vulnerabilitiesAdded ?? 0, "red"],
           ["해소 취약점", summary?.vulnerabilitiesRemoved ?? 0, "teal"],
-          ["정책 변화", summary?.policiesChanged ?? 0, "red"]].map((item) => (<div key={item[0]}><span>{item[0]}</span><strong className={String(item[2])}>{item[1]}</strong></div>))}
+          ["정책 변화", summary?.policiesChanged ?? 0, "red"]].map((item) => (<div key={item[0]}><span>{item[0]}</span><strong className={String(item[2])}>{["신규 취약점", "해소 취약점", "정책 변화"].includes(String(item[0])) && !securityAvailable ? "미평가" : item[1]}</strong></div>))}
       </div>
       <div className="tabs" role="tablist">
         <button role="tab" aria-selected={tab === "components"} className={tab === "components" ? "active" : ""} onClick={() => setTab("components")}>구성요소
@@ -592,7 +601,7 @@ function ComparePage({ runs, can }: { runs: SbomRun[]; can: (permission: string)
         <button role="tab" aria-selected={tab === "policies"} className={tab === "policies" ? "active" : ""} onClick={() => setTab("policies")}>정책 위반
         </button>
       </div>
-      {tab === "policies" && comparison && <p className="form-message">기준 정책: {comparison.base.policyVersion ? `v${comparison.base.policyVersion}` : "기존 결과"} · {comparison.base.policyState === "completed" ? "평가 완료" : comparison.base.policyState === "failed" ? "평가 실패" : "KODA 정책 미평가"} / 비교 정책: {comparison.target.policyVersion ? `v${comparison.target.policyVersion}` : "기존 결과"} · {comparison.target.policyState === "completed" ? "평가 완료" : comparison.target.policyState === "failed" ? "평가 실패" : "KODA 정책 미평가"}</p>}
+      {tab === "policies" && comparison && securityAvailable && <p className="form-message">기준 정책: {comparison.base.policyVersion ? `v${comparison.base.policyVersion}` : "기존 결과"} · {comparison.base.policyState === "completed" ? "평가 완료" : comparison.base.policyState === "failed" ? "평가 실패" : "KODA 정책 미평가"} / 비교 정책: {comparison.target.policyVersion ? `v${comparison.target.policyVersion}` : "기존 결과"} · {comparison.target.policyState === "completed" ? "평가 완료" : comparison.target.policyState === "failed" ? "평가 실패" : "KODA 정책 미평가"}</p>}
       {tab === "components" ? (
         <>
           <div className="table-frame diff-table-frame"><div className="table-scroll"><table className="diff-table">
@@ -601,9 +610,9 @@ function ComparePage({ runs, can }: { runs: SbomRun[]; can: (permission: string)
               <td><span className={`change ${changeLabel(change).replace(" ", "-")}`}>{changeLabel(change)}</span></td><td>{change.name}</td><td>{change.baseVersion ?? "-"}</td><td>{change.targetVersion ?? "-"}</td><td className="mono">{change.purl}</td>
             </tr>))}</tbody>
           </table></div></div>
-          {selected ? (<ComponentInspector change={selected} comparison={comparison} can={can} /> ): (<EmptyComparison kind="구성요소" rows={[]} />)}
+          {selected ? (<ComponentInspector change={selected} comparison={securityAvailable ? comparison : null} can={can} /> ): (<EmptyComparison kind="구성요소" rows={[]} />)}
         </>
-      ) : (
+      ) : !securityAvailable ? <p>완료된 분석 리비전을 선택해야 취약점·정책 변화를 확인할 수 있습니다.</p> : (
         <ComparisonRecordsTable
           kind={tab === "vulnerabilities" ? "취약점" : "정책 위반"}
           rows={tab === "vulnerabilities" ? comparison?.vulnerabilities || [] : comparison?.policies || []}
@@ -625,11 +634,11 @@ export function ComponentInspector({ change, comparison, can }: { change: Compon
           정보만 표시합니다.
         </p><ul className="paths"><li>{change.group ? `${change.group}:` : ""}{change.name}:
             {change.targetVersion || change.baseVersion || "버전 없음"}{change.bomRef ? ` · ${change.bomRef}` : ""}</li></ul>
-        <h3>연관 취약점</h3><ul className="vulnerabilities">{related.length ? (related.map((item, index) => { const record = item.record || item.target || item.base || {}; return (<li key={`${item.change}-${index}`}><b>{item.change === "added" ? "신규" : item.change === "removed" ? "해소" : "변경"}</b> {" "}{String(record.canonicalId || record.id || "식별자 없음")}{" "} <em>{String(record.severity || "UNKNOWN")}</em>{record.kev ? <span> · KEV</span> : null}</li>);}) ): (<li>이 비교에서 직접 연관된 취약점이 없습니다.</li>)}</ul>
+        <h3>연관 취약점</h3><ul className="vulnerabilities">{related.length ? (related.map((item, index) => { const record = item.record || item.target || item.base || {}; return (<li key={`${item.change}-${index}`}><b>{item.change === "added" ? "신규" : item.change === "removed" ? "해소" : "변경"}</b> {" "}{String(record.canonicalId || record.id || "식별자 없음")}{" "} <em>{String(record.severity || "UNKNOWN")}</em>{record.kev ? <span> · KEV</span> : null}</li>);}) ): (<li>{comparison ? "이 비교에서 직접 연관된 취약점이 없습니다." : "취약점 비교 미평가"}</li>)}</ul>
       </div>
       <div><h3>변경 정보</h3>{propertyEntries.map(([key, value]) => (<p key={key} className="muted">{key}: {value}</p>))}<h3>변경 내용</h3><p>{change.fields.length ? change.fields.filter((field) => field !== "sha256").join(", ") || "내용 변경" : "변경 필드 없음"}</p><div className="inspector-actions">{can("artifact.download") && comparison?.base.artifactUrl && (<a className="secondary" href={comparison.base.artifactUrl}>기준 원본 보기
             </a>)}{can("artifact.download") && comparison?.target.artifactUrl && (<a className="secondary" href={comparison.target.artifactUrl}>비교 원본 보기
-            </a>)}{comparison?.target.dependencyTrackEnabled && can("dtrack.retry") && (<a className="primary" href="/dependency-track/" target="_blank" rel="noreferrer">기존 외부 시스템에서 열기 <Icon name="external" /></a>)}</div></div>
+            </a>)}</div></div>
     </div>
   );}
 
@@ -704,7 +713,7 @@ function UploadModal({
       <div className="form-row">{!standaloneMode && (<label>환경
                 <select name="environmentId" required>{environments.filter((environment) => environment.active !== false).map((environment) => (<option key={environment.id} value={environment.id}>{environment.name}</option>))}</select></label>)}<label>{standaloneMode ? "릴리스 (선택)" : "릴리스"}<input name="releaseVersion" placeholder="예: 1.4.2" defaultValue={standaloneMode ? "preview" : undefined} required={!standaloneMode} /></label></div>
       <label>SBOM 파일
-            <input name="sbom" type="file" accept=".json,.xml,application/json,application/xml" required /><small>CycloneDX JSON/XML, 최대 {standaloneMode ? "100 MiB" : "500 MiB"}</small></label>
+            <input name="sbom" type="file" aria-label="SBOM 파일" accept={standaloneMode ? ".json,.xml,application/json,application/xml" : ".json,.xml,application/json,application/xml,application/spdx+json,application/vnd.cyclonedx+json,application/vnd.cyclonedx+xml"} aria-describedby="sbom-supported-formats sbom-upload-limit" required /><small id="sbom-supported-formats">{standaloneMode ? "로컬 미리보기: CycloneDX JSON/XML" : "지원 형식: CycloneDX 1.4, 1.5, 1.6, 1.7 (JSON/XML) · SPDX 2.3 (JSON)"}</small><small id="sbom-upload-limit">최대 {standaloneMode ? "100 MiB" : "500 MiB"}</small></label>
       <label>메모
             <textarea name="note" rows={3} placeholder="변경 사유 또는 배포 식별자" /></label>
       {message && (<p className="form-message" role="status">{message}{jobState && <small> · 작업 상태: {jobStateLabel(jobState)}</small>}</p>)}
@@ -733,7 +742,8 @@ function RunDetail({ run, onClose, onChanged, username,
   const [componentResult, setComponentResult] = useState<{ items: ComponentSnapshot[]; total: number }>({ items: [], total: 0 });
   const [findingResult, setFindingResult] = useState<{ items: Record<string, unknown>[]; total: number }>({ items: [], total: 0 });
   const deferredComponentQuery = useDeferredValue(componentQuery.trim());
-  const latestAnalysisId = detail?.analyses?.[0]?.id || "";
+  const latestAnalysis = latestAnalysisRevision(detail?.analyses);
+  const latestAnalysisId = latestAnalysis?.id || "";
   useEffect(() => {
     let cancelled = false;
     void fetchRun(run.id).then((result) => { if (!cancelled) setDetail(result);}).catch((error) => { if (!cancelled) setMessage(error instanceof Error ? error.message : "회차 상세를 불러오지 못했습니다.");});
@@ -757,7 +767,7 @@ function RunDetail({ run, onClose, onChanged, username,
     try { await action(); const refreshed = await fetchRun(run.id); setDetail(refreshed); setMessage(success); onChanged();} catch (error) { setMessage(error instanceof Error ? error.message : "작업에 실패했습니다");} finally { setBusy(false);}
   }
   async function removeRun() {
-    if (!window.confirm(`이 SBOM 회차와 Tracker 원본을 영구 삭제하시겠습니까?${current.dependencyTrackEnabled ? " 기존 외부 시스템 프로젝트는 보존됩니다." : ""}`)) return;
+    if (!window.confirm(`이 SBOM 회차와 Tracker 원본을 영구 삭제하시겠습니까?`)) return;
     setBusy(true); setMessage("");
     try { await deleteRun(current.id); onChanged(); onClose(); }
     catch (error) { setMessage(error instanceof Error ? error.message : "회차 삭제에 실패했습니다"); }
@@ -767,7 +777,7 @@ function RunDetail({ run, onClose, onChanged, username,
   const scheduled = current.source === "scheduled";
   const sourceMetadata = current.sourceMetadata || {};
   const components = componentResult.items;
-  const findings = findingResult.items;
+  const findings = analysisAvailable(current) ? findingResult.items : [];
   const componentPageCount = Math.max(1, Math.ceil(componentResult.total / componentPageSize));
   const currentComponentPage = Math.min(componentPage, componentPageCount);
   const findingPageCount = Math.max(1, Math.ceil(findingResult.total / findingPageSize));
@@ -775,25 +785,28 @@ function RunDetail({ run, onClose, onChanged, username,
   return (<div className="drawer-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><section className="detail-modal" role="dialog" aria-modal="true" aria-labelledby="run-detail-title"><header><div><span>{current.service.name}</span><h2 id="run-detail-title">{current.releaseVersion} · {current.roundNumber}차
             </h2></div><button type="button" className="icon-button" aria-label="회차 상세 닫기" onClick={onClose}><Icon name="close" /></button></header>
     <div className="detail-status"><span className={`state ${current.state}`}>{stateLabel(current.state)}</span><span>{scheduled ? "스케줄 점검" : "수동/API 점검"}</span><span>{current.environment.name}</span><span>CycloneDX {current.specVersion}</span></div>
-    <dl><dt>원본 파일</dt><dd>{current.filename || "-"}</dd>{scheduled && (<><dt>대상 서버</dt><dd>{String(sourceMetadata.server || sourceMetadata.remoteServer || "-")}</dd><dt>대상 디렉토리</dt><dd className="mono wrap">{String(sourceMetadata.directory || sourceMetadata.remoteDirectory || "-")}</dd><dt>점검 방식</dt><dd>{String(sourceMetadata.mode || "-")}</dd><dt>예약 실행 ID</dt><dd className="mono wrap">{String(sourceMetadata.scheduleRunId || "-")}</dd><dt>규칙 버전</dt><dd>{String(sourceMetadata.rulePolicyVersion ?? "-")}</dd></>)}<dt>CVE 기준일</dt><dd>{cveBaseline(current)}</dd><dt>오프라인 분석</dt><dd>{jobStateLabel(current.analysisState)}</dd>{current.dependencyTrackEnabled && <><dt>기존 외부 시스템 (선택 연동)</dt><dd>{jobStateLabel(current.dependencyTrackState)}</dd></>}<dt>구성요소</dt><dd>{current.componentCount.toLocaleString()}개</dd><dt>취약점</dt><dd>{current.vulnerabilityCount}건</dd><dt>정책 위반·경고·정보</dt><dd>{policyCountLabel(current)}{current.policyState === "completed" ? "건" : ""}</dd></dl>
+    <dl><dt>원본 파일</dt><dd>{current.filename || "-"}</dd>{scheduled && (<><dt>대상 서버</dt><dd>{String(sourceMetadata.server || sourceMetadata.remoteServer || "-")}</dd><dt>대상 디렉토리</dt><dd className="mono wrap">{String(sourceMetadata.directory || sourceMetadata.remoteDirectory || "-")}</dd><dt>점검 방식</dt><dd>{String(sourceMetadata.mode || "-")}</dd><dt>예약 실행 ID</dt><dd className="mono wrap">{String(sourceMetadata.scheduleRunId || "-")}</dd><dt>규칙 버전</dt><dd>{String(sourceMetadata.rulePolicyVersion ?? "-")}</dd></>)}<dt>CVE 기준일</dt><dd>{cveBaseline(current)}</dd><dt>오프라인 분석</dt><dd>{jobStateLabel(current.analysisState)}</dd><dt>구성요소</dt><dd>{current.componentCount.toLocaleString()}개</dd><dt>취약점</dt><dd>{analysisAvailable(current) ? `${current.vulnerabilityCount}건` : "미평가"}</dd><dt>정책 위반·경고·정보</dt><dd>{policyCountLabel(current)}{current.policyState === "completed" ? "건" : ""}</dd></dl>
+    {!analysisAvailable(current) && <p role="alert" className="drawer-error">{analysisUnavailableReason(current)}</p>}
     <NativePolicyResult result={current} runId={current.id} />
     <SbomQualityPanel runId={current.id} analysisId={latestAnalysisId} canRerun={can("analysis.create")} canViewProfiles={can("policies.view") || can("policies.manage")} canManage={can("policies.manage")} archived={current.state === "archived"} />
+    <CpeCoverage analysis={latestAnalysis} loading={!detail} />
     <h3>분석 리비전</h3><ul className="paths">{detail?.analyses?.length ? (detail.analyses.map((analysis) => (<li key={analysis.id}>r{analysis.sequence} · {jobStateLabel(analysis.state)} ·{" "}
                 {dataBaselineLabel(preferredCveDate(analysis.cveDataAsOf, analysis.dataAsOf), "CVE 기준일 확인 필요")}{analysis.error ? ` · ${analysis.error}` : ""} · 정책 {analysis.policyVersion ? `v${analysis.policyVersion}` : "-"} · {analysis.policyState === "completed" ? "평가 완료" : analysis.policyState === "failed" ? "평가 실패" : "미평가"}{analysis.policyError ? ` · ${analysis.policyError}` : ""}<AnalysisPolicyHistory analysis={analysis} runId={current.id} /></li>) )
           ): (<li>상세를 불러오는 중이거나 분석 리비전이 없습니다.</li>)}</ul>
     <div className="detail-table-heading"><h3>구성요소 검사기 ({componentResult.total.toLocaleString()})</h3><label className="detail-search"><Icon name="search" /><input aria-label="구성요소 검색" value={componentQuery} onChange={(event) => { setComponentQuery(event.target.value); setComponentPage(1); }} placeholder="이름, 버전, PURL 검색" /></label></div><div className="table-scroll"><table><thead><tr><th>이름</th><th>버전</th><th>PURL</th><th>라이선스</th></tr></thead><tbody>{components.map((component) => (<tr key={component.identityKey}><td>{component.name}</td><td>{component.version || "-"}</td><td className="mono">{component.purl || component.bomRef || "-"}</td><td>{component.licenses?.length ? component.licenses.map((license) => typeof license === "string" ? license : String((license as { license?: { id?: string; name?: string };}).license?.id || (license as { license?: { id?: string; name?: string;};}).license?.name || "식별 불가")).join(", ") : "-"}</td></tr>))}{!components.length && (<tr><td colSpan={4}>{deferredComponentQuery ? "검색 조건에 맞는 구성요소가 없습니다." : "구성요소 상세가 없습니다."}</td></tr>)}</tbody></table></div><DetailPagination total={componentResult.total} page={currentComponentPage} pageSize={componentPageSize} onPage={setComponentPage} onPageSize={(size) => { setComponentPageSize(size); setComponentPage(1); }} />
-    <h3>취약점 검사기 ({findingResult.total.toLocaleString()})</h3><div className="table-scroll"><table><thead><tr><th>취약점 ID</th><th>심각도</th><th>구성요소</th><th>CVSS</th><th>KEV</th><th>CWE / EPSS</th><th>제안 버전</th><th>VEX 검토</th></tr></thead><tbody>{findings.map((finding, index) => { const severity = String(finding.severity || "unknown"); return (<tr key={`${String(finding.canonicalId || finding.id || "finding")}-${(currentFindingPage - 1) * findingPageSize + index}`}><td className="mono">{String(finding.canonicalId || finding.id || "식별자 없음")}{finding.sourceKind === "private_vulnerability" && <small className="workflow-id">사내 취약점 · {String(finding.title || "")}<br/>{String(finding.description || "")}</small>}</td><td><span className={`severity-pill ${severityClass(severity)}`}>{severityLabel(severity)}</span></td><td className="mono">{String(finding.component || "-")}</td><td>{cvssScore(finding)}</td><td>{finding.kev ? "KEV" : "-"}</td><td>{Array.isArray(finding.cwes) && finding.cwes.length ? finding.cwes.map(value=>`CWE-${value}`).join(", ") : "CWE 확인 안 됨"}<br/>{typeof finding.epssScore === "number" ? `EPSS ${(finding.epssScore*100).toFixed(2)}% · ${String(finding.epssDate || "")}` : `EPSS ${String(finding.epssStatus || "수집 전")}`}</td><td>{fixedInLabel(finding)}</td><td>{finding.vex && typeof finding.vex === "object" ? <span title={String((finding.vex as Record<string, unknown>).detail || "")}>{(finding.vex as Record<string, unknown>).suppressed ? "승인된 영향 없음·오탐 (원시 발견 보존)" : `승인된 ${String((finding.vex as Record<string, unknown>).state || "검토")}`}</span> : "미검토"}</td></tr>);})}{!findings.length && (<tr><td colSpan={8}>취약점 결과가 없습니다.</td></tr>)}</tbody></table></div><DetailPagination total={findingResult.total} page={currentFindingPage} pageSize={findingPageSize} onPage={setFindingPage} onPageSize={(size) => { setFindingPageSize(size); setFindingPage(1); }} />
+    <h3>취약점 검사기 ({analysisAvailable(current) ? findingResult.total.toLocaleString() : "미평가"})</h3><div className="table-scroll"><table><thead><tr><th>취약점 ID</th><th>심각도</th><th>구성요소</th><th>CVSS</th><th>KEV</th><th>CWE / EPSS</th><th>제안 버전</th><th>VEX 검토</th></tr></thead><tbody>{findings.map((finding, index) => { const severity = String(finding.severity || "unknown"); return (<tr key={`${String(finding.canonicalId || finding.id || "finding")}-${(currentFindingPage - 1) * findingPageSize + index}`}><td className="mono">{String(finding.canonicalId || finding.id || "식별자 없음")}{finding.sourceKind === "private_vulnerability" && <small className="workflow-id">사내 취약점 · {String(finding.title || "")}<br/>{String(finding.description || "")}</small>}</td><td><span className={`severity-pill ${severityClass(severity)}`}>{severityLabel(severity)}</span></td><td className="mono">{String(finding.component || "-")}</td><td>{cvssScore(finding)}</td><td>{finding.kev ? "KEV" : "-"}</td><td>{Array.isArray(finding.cwes) && finding.cwes.length ? finding.cwes.map(value=>`CWE-${value}`).join(", ") : "CWE 확인 안 됨"}<br/><EpssEvidence finding={finding} /></td><td>{fixedInLabel(finding)}</td><td>{finding.vex && typeof finding.vex === "object" ? <span title={String((finding.vex as Record<string, unknown>).detail || "")}>{(finding.vex as Record<string, unknown>).suppressed ? "승인된 영향 없음·오탐 (원시 발견 보존)" : `승인된 ${String((finding.vex as Record<string, unknown>).state || "검토")}`}</span> : "미검토"}</td></tr>);})}{!findings.length && (<tr><td colSpan={8}>{analysisAvailable(current) ? "취약점 결과가 없습니다." : analysisUnavailableReason(current)}</td></tr>)}</tbody></table></div><DetailPagination total={findingResult.total} page={currentFindingPage} pageSize={findingPageSize} onPage={setFindingPage} onPageSize={(size) => { setFindingPageSize(size); setFindingPage(1); }} />
               {(can("metadata.view") || can("metadata.manage")) && <PackageMetadataPanel runId={current.id} canManage={can("metadata.manage")} />}
+    {can("metadata.view") && <OfflineRunEvidence key={`offline-${current.id}`} runId={current.id} canRespond={can("vex.manage")} canViewResponses={can("vex.view")} />}
+    {(can("ssvc.view") || can("ssvc.manage")) && <SsvcAssessmentsPanel key={current.id} runId={current.id} findings={findings} canManage={can("ssvc.manage")} />}
     {(can("vex.view") || can("vex.manage") || can("vex.approve")) && <VexReviewsPanel runId={current.id} findings={findings} username={username} canManage={can("vex.manage")} canApprove={can("vex.approve")} />}
     <div className="drawer-actions">{message && (<p className="form-message" role="status">{message}</p>)}{standaloneMode ? (<p className="preview-note">미리보기 모드에서는 원본 파일을 저장하거나
               Grype 분석·KODA 정책 평가를 실행하지 않습니다.
-            </p> ): (<>{current.dependencyTrackEnabled && current.dependencyTrackError && (<p className="drawer-error">{current.dependencyTrackError}</p>)}<div className="drawer-action-row">{current.dependencyTrackEnabled && can("dtrack.retry") && (<button className="secondary" disabled={busy || current.state === "archived"} onClick={() => void runAction(() => retryDependencyTrack(current.id), "기존 외부 시스템 재시도를 접수했습니다.")}>기존 시스템 재시도
-                  </button>)}
+            </p> ): (<><div className="drawer-action-row">
                 {can("analysis.create") && (<button className="secondary" disabled={busy || current.state === "archived"} onClick={() => void runAction(() => createAnalysis(current.id), "새 분석 리비전을 접수했습니다.")}>새 분석 리비전
                   </button>)}
               </div><div className="drawer-action-row">{can("artifact.download") && (<a className="secondary" href={`/api/v1/sbom-runs/${current.id}/artifact`}>원본 SBOM 내려받기
                   </a>)}
-                {current.dependencyTrackEnabled && can("dtrack.retry") && (<a className="primary" href={current.dependencyTrackUrl || "/dependency-track/"} target="_blank" rel="noreferrer">기존 외부 시스템에서 열기 <Icon name="external" /></a>)}</div>{can("sbom.archive") && current.state !== "archived" && (<form className="archive-form" onSubmit={(event) => { event.preventDefault(); if (archiveReason.trim()) void runAction(() => archiveRun(current.id, archiveReason.trim()), "회차를 논리 보관했습니다.");}}><input aria-label="보관 사유" placeholder="보관 사유" value={archiveReason} onChange={(event) => setArchiveReason(event.target.value)} /><button className="secondary" disabled={busy || !archiveReason.trim()}>논리 보관
+                </div>{can("sbom.archive") && current.state !== "archived" && (<form className="archive-form" onSubmit={(event) => { event.preventDefault(); if (archiveReason.trim()) void runAction(() => archiveRun(current.id, archiveReason.trim()), "회차를 논리 보관했습니다.");}}><input aria-label="보관 사유" placeholder="보관 사유" value={archiveReason} onChange={(event) => setArchiveReason(event.target.value)} /><button className="secondary" disabled={busy || !archiveReason.trim()}>논리 보관
                   </button></form>)}{can("sbom.delete") && (<button type="button" className="danger" disabled={busy || !["completed", "failed", "archived"].includes(current.state)} onClick={() => void removeRun()}>회차 영구 삭제</button>)}</>)}</div>
   </section></div>);}
 
@@ -882,16 +895,16 @@ function ServicesPage({
             </button></div>)}
       </div>
     {message && (<p className="form-message" role="status">{message}</p>)}
-    <div className="settings-grid catalog-grid"><div className="table-frame"><h2 className="table-title">서비스 {activeServices.length}개</h2><table><thead><tr><th>서비스</th><th>식별자</th><th>작업</th></tr></thead><tbody>{activeServices.length ? (visibleServices.map((item) => (<tr key={item.id}><td>{item.name}</td><td className="mono">{item.slug}</td><td><button type="button" className="secondary compact" title={item.id} onClick={() => void copyOrShow("서비스 연동 ID", item.id)}>연동 ID 복사</button>{canManage && (
+    <div className="settings-grid catalog-grid"><div className="table-frame"><h2 className="table-title">서비스 {activeServices.length}개</h2><div className="table-scroll" role="region" aria-label="서비스 목록 가로 스크롤" tabIndex={0}><table><thead><tr><th>서비스</th><th>식별자</th><th>작업</th></tr></thead><tbody>{activeServices.length ? (visibleServices.map((item) => (<tr key={item.id}><td>{item.name}</td><td className="mono">{item.slug}</td><td><button type="button" className="secondary compact" title={item.id} onClick={() => void copyOrShow("서비스 연동 ID", item.id)}>연동 ID 복사</button>{canManage && (
                         <>
                           {" "}
                           <button className="secondary compact" disabled={busy} onClick={() => void editService(item)}>이름 변경
                           </button> {" "}<button className="danger compact" disabled={busy} onClick={() => void removeService(item)}>삭제</button></>
                       )}
     </td></tr>) )
-              ): (<tr><td colSpan={3}>등록된 서비스가 없습니다.</td></tr>)}</tbody></table><DetailPagination total={activeServices.length} page={currentServicePage} pageSize={catalogPageSize} label="서비스 페이지당 행 수" onPage={setServicePage} onPageSize={(size) => { setCatalogPageSize(size); setServicePage(1); setEnvironmentPage(1); }} /></div><div className="table-frame"><h2 className="table-title">환경 {activeEnvironments.length}개</h2><table><thead><tr><th>환경</th><th>식별자</th><th>정렬</th><th>작업</th></tr></thead><tbody>{activeEnvironments.length ? (visibleEnvironments.map((item) => (<tr key={item.id}><td>{item.name}</td><td className="mono">{item.slug}</td><td>{item.sortOrder ?? "-"}</td><td><button type="button" className="secondary compact" title={item.id} onClick={() => void copyOrShow("환경 연동 ID", item.id)}>연동 ID 복사</button>{canManage && (<>{" "}<button className="secondary compact" disabled={busy} onClick={() => setEditingEnvironment(item)}>변경
+              ): (<tr><td colSpan={3}>등록된 서비스가 없습니다.</td></tr>)}</tbody></table></div><DetailPagination total={activeServices.length} page={currentServicePage} pageSize={catalogPageSize} label="서비스 페이지당 행 수" onPage={setServicePage} onPageSize={(size) => { setCatalogPageSize(size); setServicePage(1); setEnvironmentPage(1); }} /></div><div className="table-frame"><h2 className="table-title">환경 {activeEnvironments.length}개</h2><div className="table-scroll" role="region" aria-label="환경 목록 가로 스크롤" tabIndex={0}><table><thead><tr><th>환경</th><th>식별자</th><th>정렬</th><th>작업</th></tr></thead><tbody>{activeEnvironments.length ? (visibleEnvironments.map((item) => (<tr key={item.id}><td>{item.name}</td><td className="mono">{item.slug}</td><td>{item.sortOrder ?? "-"}</td><td><button type="button" className="secondary compact" title={item.id} onClick={() => void copyOrShow("환경 연동 ID", item.id)}>연동 ID 복사</button>{canManage && (<>{" "}<button className="secondary compact" disabled={busy} onClick={() => setEditingEnvironment(item)}>변경
                         </button> <button className="danger compact" disabled={busy} onClick={() => void removeEnvironment(item)}>삭제</button></>)}</td></tr>) )
-              ): (<tr><td colSpan={4}>등록된 환경이 없습니다.</td></tr>)}</tbody></table><DetailPagination total={activeEnvironments.length} page={currentEnvironmentPage} pageSize={catalogPageSize} label="환경 페이지당 행 수" onPage={setEnvironmentPage} onPageSize={(size) => { setCatalogPageSize(size); setServicePage(1); setEnvironmentPage(1); }} /></div></div>
+              ): (<tr><td colSpan={4}>등록된 환경이 없습니다.</td></tr>)}</tbody></table></div><DetailPagination total={activeEnvironments.length} page={currentEnvironmentPage} pageSize={catalogPageSize} label="환경 페이지당 행 수" onPage={setEnvironmentPage} onPageSize={(size) => { setCatalogPageSize(size); setServicePage(1); setEnvironmentPage(1); }} /></div></div>
     {mode && (<div className="modal-backdrop" role="presentation"><section className="modal" role="dialog" aria-modal="true"><header><h2>{mode === "service" ? "서비스 추가" : "환경 추가"}</h2><button type="button" className="icon-button" aria-label="추가 창 닫기" onClick={() => setMode(null)}><Icon name="close" /></button></header><form onSubmit={submit}><label>이름
                 <input name="name" required autoFocus /></label><label>식별자
                 <input name="slug" pattern="[a-z0-9][a-z0-9-]{1,126}[a-z0-9]" required /><small>영문 소문자, 숫자, 하이픈만 사용합니다.</small></label>{mode === "environment" && (<label>정렬 순서
@@ -904,57 +917,23 @@ function ServicesPage({
                 </button><button className="primary" disabled={busy}>{busy ? "변경 중…" : "변경"}</button></footer></form></section></div>)}
   </section>);}
 
-function VulnerabilityPage({ bundles, onSync, onActivate, canManage, embedded = false }: { bundles: VulnerabilityBundle[]; onSync: () => Promise<void>; onActivate: (version: string) => Promise<void>; canManage: boolean; embedded?: boolean; }) {
-  const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState("");
+function VulnerabilityPage({ bundles, onSync, canManage, embedded = false }: { bundles: VulnerabilityBundle[]; onSync: () => Promise<void>; onActivate: (version: string) => Promise<void>; canManage: boolean; embedded?: boolean; }) {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
-  const [dataKind, setDataKind] = useState<"grype-db" | "vuln-data">("grype-db");
-  const [dataJob, setDataJob] = useState<Awaited<ReturnType<typeof fetchVulnerabilityDataJob>> | null>(null);
-  const activeBundle = bundles.find((bundle) => bundle.active);
-  async function uploadData(file: File) {
-    setBusy(true); setMessage("");
-    try { setDataJob(await uploadVulnerabilityData(dataKind, file)); setMessage("파일을 접수했습니다. 검증 작업이 대기 중입니다."); }
-    catch (error) { setMessage(error instanceof Error ? error.message : "데이터 업로드에 실패했습니다"); }
-    finally { setBusy(false); }
-  }
-  useEffect(() => {
-    if (!dataJob || dataJob.state === "completed" || dataJob.state === "failed") return;
-    const timer = window.setInterval(() => { void fetchVulnerabilityDataJob(dataJob.id).then((job) => { setDataJob(job); if (job.state === "completed" && job.action !== "validate") void onSync(); }).catch((error) => setMessage(error instanceof Error ? error.message : "작업 상태 조회에 실패했습니다")); }, 2000);
-    return () => window.clearInterval(timer);
-  }, [dataJob]);
-  async function applyData() {
-    if (!dataJob) return;
-    setBusy(true); try { setDataJob(await applyVulnerabilityDataJob(dataJob.id)); setMessage("적용 작업을 접수했습니다."); }
-    catch (error) { setMessage(error instanceof Error ? error.message : "적용에 실패했습니다"); }
-    finally { setBusy(false); }
-  }
-  async function rollbackData(kind: "grype-db" | "vuln-data") {
-    setBusy(true); setMessage("");
-    try { setDataJob(await rollbackVulnerabilityData(kind)); setMessage(`${kind === "grype-db" ? "Grype DB" : "vuln-data"} 복원 작업을 접수했습니다.`); }
-    catch (error) { setMessage(error instanceof Error ? error.message : "복원에 실패했습니다"); }
-    finally { setBusy(false); }
-  }
-  async function sync() {
-    setBusy(true); setMessage("");
-    try { await onSync(); setMessage("파일시스템의 반입 상태를 동기화했습니다.");} catch (error) { setMessage(error instanceof Error ? error.message : "동기화에 실패했습니다");} finally { setBusy(false);}
-  }
-  async function activate(version: string) {
-    setBusy(true); setMessage("");
-    try { await onActivate(version); setMessage(`${version} 번들을 활성 상태로 기록했습니다.`);} catch (error) { setMessage(error instanceof Error ? error.message : "활성화에 실패했습니다");} finally { setBusy(false);}
-  }
-  const pageCount = Math.max(1, Math.ceil(bundles.length / pageSize));
-  const currentPage = Math.min(page, pageCount);
+  const currentPage = Math.min(page, Math.max(1, Math.ceil(bundles.length / pageSize)));
   const visibleBundles = bundles.slice((currentPage - 1) * pageSize, currentPage * pageSize);
-  return (<section className={embedded ? "settings-panel generic-page" : "page generic-page"}><div className="page-heading"><div><h1>취약점 데이터</h1><p>폐쇄망에 반입한 Grype·NVD·CISA KEV 데이터의 무결성과 기준일을
-            확인합니다.
-          </p></div>{canManage && (<div className="button-row"><button className="primary" onClick={() => void sync()} disabled={busy}>{busy ? "확인 중…" : "반입 상태 동기화"}</button><select value={dataKind} onChange={(event) => setDataKind(event.target.value as typeof dataKind)} aria-label="취약점 데이터 종류"><option value="grype-db">Grype DB</option><option value="vuln-data">vuln-data</option></select><label className="secondary compact">압축파일 업로드<input type="file" accept=".tar.gz,.tgz,application/gzip" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void uploadData(file); event.currentTarget.value = ""; }} /></label><button className="secondary compact" onClick={() => void rollbackData("grype-db")} disabled={busy}>Grype DB 복원</button><button className="secondary compact" onClick={() => void rollbackData("vuln-data")} disabled={busy}>vuln-data 복원</button></div>)}
-      </div><p className="form-message">현재 Grype DB: {activeBundle?.grypeDbVersion || activeBundle?.version || "확인 불가"} · vuln-data: {activeBundle?.vulnDataVersion || activeBundle?.version || "확인 불가"}</p>{message && (<p className="form-message" role="status">{message}</p>)}<div className="table-frame"><div className="table-scroll"><table><thead><tr><th>번들</th><th>Grype</th><th>NVD 기준일</th><th>KEV 기준일</th><th>별칭 / KEV</th><th>상태</th><th>반입 시각</th></tr></thead><tbody>{bundles.length ? (visibleBundles.map((item) => (<tr key={item.id}><td>{item.version}</td><td>{item.dataAsOf}<br /><small>schema {item.grypeDbSchema}</small></td><td>{item.nvdDataAsOf}</td><td>{item.kevDataAsOf}</td><td>{item.aliasCount} / {item.kevCount}</td><td>{item.active ? (<span className="state completed">활성</span> ): canManage ? (<button className="secondary compact" onClick={() => void activate(item.version)} disabled={busy}>활성 기록
-                        </button>) : (
-                        <span>보관</span>
-                      )}</td><td>{formatSeoulDateTime(item.importedAt)}</td></tr>) )
-              ): (<tr><td colSpan={7}>등록된 취약점 데이터 번들이 없습니다. 반입 후 동기화하세요.
-                  </td></tr>)}</tbody></table></div><DetailPagination total={bundles.length} page={currentPage} pageSize={pageSize} label="취약점 번들 페이지당 행 수" onPage={setPage} onPageSize={(size) => { setPageSize(size); setPage(1); }} /></div>{dataJob && (<p className="form-message" role="status">데이터 작업 {dataJob.state} · {dataJob.kind} · {dataJob.version || "버전 검증 중"} · 기준일 {dataJob.dataAsOf || "확인 중"}{dataJob.error ? `: ${dataJob.error}` : ""}{dataJob.state === "completed" && dataJob.action === "validate" && <button className="primary compact" onClick={() => void applyData()} disabled={busy}>검증 결과 적용</button>}</p>)}</section>);}
+  return <section className={embedded ? "settings-panel generic-page" : "page generic-page"}>
+    {!embedded && <div className="page-heading"><h1>취약점 데이터</h1></div>}
+    <UnifiedVulnerabilityDataPanel canManage={canManage} onChanged={onSync} />
+    <details><summary>과거 반입 기록 ({bundles.length}개)</summary><p>과거 기록은 현재 파일의 존재·활성 상태를 보증하지 않습니다. 위 통합 자료 상태를 기준으로 확인하세요.</p>
+      <div className="table-scroll"><table><thead><tr><th>기록된 번들</th><th>Grype 기준일</th><th>NVD 기준일</th><th>KEV 기준일</th><th>반입 시각</th></tr></thead><tbody>
+        {visibleBundles.map(item => <tr key={item.id}><td>{item.version}</td><td>{item.dataAsOf || "미확인"}</td><td>{item.nvdDataAsOf || "미확인"}</td><td>{item.kevDataAsOf || "미확인"}</td><td>{formatSeoulDateTime(item.importedAt)}</td></tr>)}
+        {!bundles.length && <tr><td colSpan={5}>과거 반입 기록이 없습니다.</td></tr>}
+      </tbody></table></div>
+      <DetailPagination total={bundles.length} page={currentPage} pageSize={pageSize} label="취약점 번들 페이지당 행 수" onPage={setPage} onPageSize={size => {setPageSize(size); setPage(1);}} />
+    </details>
+  </section>;
+}
 
 function AuditPage({ events, embedded = false }: { events: AuditEvent[]; embedded?: boolean }) {
   const [query, setQuery] = useState("");
@@ -1049,12 +1028,11 @@ function LdapSettingsPanel({ settings, onChanged }: { settings: LdapSettings | n
   </div>);
 }
 
-export function SettingsPage({ users, services, environments = [], tokens, dtrackStatus, ldapSettings, policies, roleCatalog, bundles, auditEvents, isAdmin, canVulnerability, canVulnerabilityManage, canAudit, canUsers, canTokens, canDtrack, canPolicyEdit, canRoles, canSbomPolicies = false, canSbomPolicyManage = false, canReanalysis = false, canReanalysisManage = false, canNotifications = false, canNotificationManage = false, canMetadata = false, canMetadataManage = false, canMigrations = false, canServices = false, canCatalogManage = false, initialTab, onSync, onActivate, onPolicyChanged, onLdapChanged, onChanged }: {
+export function SettingsPage({ users, services, environments = [], tokens, ldapSettings, policies, roleCatalog, bundles, auditEvents, isAdmin, canVulnerability, canVulnerabilityManage, canAudit, canUsers, canTokens, canPolicyEdit, canRoles, canSbomPolicies = false, canSbomPolicyManage = false, canReanalysis = false, canReanalysisManage = false, canNotifications = false, canNotificationManage = false, canMetadata = false, canMetadataManage = false, canProjects = false, canServices = false, canCatalogManage = false, canProjectRuns = false, onOpenRun, initialTab, onSync, onActivate, onPolicyChanged, onLdapChanged, onChanged }: {
   users: UserSummary[];
   services: CatalogItem[];
   environments?: CatalogItem[];
   tokens: ApiTokenSummary[];
-  dtrackStatus: DependencyTrackStatus | null;
   ldapSettings: LdapSettings | null;
   policies: RolePolicy[];
   roleCatalog: string[];
@@ -1066,15 +1044,16 @@ export function SettingsPage({ users, services, environments = [], tokens, dtrac
   canAudit: boolean;
   canUsers: boolean;
   canTokens: boolean;
-  canDtrack: boolean;
   canPolicyEdit: boolean;
   canRoles: boolean;
   canSbomPolicies?: boolean;
   canSbomPolicyManage?: boolean;
   canReanalysis?: boolean; canReanalysisManage?: boolean; canNotifications?: boolean; canNotificationManage?: boolean;
-  canMetadata?: boolean; canMetadataManage?: boolean; canMigrations?: boolean;
+  canMetadata?: boolean; canMetadataManage?: boolean; canProjects?: boolean;
   canServices?: boolean;
   canCatalogManage?: boolean;
+  canProjectRuns?: boolean;
+  onOpenRun?: (run: SbomRun) => void;
   initialTab?: SettingsTab;
   onSync: () => Promise<void>;
   onActivate: (version: string) => Promise<void>;
@@ -1083,7 +1062,13 @@ export function SettingsPage({ users, services, environments = [], tokens, dtrac
   onChanged: () => void;
 }) {
   const [mode, setMode] = useState<"user" | "token" | null>(null);
-  const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab || "users");
+  const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab === "private-vulnerabilities" || initialTab === "metadata" ? "vulnerability" : initialTab || "users");
+  const [vulnerabilityDataTab, setVulnerabilityDataTab] = useState<"external" | "private" | "metadata">(initialTab === "private-vulnerabilities" ? "private" : initialTab === "metadata" ? "metadata" : "external");
+  const canExternalData = isAdmin && canVulnerability;
+  const canPrivateData = isAdmin && (canMetadata || canMetadataManage);
+  const canMetadataData = canMetadata || canMetadataManage;
+  const canSelectedVulnerabilityData = vulnerabilityDataTab === "external" ? canExternalData : vulnerabilityDataTab === "private" ? canPrivateData : canMetadataData;
+  const activeVulnerabilityDataTab = canSelectedVulnerabilityData ? vulnerabilityDataTab : canExternalData ? "external" : canPrivateData ? "private" : "metadata";
   const [message, setMessage] = useState("");
   const [issuedToken, setIssuedToken] = useState<{ name: string; token: string; serviceId: string } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -1098,21 +1083,19 @@ export function SettingsPage({ users, services, environments = [], tokens, dtrac
         policies.map((item) => [item.role, new Set(item.permissions)])));
   const settingsTabs = useMemo(() => {
     const tabs: { id: SettingsTab; label: string; icon: string }[] = [];
-    if (canMigrations) tabs.push({ id: "migration", label: "기존 시스템 이관", icon: "integration" });
-    if (isAdmin && (canMetadata || canMetadataManage)) tabs.push({ id: "private-vulnerabilities", label: "사내 취약점 DB", icon: "vulnerability" });
-    if (canMetadata || canMetadataManage) tabs.push({ id: "metadata", label: "패키지 메타데이터", icon: "settings" });
+    if (canProjects) tabs.push({ id: "projects", label: "프로젝트 관리", icon: "integration" });
     if (canSbomPolicies || canSbomPolicyManage) tabs.push({ id: "sbom-policies", label: "SBOM 정책", icon: "settings" });
     if (canReanalysis || canReanalysisManage) tabs.push({ id: "reanalysis", label: "재분석 일정", icon: "settings" });
     if (canNotifications || canNotificationManage) tabs.push({ id: "notifications", label: "알림함", icon: "audit" });
     if (canServices) tabs.push({ id: "services", label: "서비스·환경", icon: "service" });
     if (canUsers || canTokens) tabs.push({ id: "users", label: "사용자 관리", icon: "user" });
     if (canRoles || canPolicyEdit) tabs.push({ id: "roles", label: "권한 관리", icon: "settings" });
-    if (isAdmin && canVulnerability) tabs.push({ id: "vulnerability", label: "취약점 데이터", icon: "vulnerability" });
+    if (canExternalData || canPrivateData || canMetadataData) tabs.push({ id: "vulnerability", label: "취약점 데이터", icon: "vulnerability" });
     if (isAdmin && canAudit) tabs.push({ id: "audit", label: "감사 로그", icon: "audit" });
-    if (canDtrack || (canServices && canTokens)) tabs.push({ id: "integration", label: "연동 설정", icon: "integration" });
+    if (canServices && canTokens) tabs.push({ id: "integration", label: "연동 설정", icon: "integration" });
     if (isAdmin) tabs.push({ id: "ldap", label: "LDAP 로그인", icon: "lock" });
     return tabs;
-  }, [canMetadata, canMetadataManage, canMigrations, canReanalysis, canReanalysisManage, canNotifications, canNotificationManage, canSbomPolicies, canSbomPolicyManage, canAudit, canDtrack, canPolicyEdit, canRoles, canServices, canTokens, canUsers, canVulnerability, isAdmin]);
+  }, [canExternalData, canPrivateData, canMetadataData, canProjects, canReanalysis, canReanalysisManage, canNotifications, canNotificationManage, canSbomPolicies, canSbomPolicyManage, canAudit, canPolicyEdit, canRoles, canServices, canTokens, canUsers, isAdmin]);
   useEffect(
     () =>
       setPolicyDraft(
@@ -1153,13 +1136,6 @@ export function SettingsPage({ users, services, environments = [], tokens, dtrac
     catch (error) { setMessage(error instanceof Error ? error.message : "사용자 삭제에 실패했습니다"); }
     finally { setBusy(false); }
   }
-  const dtrackLabel = dtrackStatus?.enabled === false ? "사용 안 함 (KODA 자체 분석)" : !dtrackStatus
-    ? "확인 중"
-    : dtrackStatus.reachable && dtrackStatus.authenticated
-      ? "연결됨"
-      : dtrackStatus.configured
-        ? "점검 필요"
-        : "미설정";
   const roles = policies.map((item) => item.role);
   const permissionNames = roleCatalog;
   const userPageCount = Math.max(1, Math.ceil(users.length / accountPageSize));
@@ -1179,27 +1155,38 @@ export function SettingsPage({ users, services, environments = [], tokens, dtrac
       {settingsTabs.map((tab) => (<button type="button" role="tab" id={`settings-tab-${tab.id}`} aria-controls={`settings-panel-${tab.id}`} aria-selected={activeTab === tab.id} className={activeTab === tab.id ? "active" : ""} key={tab.id} onClick={() => setActiveTab(tab.id)}><Icon name={tab.icon} /><span>{tab.label}</span></button>))}
     </div>
     {message && (<p className="form-message" role="status">{message}</p>)}
-    {activeTab === "private-vulnerabilities" && isAdmin && (canMetadata || canMetadataManage) && <PrivateVulnerabilitiesPanel canManage={canMetadataManage}/> }
-    {activeTab === "metadata" && (canMetadata || canMetadataManage) && <PackageMetadataPanel canManage={canMetadataManage} />}
-    {activeTab === "migration" && canMigrations && <><LegacyMigrationPanel canApply={isAdmin} /><ProjectCatalogPanel canManage={isAdmin} services={services} environments={environments}/></>}
+    {activeTab === "projects" && canProjects && <><ProjectCatalogPanel canManage={isAdmin} canViewRuns={canProjectRuns} onOpenRun={onOpenRun} services={services} environments={environments}/></>}
 
     {issuedToken && activeTab === "users" && (<div className="token-reveal"><strong>{issuedToken.name}</strong><code>{issuedToken.token}</code><span>서비스 ID <code>{issuedToken.serviceId}</code></span><button type="button" className="secondary compact" onClick={() => void copyOrShow("KODA 서비스 토큰", issuedToken.token)}>토큰 복사</button><button type="button" className="secondary compact" onClick={() => void copyOrShow("서비스 연동 ID", issuedToken.serviceId)}>서비스 ID 복사</button></div>)}
     {activeTab === "users" && canUsers && (<p className="form-message">가입 신청 계정은 승인 대기로 구분됩니다. 역할을 확인한 뒤 승인하세요.</p>)}
-    {activeTab === "integration" && (canDtrack || (canServices && canTokens)) && (<div className="settings-panel integration-settings-panel" id="settings-panel-integration" role="tabpanel" aria-labelledby="settings-tab-integration">
+    {activeTab === "integration" && (canServices && canTokens) && (<div className="settings-panel integration-settings-panel" id="settings-panel-integration" role="tabpanel" aria-labelledby="settings-tab-integration">
       {canServices && canTokens && (<>
-        <div className="table-frame dtrack-status"><div className="settings-panel-heading"><div><h2 className="table-title">KODA GitLab 자동 연동</h2><p>GitLab 연결과 저장소 선택은 KODA에서만 설정합니다. Tracker는 KODA 요청을 받아 저장소별 서비스·환경·전송 토큰을 자동 생성하거나 재사용합니다.</p></div><span className={`user-status ${gitlabServices.length ? "active" : "inactive"}`}>{gitlabServices.length ? "저장소 연결됨" : "연결 대기"}</span></div><div className="dtrack-status-body"><p>GitLab 저장소 → KODA 점검·CycloneDX 생성 → Tracker 회차 수신·분석 → KODA가 GitLab 결과 MR·취약점 이슈 저장</p><p>{gitlabEnvironment ? "gitlab-source 환경이 자동 준비되었습니다." : "첫 저장소 연결 시 gitlab-source 환경이 자동 준비됩니다."}</p><div className="button-row"><button type="button" className="secondary" onClick={() => setActiveTab("services")}>자동 생성 항목 보기</button></div></div></div>
-        <div className="table-frame"><h2 className="table-title">자동 생성된 저장소 서비스</h2><table><thead><tr><th>GitLab 저장소</th><th>Tracker 식별자</th><th>전송 토큰</th></tr></thead><tbody>{gitlabServices.length ? visibleGitlabServices.map((item) => { const tokenCount = tokens.filter((token) => token.active && token.serviceId === item.id).length; return (<tr key={item.id}><td>{item.name}</td><td className="mono">{item.slug}</td><td>{tokenCount ? "활성" : "확인 필요"}</td></tr>);}) : (<tr><td colSpan={3}>KODA에서 연결한 GitLab 저장소가 없습니다.</td></tr>)}</tbody></table><DetailPagination total={gitlabServices.length} page={currentGitlabServicePage} pageSize={gitlabPageSize} label="GitLab 서비스 페이지당 행 수" onPage={setGitlabServicePage} onPageSize={(size) => { setGitlabPageSize(size); setGitlabServicePage(1); }} /></div>
+        <div className="table-frame integration-status"><div className="settings-panel-heading"><div><h2 className="table-title">KODA GitLab 자동 연동</h2><p>GitLab 연결과 저장소 선택은 KODA에서만 설정합니다. Tracker는 KODA 요청을 받아 저장소별 서비스·환경·전송 토큰을 자동 생성하거나 재사용합니다.</p></div><span className={`user-status ${gitlabServices.length ? "active" : "inactive"}`}>{gitlabServices.length ? "저장소 연결됨" : "연결 대기"}</span></div><div className="integration-status-body"><p>GitLab 저장소 → KODA 점검·CycloneDX 생성 → Tracker 회차 수신·분석 → KODA가 GitLab 결과 MR·취약점 이슈 저장</p><p>{gitlabEnvironment ? "gitlab-source 환경이 자동 준비되었습니다." : "첫 저장소 연결 시 gitlab-source 환경이 자동 준비됩니다."}</p><div className="button-row"><button type="button" className="secondary" onClick={() => setActiveTab("services")}>자동 생성 항목 보기</button></div></div></div>
+        <div className="table-frame"><h2 className="table-title">자동 생성된 저장소 서비스</h2><div className="table-scroll" role="region" aria-label="저장소 서비스 목록 가로 스크롤" tabIndex={0}><table><thead><tr><th>GitLab 저장소</th><th>Tracker 식별자</th><th>전송 토큰</th></tr></thead><tbody>{gitlabServices.length ? visibleGitlabServices.map((item) => { const tokenCount = tokens.filter((token) => token.active && token.serviceId === item.id).length; return (<tr key={item.id}><td>{item.name}</td><td className="mono">{item.slug}</td><td>{tokenCount ? "활성" : "확인 필요"}</td></tr>);}) : (<tr><td colSpan={3}>KODA에서 연결한 GitLab 저장소가 없습니다.</td></tr>)}</tbody></table></div><DetailPagination total={gitlabServices.length} page={currentGitlabServicePage} pageSize={gitlabPageSize} label="GitLab 서비스 페이지당 행 수" onPage={setGitlabServicePage} onPageSize={(size) => { setGitlabPageSize(size); setGitlabServicePage(1); }} /></div>
       </>)}
-      {canDtrack && (<div className="table-frame dtrack-status"><h2 className="table-title">기존 외부 시스템 연결</h2><div className="dtrack-status-body"><strong className={`state ${dtrackLabel === "연결됨" ? "completed" : "partial"}`}>{dtrackLabel}</strong><span>버전 {dtrackStatus?.version || "-"}</span><span>팀 {dtrackStatus?.team || "-"}</span>{!dtrackStatus?.configured && (<p>KODA 자체 분석에는 필요하지 않습니다. 선택 연동을 명시적으로 활성화하고 API 키를 설정해야 BOM 업로드가 실행됩니다.</p>)}{dtrackStatus?.reachable && dtrackStatus?.authenticated && Boolean(dtrackStatus.missingPermissions.length) && (<p>연결은 되었지만 누락 권한을 확인하세요: {(dtrackStatus.missingPermissions || []).map(permissionLabel).join(", ")}</p>)}{dtrackStatus?.error && !dtrackStatus?.reachable && <p>{dtrackStatus.error}</p>}</div></div>)}
     </div>)}
     {activeTab === "reanalysis" && (canReanalysis || canReanalysisManage) && <ReanalysisSchedulePanel canManage={canReanalysisManage} services={services} environments={environments} />}
     {activeTab === "notifications" && (canNotifications || canNotificationManage) && <NotificationsPanel canManage={canNotificationManage} />}
     {activeTab === "sbom-policies" && (canSbomPolicies || canSbomPolicyManage) && <SbomPoliciesPanel canManage={canSbomPolicyManage} services={services} environments={environments} />}
     {activeTab === "services" && canServices && (<div id="settings-panel-services" role="tabpanel" aria-labelledby="settings-tab-services"><ServicesPage services={services} environments={environments} canManage={canCatalogManage} onChanged={onChanged} /></div>)}
     {activeTab === "ldap" && isAdmin && (<LdapSettingsPanel settings={ldapSettings} onChanged={onLdapChanged} />)}
-    {activeTab === "users" && (canUsers || canTokens) && (<div className="settings-panel" id="settings-panel-users" role="tabpanel" aria-labelledby="settings-tab-users"><div className="settings-grid">{canUsers && (<div className="table-frame"><h2 className="table-title">사용자 {users.length}명</h2><table><thead><tr><th>사용자</th><th>역할</th><th>상태</th><th>작업</th></tr></thead><tbody>{users.length ? visibleUsers.map((item) => (<tr key={item.id || item.username} className={item.status === "pending" ? "pending-user" : ""}><td>{item.username}</td><td><select aria-label={`${item.username} 역할`} value={item.role} disabled={busy || item.status === "deleted"} onChange={(event) => void updateUser(item, "role", event.target.value)}>{canRoles && (<><option value="admin">관리자</option><option value="manager">매니저</option></>)}<option value="analyst">분석자</option><option value="uploader">업로더</option><option value="viewer">조회자</option></select></td><td><span className={`user-status ${item.status || (item.active ? "active" : "inactive")}`}>{userStatusLabel(item)}</span></td><td>{item.id && (item.status === "pending" ? (<button type="button" className="primary compact" disabled={busy} onClick={() => void approve(item)}>승인</button>) : item.status === "deleted" ? (<span>삭제됨</span>) : (<><button type="button" className="secondary compact" disabled={busy} onClick={() => void updateUser(item, "active", !item.active)}>{item.active ? "비활성화" : "활성화"}</button>{<button type="button" className="danger compact" disabled={busy} onClick={() => void removeUser(item)}>삭제</button>}</>))}</td></tr>)) : (<tr><td colSpan={4}>등록된 사용자가 없습니다.</td></tr>)}</tbody></table><DetailPagination total={users.length} page={currentUserPage} pageSize={accountPageSize} label="사용자 페이지당 행 수" onPage={setUserPage} onPageSize={(size) => { setAccountPageSize(size); setUserPage(1); setTokenPage(1); }} /></div>)}{canTokens && (<div className="table-frame"><h2 className="table-title">API 토큰 {tokens.length}개</h2><table><thead><tr><th>이름</th><th>서비스</th><th>생성 시각</th><th>상태</th><th /></tr></thead><tbody>{tokens.length ? visibleTokens.map((item) => (<tr key={item.id}><td>{item.name}</td><td>{services.find((service) => service.id === item.serviceId)?.name || item.serviceId || "-"}</td><td>{formatSeoulDateTime(item.createdAt)}</td><td>{item.active ? "활성" : "폐기"}</td><td>{item.active && (<button type="button" className="secondary compact" onClick={() => void revoke(item.id)} disabled={busy}>폐기</button>)}</td></tr>)) : (<tr><td colSpan={5}>발급된 토큰이 없습니다.</td></tr>)}</tbody></table><DetailPagination total={tokens.length} page={currentTokenPage} pageSize={accountPageSize} label="토큰 페이지당 행 수" onPage={setTokenPage} onPageSize={(size) => { setAccountPageSize(size); setUserPage(1); setTokenPage(1); }} /></div>)}</div></div>)}
+    {activeTab === "users" && (canUsers || canTokens) && (<div className="settings-panel" id="settings-panel-users" role="tabpanel" aria-labelledby="settings-tab-users"><div className="settings-grid">{canUsers && (<div className="table-frame"><h2 className="table-title">사용자 {users.length}명</h2><div className="table-scroll" role="region" aria-label="사용자 목록 가로 스크롤" tabIndex={0}><table><thead><tr><th>사용자</th><th>역할</th><th>상태</th><th>작업</th></tr></thead><tbody>{users.length ? visibleUsers.map((item) => (<tr key={item.id || item.username} className={item.status === "pending" ? "pending-user" : ""}><td>{item.username}</td><td><select aria-label={`${item.username} 역할`} value={item.role} disabled={busy || item.status === "deleted"} onChange={(event) => void updateUser(item, "role", event.target.value)}>{canRoles && (<><option value="admin">관리자</option><option value="manager">매니저</option></>)}<option value="analyst">분석자</option><option value="uploader">업로더</option><option value="viewer">조회자</option></select></td><td><span className={`user-status ${item.status || (item.active ? "active" : "inactive")}`}>{userStatusLabel(item)}</span></td><td>{item.id && (item.status === "pending" ? (<button type="button" className="primary compact" disabled={busy} onClick={() => void approve(item)}>승인</button>) : item.status === "deleted" ? (<span>삭제됨</span>) : (<><button type="button" className="secondary compact" disabled={busy} onClick={() => void updateUser(item, "active", !item.active)}>{item.active ? "비활성화" : "활성화"}</button>{<button type="button" className="danger compact" disabled={busy} onClick={() => void removeUser(item)}>삭제</button>}</>))}</td></tr>)) : (<tr><td colSpan={4}>등록된 사용자가 없습니다.</td></tr>)}</tbody></table></div><DetailPagination total={users.length} page={currentUserPage} pageSize={accountPageSize} label="사용자 페이지당 행 수" onPage={setUserPage} onPageSize={(size) => { setAccountPageSize(size); setUserPage(1); setTokenPage(1); }} /></div>)}{canTokens && (<div className="table-frame"><h2 className="table-title">API 토큰 {tokens.length}개</h2><div className="table-scroll" role="region" aria-label="API 토큰 목록 가로 스크롤" tabIndex={0}><table><thead><tr><th>이름</th><th>서비스</th><th>생성 시각</th><th>상태</th><th /></tr></thead><tbody>{tokens.length ? visibleTokens.map((item) => (<tr key={item.id}><td>{item.name}</td><td>{services.find((service) => service.id === item.serviceId)?.name || item.serviceId || "-"}</td><td>{formatSeoulDateTime(item.createdAt)}</td><td>{item.active ? "활성" : "폐기"}</td><td>{item.active && (<button type="button" className="secondary compact" onClick={() => void revoke(item.id)} disabled={busy}>폐기</button>)}</td></tr>)) : (<tr><td colSpan={5}>발급된 토큰이 없습니다.</td></tr>)}</tbody></table></div><DetailPagination total={tokens.length} page={currentTokenPage} pageSize={accountPageSize} label="토큰 페이지당 행 수" onPage={setTokenPage} onPageSize={(size) => { setAccountPageSize(size); setUserPage(1); setTokenPage(1); }} /></div>)}</div></div>)}
     {activeTab === "roles" && canPolicyEdit && policies.length > 0 && (<div className="settings-panel" id="settings-panel-roles" role="tabpanel" aria-labelledby="settings-tab-roles"><div className="table-frame"><h2 className="table-title">권한 정책</h2>{POLICY_SECTIONS.map((section) => (<section className="role-policy-section" key={section.label}><div className="role-policy-section-heading"><h3>{section.label}</h3><p>{section.description}</p></div><div className="role-policy-grid">{roles.map((role) => (<fieldset key={role} aria-label={`${roleLabel(role)} ${section.label}`}><legend>{roleLabel(role)}</legend>{section.groups.map((group) => { const entries = group.permissions.filter((permission) => permissionNames.includes(permission)); return entries.length ? (<div className="permission-group" key={group.label}>{section.label === "기능 제어" && <h4>{group.label}</h4>}{entries.map((permission) => (<label key={permission}><input type="checkbox" checked={policyDraft[role]?.has(permission) || false} disabled={!canPolicyEdit || busy || (permission === "sbom.delete" && role !== "admin")} onChange={() => setPolicyDraft((current) => { const next = new Set(current[role] || []); if (next.has(permission)) next.delete(permission); else next.add(permission); return { ...current, [role]: next }; })} />{section.label === "화면 접근 권한" ? permissionLabel(permission).replace(/ 조회$/, "") : permissionLabel(permission)}</label>))}</div>) : null; })}</fieldset>))}</div></section>))}{canPolicyEdit && (<div className="role-policy-actions"><button type="button" className="primary" onClick={async () => { setBusy(true); setMessage(""); try { const changed = roles.filter((role) => { const before = policies.find((item) => item.role === role)?.permissions || []; const after = [...(policyDraft[role] || [])]; return before.length !== after.length || before.some((item) => !policyDraft[role]?.has(item)); }); if (!changed.length) { setMessage("변경된 역할 정책이 없습니다."); return; } const updated = await updateRolePolicies(changed.map((role) => ({ role, permissions: [...(policyDraft[role] || [])] }))); const next = policies.map((item) => updated.find((changedPolicy) => changedPolicy.role === item.role) || item); await onPolicyChanged(next); setMessage("역할 정책을 저장했습니다."); } catch (error) { setMessage(error instanceof Error ? error.message : "역할 정책 저장에 실패했습니다."); } finally { setBusy(false); } }}>권한 정책 저장</button></div>)}</div></div>)}
-    {activeTab === "vulnerability" && isAdmin && canVulnerability && (<div id="settings-panel-vulnerability" role="tabpanel" aria-labelledby="settings-tab-vulnerability"><VulnerabilityPage embedded bundles={bundles} canManage={isAdmin && canVulnerabilityManage} onSync={onSync} onActivate={onActivate} /></div>)}
+    {activeTab === "vulnerability" && (canExternalData || canPrivateData || canMetadataData) && (<div id="settings-panel-vulnerability" role="tabpanel" aria-labelledby="settings-tab-vulnerability">
+      <div className="page-heading vulnerability-data-heading"><h1>취약점 데이터</h1>
+        <div className="settings-tabs vulnerability-data-tabs" role="tablist" aria-label="취약점 데이터 종류">
+          {canExternalData && <button type="button" role="tab" id="vulnerability-data-tab-external" aria-controls="vulnerability-data-panel-external" aria-selected={activeVulnerabilityDataTab === "external"} className={activeVulnerabilityDataTab === "external" ? "active" : ""} onClick={() => setVulnerabilityDataTab("external")}>공개 참조 자료</button>}
+          {canPrivateData && <button type="button" role="tab" id="vulnerability-data-tab-private" aria-controls="vulnerability-data-panel-private" aria-selected={activeVulnerabilityDataTab === "private"} className={activeVulnerabilityDataTab === "private" ? "active" : ""} onClick={() => setVulnerabilityDataTab("private")}>자체 등록 취약점</button>}
+          {canMetadataData && <button type="button" role="tab" id="vulnerability-data-tab-metadata" aria-controls="vulnerability-data-panel-metadata" aria-selected={activeVulnerabilityDataTab === "metadata"} className={activeVulnerabilityDataTab === "metadata" ? "active" : ""} onClick={() => setVulnerabilityDataTab("metadata")}>자료 현황·영향</button>}
+        </div>
+      </div>
+      {activeVulnerabilityDataTab === "external" && canExternalData && <div id="vulnerability-data-panel-external" role="tabpanel" aria-labelledby="vulnerability-data-tab-external"><VulnerabilityPage embedded bundles={bundles} canManage={canVulnerabilityManage} onSync={onSync} onActivate={onActivate} /></div>}
+      {activeVulnerabilityDataTab === "private" && canPrivateData && <div id="vulnerability-data-panel-private" role="tabpanel" aria-labelledby="vulnerability-data-tab-private"><PrivateVulnerabilitiesPanel canManage={canMetadataManage}/></div>}
+      {activeVulnerabilityDataTab === "metadata" && canMetadataData && <div id="vulnerability-data-panel-metadata" role="tabpanel" aria-labelledby="vulnerability-data-tab-metadata">
+        <OfflineIntelligencePanel />
+        <details className="package-metadata-advanced"><summary>패키지 버전·출시일 관측 현황 (고급)</summary><PackageMetadataPanel canManage={canMetadataManage} /></details>
+      </div>}
+    </div>)}
     {activeTab === "audit" && isAdmin && canAudit && (<div id="settings-panel-audit" role="tabpanel" aria-labelledby="settings-tab-audit"><AuditPage embedded events={auditEvents} /></div>)}
     {!settingsTabs.length && (<div className="empty-state"><Icon name="settings" /><h2>관리 가능한 설정이 없습니다.</h2><p>현재 계정에 허용된 설정 권한이 없습니다.</p></div>)}
     {mode && (<div className="modal-backdrop" role="presentation"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="settings-modal-title"><header><h2 id="settings-modal-title">{mode === "user" ? "사용자 추가" : "API 토큰 발급"}</h2><button type="button" className="icon-button" aria-label="설정 창 닫기" onClick={() => setMode(null)}><Icon name="close" /></button></header><form onSubmit={submit}>{mode === "user" ? (<><label>사용자 이름<input name="username" required autoFocus /></label><label>임시 비밀번호<input name="password" type="password" minLength={12} required /></label><label>역할<select name="role" defaultValue="viewer">{canRoles && (<><option value="admin">관리자</option><option value="manager">매니저</option></>)}<option value="analyst">분석자</option><option value="uploader">업로더</option><option value="viewer">조회자</option></select></label></>) : (<><label>토큰 이름<input name="name" required autoFocus /></label><label>허용 서비스<select name="serviceId" required><option value="" disabled>서비스를 선택하세요</option>{services.map((item) => (<option key={item.id} value={item.id}>{item.name}</option>))}</select></label><small>서비스 범위 토큰입니다. 토큰 원문은 지금만 표시되며 서버에는 해시만 저장됩니다.</small></>)}{message && <p className="form-message">{message}</p>}<footer><button type="button" className="secondary" onClick={() => setMode(null)}>닫기</button><button className="primary" disabled={busy}>{busy ? "처리 중…" : "확인"}</button></footer></form></section></div>)}
@@ -1207,8 +1194,8 @@ export function SettingsPage({ users, services, environments = [], tokens, dtrac
 }
 
 function GenericPage({ rows }: { rows: string[][] }) {
-  return (<section className="page generic-page"><h1>대시보드</h1><p>서비스와 최신 SBOM 회차의 운영 상태를 확인합니다.</p><div className="table-frame"><table><thead><tr><th>이름</th><th>구분</th><th>값</th><th>상태/시각</th></tr></thead><tbody>{rows.length ? (rows.map((row) => (<tr key={row.join()}>{row.map((cell) => (<td key={cell}>{cell}</td>))}</tr>) )
-            ): (<tr><td colSpan={4}>표시할 데이터가 없습니다.</td></tr>)}</tbody></table></div></section>);}
+  return (<section className="page generic-page"><h1>대시보드</h1><p>서비스와 최신 SBOM 회차의 운영 상태를 확인합니다.</p><div className="table-frame"><div className="table-scroll" role="region" aria-label="항목 목록 가로 스크롤" tabIndex={0}><table><thead><tr><th>이름</th><th>구분</th><th>값</th><th>상태/시각</th></tr></thead><tbody>{rows.length ? (rows.map((row) => (<tr key={row.join()}>{row.map((cell) => (<td key={cell}>{cell}</td>))}</tr>) )
+            ): (<tr><td colSpan={4}>표시할 데이터가 없습니다.</td></tr>)}</tbody></table></div></div></section>);}
 
 function GuidePage() {
   return (<section className="page guide-page">
@@ -1219,7 +1206,7 @@ function GuidePage() {
       <h2 id="guide-flow-title">기본 사용 순서</h2>
       <ol className="guide-flow">
         <li><strong>서비스·환경 준비</strong><span>설정에서 SBOM을 구분할 서비스와 운영 환경을 확인합니다.</span></li>
-        <li><strong>SBOM 업로드</strong><span>서비스, 환경, 릴리스를 선택하고 CycloneDX 파일을 등록합니다.</span></li>
+        <li><strong>SBOM 업로드</strong><span>서비스, 환경, 릴리스를 선택하고 CycloneDX 1.4~1.7 JSON/XML 또는 SPDX 2.3 JSON 파일을 등록합니다.</span></li>
         <li><strong>분석 결과 확인</strong><span>회차 상세에서 구성요소, CVE, CVSS, KEV, 제안 버전을 검토합니다.</span></li>
         <li><strong>변경 추적</strong><span>회차 비교에서 구성요소·취약점·정책 결과의 추가, 제거, 변경을 확인합니다.</span></li>
       </ol>
@@ -1239,7 +1226,8 @@ function GuidePage() {
       <h2 id="guide-terms-title">용어 설명</h2>
       <dl className="guide-glossary">
         <div><dt>SBOM (Software Bill of Materials)</dt><dd>소프트웨어를 구성하는 라이브러리, 패키지와 버전 등의 명세입니다.</dd></div>
-        <div><dt>CycloneDX</dt><dd>Tracker가 업로드받는 표준 SBOM 형식으로 JSON(JavaScript Object Notation)과 XML(Extensible Markup Language)을 지원합니다.</dd></div>
+        <div><dt>CycloneDX</dt><dd>Tracker는 CycloneDX 1.4·1.5·1.6·1.7의 JSON과 XML 업로드를 지원합니다.</dd></div>
+        <div><dt>SPDX</dt><dd>SPDX 2.3 JSON 업로드를 지원합니다. 원본을 보존하고 분석용 공통 형식으로 변환합니다.</dd></div>
         <div><dt>구성요소</dt><dd>SBOM에 포함된 라이브러리, 프레임워크, 애플리케이션 등의 개별 항목입니다.</dd></div>
         <div><dt>회차</dt><dd>서비스·환경·릴리스 조합에 업로드된 SBOM 한 건과 그 분석 이력입니다.</dd></div>
         <div><dt>CVE (Common Vulnerabilities and Exposures)</dt><dd>공개적으로 식별된 보안 취약점에 부여되는 표준 식별자입니다.</dd></div>
@@ -1325,7 +1313,6 @@ export default function App() {
   const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
   const [users, setUsers] = useState<UserSummary[]>([]);
   const [tokens, setTokens] = useState<ApiTokenSummary[]>([]);
-  const [dtrackStatus, setDtrackStatus] = useState<DependencyTrackStatus | null>(null);
   const [ldapSettings, setLdapSettings] = useState<LdapSettings | null>(demoMode ? demoLdapSettings : null);
   const [loadError, setLoadError] = useState("");
   const [uploadOpen, setUploadOpen] = useState(false);
@@ -1385,7 +1372,7 @@ export default function App() {
         setSelectedRun(linkedRun);}
     }
     if (!demoMode && !standaloneMode) {
-      const [auditResult, usersResult, bundlesResult, tokensResult, dtrackResult, ldapResult] = await Promise.allSettled([
+      const [auditResult, usersResult, bundlesResult, tokensResult, ldapResult] = await Promise.allSettled([
         loadedUser?.role === "admin" && loadCan("audit.view")
           ? fetchAuditEvents()
           : Promise.resolve({ items: [] as AuditEvent[], page: 1, size: 10, total: 0 }),
@@ -1393,15 +1380,11 @@ export default function App() {
         loadedUser?.role === "admin" && loadCan("vulnerability.view")
           ?fetchVulnerabilityBundles(): Promise.resolve([]),
         loadCan("tokens.manage") ?fetchApiTokens(): Promise.resolve([]),
-        loadCan("dtrack.settings")
-          ?fetchDependencyTrackStatus()
-          : Promise.resolve(null),
         loadedUser?.role === "admin" ? fetchLdapSettings() : Promise.resolve(null)]);
       if (auditResult.status === "fulfilled") setAuditEvents(auditResult.value.items);
       if (usersResult.status === "fulfilled") setUsers(usersResult.value);
       if (bundlesResult.status === "fulfilled") setBundles(bundlesResult.value);
       if (tokensResult.status === "fulfilled") setTokens(tokensResult.value);
-      if (dtrackResult.status === "fulfilled") setDtrackStatus(dtrackResult.value);
       if (ldapResult.status === "fulfilled") setLdapSettings(ldapResult.value);
       setGenericRows({
         dashboard: [
@@ -1456,7 +1439,7 @@ export default function App() {
           canUpload={canUpload} onUpload={() => setUploadOpen(true)} onSelect={openRun} />);
     if (page === "compare") return <ComparePage runs={runs} can={can} />;
     if (page === "guide") return <GuidePage />;
-    const settingsContent = (initialTab?: SettingsTab) => (<SettingsPage users={users} services={services} environments={environments} tokens={tokens} dtrackStatus={dtrackStatus} ldapSettings={ldapSettings} policies={rolePolicies}
+    const settingsContent = (initialTab?: SettingsTab) => (<SettingsPage users={users} services={services} environments={environments} tokens={tokens} ldapSettings={ldapSettings} policies={rolePolicies}
           roleCatalog={rolePolicyCatalog}
           bundles={bundles}
           auditEvents={auditEvents}
@@ -1466,16 +1449,17 @@ export default function App() {
           canAudit={can("audit.view")}
           canUsers={can("users.manage")}
           canTokens={hasPermissions(authUser, "tokens.manage", "services.view")}
-          canDtrack={can("dtrack.settings")}
           canRoles={can("roles.manage")}
           canPolicyEdit={can("roles.manage")}
+          canProjectRuns={can("runs.view")}
+          onOpenRun={openRun}
           canSbomPolicies={can("policies.view")}
           canSbomPolicyManage={can("policies.manage")}
           canReanalysis={can("reanalysis.view")} canReanalysisManage={can("reanalysis.manage")}
           canNotifications={can("notifications.view")} canNotificationManage={can("notifications.manage")}
           canServices={can("services.view")}
           canCatalogManage={can("catalog.manage")}
-          canMetadata={can("metadata.view")} canMetadataManage={can("metadata.manage")} canMigrations={can("migrations.manage")}
+          canMetadata={can("metadata.view")} canMetadataManage={can("metadata.manage")} canProjects={can("catalog.manage")}
           initialTab={initialTab}
           onSync={async () => { const items = await syncVulnerabilityBundles(); setBundles(items);}}
           onActivate={async (version) => { await activateVulnerabilityBundle(version); const items = await fetchVulnerabilityBundles(); setBundles(items);}}
@@ -1490,7 +1474,7 @@ export default function App() {
           onLdapChanged={setLdapSettings}
           onChanged={() => void loadData(authUser)} />);
     if (page === "settings") return settingsContent(initialLink.settingsTab || undefined);
-    return <GenericPage rows={genericRows.dashboard || []} />;}, [auditEvents, bundles, can,dtrackStatus, environments, genericRows, globalSearch, initialLink.settingsTab, ldapSettings, loadData, openRun, page, runs, services, tokens, users,
+    return <GenericPage rows={genericRows.dashboard || []} />;}, [auditEvents, bundles, can, environments, genericRows, globalSearch, initialLink.settingsTab, ldapSettings, loadData, openRun, page, runs, services, tokens, users,
     rolePolicyCatalog,
     rolePolicies, authUser, navigate, canUpload]);
   useEffect(() => {

@@ -21,7 +21,7 @@ export function canPermission(user: AuthUser | null, permission: string) {
 export function canPage(user: AuthUser | null, page: Page) {
   if (page === "guide") return Boolean(user?.active);
   return page === "settings"
-    ? canPermission(user, "migrations.manage") || canPermission(user, "metadata.view") || canPermission(user, "metadata.manage") || canPermission(user, "settings.view") || canPermission(user, "services.view") || canPermission(user, "policies.view") || canPermission(user, "policies.manage") || canPermission(user, "reanalysis.view") || canPermission(user, "reanalysis.manage") || canPermission(user, "notifications.view") || canPermission(user, "notifications.manage")
+    ? canPermission(user, "catalog.manage") || canPermission(user, "metadata.view") || canPermission(user, "metadata.manage") || canPermission(user, "settings.view") || canPermission(user, "services.view") || canPermission(user, "policies.view") || canPermission(user, "policies.manage") || canPermission(user, "reanalysis.view") || canPermission(user, "reanalysis.manage") || canPermission(user, "notifications.view") || canPermission(user, "notifications.manage")
     : canPermission(user, PAGE_PERMISSIONS[page]);
 }
 

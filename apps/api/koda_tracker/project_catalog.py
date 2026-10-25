@@ -1,19 +1,12 @@
-"""Native project scopes and optional forward-only source synchronization.
-
-The catalog can be edited after the source server has been retired. Run links are
-separate so editing tags/parents/latest never rewrites historical SBOM evidence.
-"""
+"""Native project scopes and durable analysis intents preserve SBOM history."""
 from __future__ import annotations
-import copy
-from datetime import UTC, datetime, timedelta
-import uuid
-from cryptography.fernet import Fernet, InvalidToken
+from datetime import UTC, datetime
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
-from .collection_metrics import collection_config, configure_collection
+from .collection_metrics import collection_config
 from .config import get_settings
-from .models import AuditEvent, Job, JobState, ProcessingState, Release, SbomRun, SbomPolicyRevision, now
-from .project_catalog_models import NativeProject, ProjectRunLink, ProjectSyncSource, ProjectSyncEvent, NativeReanalysisPending
+from .models import Job, JobState, ProcessingState, Release, SbomRun, now
+from .project_catalog_models import NativeProject, ProjectRunLink, NativeReanalysisPending
 
 
 class CatalogError(ValueError):
@@ -50,74 +43,6 @@ def validate_hierarchy(projects: list[dict]) -> None:
             current = parents.get(current)
 
 
-def upsert_source_projects(db: Session, bundle: dict, plan: dict) -> list[NativeProject]:
-    """Called before imported revisions are evaluated, inside import transaction."""
-    from .quality import quality_write_lock
-    quality_write_lock(db)
-    source_id = bundle["source"]["id"]
-    existing = {p.source_project_id: p for p in db.scalars(select(NativeProject).where(NativeProject.source_id == source_id))}
-    incoming = {}
-    original_projects = {}
-    for item in bundle["projects"]:
-        project = item["project"]
-        original_projects[project["uuid"]] = project
-        parent = project.get("parent")
-        parent = parent.get("uuid") if isinstance(parent, dict) else parent
-        incoming[project["uuid"]] = {"name": str(project.get("name") or project["uuid"])[:255], "version": str(project.get("version") or "unversioned")[:255], "parent_project_id": parent, "tags": tags_of(project.get("tags") or []), "is_latest": project.get("isLatest") is True, "active": project.get("active") is not False}
-    complete = bundle["source"].get("projectSnapshotComplete") is True
-    if complete:
-        # A complete source snapshot may retire absent projects. Partial/older
-        # bundles never infer deletion from an omitted project.
-        for values in incoming.values():
-            if values["parent_project_id"] not in incoming:
-                values["parent_project_id"] = None
-        for identity, project in existing.items():
-            if identity not in incoming:
-                if project.active or project.is_latest or project.parent_project_id is not None:
-                    db.add(AuditEvent(actor="source-sync", action="project_catalog.source_retire", target_type="project", target_id=project.id, detail={"sourceId": source_id, "sourceProjectId": identity, "previous": project_payload(project)}))
-                    project.active, project.is_latest, project.parent_project_id = False, False, None
-                    project.revision += 1
-    validate_hierarchy([{"id": k, "parent": incoming.get(k, {}).get("parent_project_id", p.parent_project_id)} for k, p in existing.items()] + [{"id": k, "parent": v["parent_project_id"]} for k, v in incoming.items() if k not in existing])
-    result = []
-    for identity, values in incoming.items():
-        target = plan[identity]
-        project = existing.get(identity)
-        if project is None:
-            project = NativeProject(id=str(uuid.uuid5(uuid.NAMESPACE_URL, "koda-project:" + source_id + ":" + identity)), source_id=source_id, source_project_id=identity, service_id=target["serviceId"], environment_id=target["environmentId"], revision=1, **values)
-            db.add(project)
-        else:
-            changed = any(getattr(project, k) != v for k, v in values.items()) or project.current_run_id != target["runId"]
-            for key, value in values.items():
-                setattr(project, key, value)
-            if changed:
-                project.revision += 1
-        raw = original_projects[identity]
-        if "collectionLogic" in raw:
-            tag = raw.get("collectionTag")
-            tag = tag.get("name") if isinstance(tag, dict) else tag
-            before_config = collection_config(project)
-            configure_collection(project, raw.get("collectionLogic") or "NONE", tag)
-            if before_config != collection_config(project) and identity in existing:
-                project.revision += 1
-        project.current_run_id = target["runId"]
-        # Release creation happens later in apply_migration; resolve lazily.
-        from .migration import _id
-        existing_run = db.get(SbomRun, target["runId"])
-        project.release_id = existing_run.release_id if existing_run else _id(source_id, "release", identity + ":" + (values["version"] or "unversioned"))
-        link = db.get(ProjectRunLink, target["runId"])
-        if link is None:
-            db.add(ProjectRunLink(run_id=target["runId"], project_id=project.id))
-        elif link.project_id != project.id:
-            raise CatalogError("동일한 회차를 여러 프로젝트에 연결할 수 없습니다")
-        result.append(project)
-    latest_names = [p.name for p in result if p.is_latest]
-    if len(latest_names) != len(set(latest_names)):
-        raise CatalogError("같은 프로젝트 이름에 최신 버전이 여러 개 지정되었습니다")
-    for p in result:
-        if p.is_latest:
-            set_latest(db, p, True)
-    db.flush()
-    return result
 
 
 def project_for_run(db: Session, run_id: str) -> NativeProject | None:
@@ -196,38 +121,14 @@ def set_latest(db: Session, project: NativeProject, value: bool) -> None:
     project.is_latest = value
 
 
-def _fernet() -> Fernet:
-    key = get_settings().ldap_encryption_key.strip()
-    if not key:
-        raise CatalogError("암호화 키 TRACKER_LDAP_ENCRYPTION_KEY가 필요합니다")
-    try:
-        return Fernet(key.encode("ascii"))
-    except (ValueError, UnicodeError) as exc:
-        raise CatalogError("암호화 키 형식이 올바르지 않습니다") from exc
 
 
-def encrypt_key(value: str) -> str:
-    return _fernet().encrypt(value.encode()).decode("ascii")
 
 
-def decrypt_key(value: str) -> str:
-    try:
-        return _fernet().decrypt(value.encode("ascii")).decode()
-    except (InvalidToken, ValueError, UnicodeError) as exc:
-        raise CatalogError("저장한 원본 인증정보를 현재 암호화 키로 읽을 수 없습니다") from exc
 
 
-def sync_payload(s: ProjectSyncSource) -> dict:
-    return {"id": s.id, "name": s.name, "baseUrl": s.base_url, "allowedOrigins": s.allowed_origins, "projectUuids": s.project_uuids, "sourceTimeZone": s.source_timezone, "sourceId": s.source_id, "credentialConfigured": bool(s.key_ciphertext), "enabled": s.enabled, "intervalMinutes": s.interval_minutes, "version": s.version, "state": s.state, "attempts": s.attempts, "nextRunAt": utc(s.next_run_at).isoformat() if s.next_run_at else None, "lastSuccessAt": utc(s.last_success_at).isoformat() if s.last_success_at else None, "lastError": s.last_error, "lastMigrationId": s.last_migration_id}
 
 
-def _check_local_policy_conflicts(db: Session, source_id: str, current: SbomPolicyRevision) -> None:
-    from .migration_models import LegacyObjectMap
-    rules = {r["id"]: r for r in (current.document.get("rules") or [])} if current else {}
-    for mapping in db.scalars(select(LegacyObjectMap).where(LegacyObjectMap.source_id == source_id, LegacyObjectMap.object_type == "policy")):
-        expected = mapping.provenance.get("rule")
-        if rules.get(mapping.target_id) != expected:
-            raise CatalogError("KODA에서 변경하거나 삭제한 원본 정책이 있어 자동 덮어쓰기를 중단했습니다")
 
 
 
@@ -258,6 +159,9 @@ def request_native_reanalysis(db: Session, source_id: str, run_ids: list[str], *
 
 
 def drain_native_reanalysis(db: Session, *, batch_size: int = 25) -> int:
+    from .data_updates import reference_import_allowed
+    try: reference_import_allowed(get_settings())
+    except ValueError: return 0
     """Move bounded durable intents to worker jobs, without dropping full queues.
 
     An already RUNNING job may have read the old catalog, so intent remains until
@@ -306,130 +210,3 @@ def drain_native_reanalysis(db: Session, *, batch_size: int = 25) -> int:
         enqueued += 1
     db.flush()
     return enqueued
-
-
-def _source_reanalysis_runs(db: Session, source_id: str) -> list[str]:
-    projects = select(NativeProject.id).where(NativeProject.source_id == source_id)
-    linked = list(db.scalars(select(ProjectRunLink.run_id).where(ProjectRunLink.project_id.in_(projects))))
-    # Include ordinary uploads automatically associated with a catalog release.
-    ordinary = list(db.scalars(select(SbomRun.id).join(Release, Release.id == SbomRun.release_id).join(NativeProject, (NativeProject.service_id == Release.service_id) & (NativeProject.environment_id == Release.environment_id) & (NativeProject.version == Release.version)).where(NativeProject.source_id == source_id)))
-    return sorted(set(linked + ordinary))
-
-def project_sync_tick(db: Session, *, at: datetime | None = None) -> dict | None:
-    """Run one durable sync. Call with a dedicated Session, not an API transaction.
-
-    A committed 10-minute lease prevents duplicate exporters; failed workers are
-    reclaimable after lease expiry. Up to five transient failures back off, while
-    semantic and local-policy conflicts need an explicit administrator retry.
-    """
-    from .migration import LegacyExporter, MigrationError, apply_migration, stage_bundle
-    from .policies import get_policy_document
-    at = at or now()
-    # Flush pending imports even when sources are disabled/not due. Requests are
-    # durable independently of the next periodic export or connector lifetime.
-    drain_native_reanalysis(db)
-    db.commit()
-    source = db.scalar(select(ProjectSyncSource).where(ProjectSyncSource.enabled.is_(True), ProjectSyncSource.next_run_at <= at, or_(ProjectSyncSource.state != "running", ProjectSyncSource.lease_until <= at)).order_by(ProjectSyncSource.next_run_at).with_for_update(skip_locked=True).limit(1))
-    if source is None:
-        return None
-    if source.state == "running":
-        for interrupted in db.scalars(select(ProjectSyncEvent).where(ProjectSyncEvent.source_id == source.id, ProjectSyncEvent.state == "running")):
-            interrupted.state, interrupted.finished_at = "failed", at
-            interrupted.detail = {"error": "동기화 작업 임대가 만료되어 재시도합니다"}
-        if source.attempts >= 5:
-            source.state, source.lease_until, source.next_run_at = "failed", None, None
-            source.last_error = "동기화 작업 임대 만료 재시도 한도를 초과했습니다"
-            db.commit()
-            return sync_payload(source)
-    source.state, source.lease_until = "running", at + timedelta(minutes=10)
-    source.attempts += 1
-    event = ProjectSyncEvent(source_id=source.id, attempt=source.attempts, started_at=at)
-    db.add(event)
-    db.flush()
-    source_id, event_id, lease = source.id, event.id, source.lease_until
-    db.commit()
-    key = ""
-    exporter = None
-    try:
-        key = decrypt_key(source.key_ciphertext)
-        exporter = LegacyExporter(source.base_url, key, source.allowed_origins, source_timezone=source.source_timezone)
-        bundle = exporter.export(source.project_uuids)
-        db.expire_all()
-        source = db.scalar(select(ProjectSyncSource).where(ProjectSyncSource.id == source_id).with_for_update())
-        if not source or source.state != "running" or utc(source.lease_until) != utc(lease):
-            raise CatalogError("동기화 임대 또는 설정이 변경되었습니다")
-        if source.source_id and source.source_id != bundle["source"]["id"]:
-            raise CatalogError("원본 시스템 식별자가 이전 수집과 다릅니다")
-        # Hold the same policy revision lock used by policy mutations from
-        # baseline comparison through apply. Never re-read a newer revision and
-        # accidentally accept a concurrent local edit as an import baseline.
-        policy = db.scalar(select(SbomPolicyRevision).order_by(SbomPolicyRevision.version.desc()).limit(1).with_for_update())
-        if policy is None:
-            policy = get_policy_document(db)
-        policy_version = policy.version
-        _check_local_policy_conflicts(db, bundle["source"]["id"], policy)
-        batch = stage_bundle(db, bundle, source.actor_name)
-        db.flush()
-        if not batch.report["canApply"]:
-            # Persist the blocked source bundle and report for human review.
-            source.last_migration_id = batch.id
-            source.state, source.lease_until, source.next_run_at = "blocked", None, None
-            source.last_error = "원본 정책 변환 검사에서 적용 차단 사유가 발견되었습니다"
-            event = db.get(ProjectSyncEvent, event_id)
-            event.state, event.finished_at, event.migration_id = "blocked", at, batch.id
-            event.detail = {"blockers": batch.report["blockers"]}
-            db.commit()
-            return sync_payload(source)
-        source_identity = bundle["source"]["id"]
-        before_catalog = {p.id: p.revision for p in db.scalars(select(NativeProject).where(NativeProject.source_id == source_identity))}
-        already_applied = getattr(batch, "state", None) == "applied"
-        applied = apply_migration(db, batch.id, expected_digest=batch.digest, expected_policy_version=policy_version, actor=source.actor_name, actor_id=source.actor_id, trust_source_reviews=False)
-        if already_applied:
-            # Manual bundle apply stays immutable/idempotent. An explicit source
-            # poll is authoritative for mutable catalog state even when its
-            # previously applied bundle bytes are unchanged.
-            upsert_source_projects(db, applied.bundle, applied.report["projectPlan"])
-        after_catalog = {p.id: p.revision for p in db.scalars(select(NativeProject).where(NativeProject.source_id == source_identity))}
-        changed_catalog = before_catalog != after_catalog
-        changed_policies = not already_applied and applied.result.get("policyVersion", policy_version) != policy_version
-        changed_analysis = not already_applied and applied.result.get("analysisRevisionsCreated", 0) > 0
-        affected = _source_reanalysis_runs(db, source_identity) if changed_catalog or changed_policies else applied.result.get("runIds", []) if changed_analysis else []
-        native_pending = request_native_reanalysis(db, source_identity, affected, at=at)
-        native_queued = drain_native_reanalysis(db)
-        source.source_id = source_identity
-        source.last_migration_id, source.last_success_at = applied.id, at
-        source.state, source.attempts, source.lease_until, source.last_error = "idle", 0, None, None
-        source.next_run_at = at + timedelta(minutes=source.interval_minutes)
-        event = db.get(ProjectSyncEvent, event_id)
-        event.state, event.finished_at, event.migration_id, event.detail = "completed", at, applied.id, {"result": copy.deepcopy(applied.result), "nativeReanalysisRequested": native_pending, "nativeReanalysisEnqueued": native_queued}
-        db.commit()
-        return sync_payload(source)
-    except Exception as exc:
-        db.rollback()
-        source = db.scalar(select(ProjectSyncSource).where(ProjectSyncSource.id == source_id).with_for_update())
-        event = db.get(ProjectSyncEvent, event_id)
-        if source and source.state == "running" and source.lease_until and utc(source.lease_until) == utc(lease):
-            source.last_error = str(exc).replace(key, "[redacted]")[:2000] if key else str(exc)[:2000]
-            terminal = isinstance(exc, CatalogError) or source.attempts >= 5
-            source.state = "blocked" if isinstance(exc, CatalogError) else "failed" if terminal else "retrying"
-            source.lease_until = None
-            source.next_run_at = None if terminal else at + timedelta(seconds=min(3600, 60 * 2 ** (source.attempts - 1)))
-            event.state, event.finished_at, event.detail = source.state, at, {"error": source.last_error}
-            db.commit()
-        return sync_payload(source) if source else None
-    finally:
-        if exporter:
-            exporter.close()
-
-
-def main() -> None:
-    import time
-    from .db import SessionLocal
-    while True:
-        with SessionLocal() as db:
-            project_sync_tick(db)
-        time.sleep(5)
-
-
-if __name__ == "__main__":
-    main()

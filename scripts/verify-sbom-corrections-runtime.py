@@ -38,7 +38,6 @@ def main():
   report['checks'].append({'name':name,'passed':True});print('PASS',name,flush=True)
   if evidence is not None:report['evidence'][name]=evidence
  try:
-  check('Dependency-Track disabled',c.request('GET','/api/v1/dependency-track/status')['enabled'] is False)
   for label in ('nested-json','nested-xml'):
    old=seed['runs'][label];current=wait(old['id'],old['analyses'][0]['sequence']);components=c.request('GET',f'/api/v1/sbom-runs/{old["id"]}/components?size=100');policies=c.request('GET',f'/api/v1/sbom-runs/{old["id"]}/policy-violations?size=100')
    check(label+' recovered both components',current['componentCount']==2 and components['total']==2,current)

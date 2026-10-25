@@ -102,7 +102,7 @@ it("shows category numerators and contributions without representing a non-appli
     integrity: { score: null, applicable: false, numerator: 0, denominator: 0, weight: 10, weightedContribution: null },
   } } } }], total: 1, page: 1, size: 20 });
   mount(); expect(await screen.findByText("가중 품질 점수 83.75 / 100")).toBeInTheDocument();
-  expect(screen.getByText("3 / 4")).toBeInTheDocument(); expect(screen.getByText("22.50")).toBeInTheDocument();
+  expect(screen.getByText("3 / 4")).toBeInTheDocument(); expect(screen.getByText("22.5")).toBeInTheDocument();
   expect(screen.getByText("적용 불가")).toBeInTheDocument(); expect(screen.getByText(/높은 점수로 필수 오류를 상쇄할 수 없습니다/)).toBeInTheDocument();
 });
 it("keeps old unscored revisions unscored rather than displaying zero", async () => {
@@ -171,7 +171,21 @@ it("does not alias distinct source/tag targets that contain colon separators", a
 });
 it("allows a zero quality score and zero score threshold without treating them as absent", async () => {
   vi.mocked(api.fetchQualityRevisions).mockResolvedValue({ items: [{ ...revision, summary: { ...revision.summary, score: 0, minScore: 0, scoreThresholdViolated: false }, comparison: { previousRevisionId: "quality-1", errorDelta: 0, warningDelta: 0, scoreDelta: 0 } }], total: 1, page: 1, size: 20 });
-  mount(); expect(await screen.findByText("가중 품질 점수 0.00 / 100")).toBeInTheDocument();
-  expect(screen.getByText("점수 하한 0.00점")).toBeInTheDocument(); expect(screen.getByText(/점수 0.00점/)).toBeInTheDocument();
+  mount(); expect(await screen.findByText("가중 품질 점수 0 / 100")).toBeInTheDocument();
+  expect(screen.getByText("점수 하한 0점")).toBeInTheDocument(); expect(screen.getByText(/점수 0점/)).toBeInTheDocument();
   expect(screen.queryByText("점수 없음 · 이전 엔진 또는 적용 불가")).not.toBeInTheDocument();
+});
+
+it("trims only redundant fractional zeroes in scores, thresholds, ratios and comparisons", async () => {
+  vi.mocked(api.fetchQualityRevisions).mockResolvedValue({ items: [{ ...revision,
+    summary: { ...revision.summary, score: 50, minScore: 42.5, missingIdentityCount: 0, missingIdentityRatio: 0,
+      fieldStatus: { identity: "available", integrity: "declared_only", license: "syntax_only" } },
+    comparison: { previousRevisionId: "quality-1", errorDelta: 0, warningDelta: 0, scoreDelta: 1.25 },
+  }], total: 1, page: 1, size: 20 });
+  mount(); expect(await screen.findByText("가중 품질 점수 50 / 100")).toBeInTheDocument();
+  expect(screen.getByText("점수 하한 42.5점")).toBeInTheDocument();
+  expect(screen.getByText("0 (0%)")).toBeInTheDocument();
+  expect(screen.getByText(/점수 \+1.25점/)).toBeInTheDocument();
+  expect(screen.getByText("선언된 해시만 검사 (실제 파일 대조 전)").parentElement).toHaveClass("quality-field-wide");
+  expect(screen.getByText("구문 검사 (법률상 호환성 판정 전)").parentElement).toHaveClass("quality-field-wide");
 });

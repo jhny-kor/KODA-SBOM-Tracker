@@ -132,3 +132,36 @@ def ensure_native_policy_columns(bind=engine) -> None:
 def get_db() -> Generator[Session, None, None]:
     with SessionLocal() as session:
         yield session
+
+
+def remove_retired_connector_schema(bind=engine) -> None:
+    """Remove retired connector-only state while preserving all SBOM/project rows.
+
+    Native policy expressions and historical scanner evidence are deliberately
+    retained. This idempotent upgrade contains only fixed schema identifiers.
+    """
+    retired_columns = {"services": ("dtrack_collection_uuid",), "sbom_runs": ("dtrack_state", "dtrack_project_uuid", "dtrack_token", "dtrack_error", "dtrack_metrics", "dtrack_policies")}
+    with bind.begin() as connection:
+        tables = set(inspect(connection).get_table_names())
+        for table in ("project_sync_events", "project_sync_sources", "legacy_object_maps", "legacy_migrations"):
+            if table in tables:
+                connection.execute(text(f'DROP TABLE "{table}"'))
+        if "jobs" in tables:
+            connection.execute(text("DELETE FROM jobs WHERE kind = :kind"), {"kind": "sync_dependency_track"})
+        for table, columns in retired_columns.items():
+            if table not in tables: continue
+            existing = {column["name"] for column in inspect(connection).get_columns(table)}
+            for column in columns:
+                if column in existing:
+                    connection.execute(text(f'ALTER TABLE "{table}" DROP COLUMN "{column}"'))
+        if "role_policies" in tables:
+            import json
+            rows = connection.execute(text("SELECT role, permissions FROM role_policies")).all()
+            for role, raw in rows:
+                values = json.loads(raw) if isinstance(raw, str) else raw
+                cleaned = [value for value in (values or []) if value not in {"dtrack.retry", "dtrack.settings", "migrations.manage"}]
+                if cleaned != values:
+                    # JSON binding differs between SQLite and PostgreSQL; the
+                    # typed table update preserves the database JSON adapter.
+                    from .models import RolePolicy
+                    connection.execute(RolePolicy.__table__.update().where(RolePolicy.__table__.c.role == role).values(permissions=cleaned))

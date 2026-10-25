@@ -25,6 +25,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .config import get_settings
+from .network_policy import offline_mode
 from .db import SessionLocal
 from .models import RunComponent
 from .package_metadata_models import PackageMetadataCache, PackageMetadataCursor
@@ -62,6 +63,8 @@ def parse_date(value: Any) -> datetime | None:
 
 
 def setting(name: str, default: Any) -> Any:
+    if name == "enabled" and offline_mode():
+        return False
     return getattr(get_settings(), f"package_metadata_{name}", default)
 
 
@@ -157,6 +160,8 @@ class RegistryClient:
         self.client.close()
 
     def get(self, url: str, *, as_json: bool = True) -> Any:
+        if offline_mode():
+            raise RegistryError("폐쇄망 모드에서 공개 저장소 호출이 차단되었습니다", retryable=False)
         if not allowed_registry_url(url):
             raise RegistryError("허용된 HTTPS registry가 아닙니다", retryable=False)
         self.urls.append(url)
@@ -186,6 +191,8 @@ class RegistryClient:
 
     def last_modified(self, url: str) -> str | None:
         """Observe an immutable version artifact's repository timestamp only."""
+        if offline_mode():
+            raise RegistryError("폐쇄망 모드에서 공개 저장소 호출이 차단되었습니다", retryable=False)
         if not allowed_registry_url(url):
             raise RegistryError("허용된 HTTPS registry가 아닙니다", retryable=False)
         self.urls.append(url)
@@ -623,6 +630,9 @@ def fetch_metadata(target: PackageTarget, client: RegistryClient, *, at: datetim
 
 
 def enqueue_components(db: Session, components: list[dict], *, force: bool = False, at: datetime | None = None) -> dict:
+    from .data_updates import reference_import_allowed
+    try: reference_import_allowed(get_settings())
+    except ValueError: return {"queued":0,"cached":0,"unsupported":0,"invalid":0,"deferred":len(components)}
     at = at or datetime.now(UTC)
     counts = {"queued": 0, "cached": 0, "unsupported": 0, "invalid": 0, "deferred": 0}
     pending = int(db.scalar(select(func.count()).select_from(PackageMetadataCache).where(PackageMetadataCache.state.in_(("queued", "running")))) or 0)
@@ -685,6 +695,11 @@ def metadata_payload(row: PackageMetadataCache | None, *, at: datetime | None = 
         status = "stale" if row.fetched_at else "error"
     else:
         status = "fresh" if row.expires_at and utc(row.expires_at) > at else "stale"
+    from .data_updates import reference_import_allowed
+    try: reference_import_allowed(get_settings())
+    except ValueError:
+        status = "stale"
+        document["disabledReason"] = "승인된 통합 데이터가 없어 현재 정책 입력에서 제외했습니다"
     published = parse_date(document.get("currentVersionPublishedAt"))
     document.update({"packageKey": row.package_key, "purl": row.purl, "ecosystem": row.ecosystem, "currentVersion": row.current_version,
                      "status": status, "fetchedAt": iso(row.fetched_at), "expiresAt": iso(row.expires_at),
@@ -733,6 +748,9 @@ def metadata_summary(components: list[dict]) -> dict:
 
 
 def backfill_components(db: Session, *, batch: int = BACKFILL_BATCH) -> int:
+    from .data_updates import reference_import_allowed
+    try: reference_import_allowed(get_settings())
+    except ValueError: return 0
     cursor = db.get(PackageMetadataCursor, "backfill")
     if cursor is None:
         cursor = PackageMetadataCursor(id="backfill", last_component_id="")
@@ -772,7 +790,10 @@ def requeue_legacy_nuget_metadata(db: Session, *, at: datetime | None = None) ->
 
 
 def collect_one(db: Session, client: RegistryClient | None = None, *, at: datetime | None = None) -> bool:
-    if not setting("enabled", True):
+    from .data_updates import reference_import_allowed
+    try: reference_import_allowed(get_settings())
+    except ValueError: return False
+    if offline_mode() or not setting("enabled", True):
         return False
     at = at or datetime.now(UTC)
     max_attempts = int(setting("max_attempts", 3))
@@ -811,11 +832,12 @@ def collect_one(db: Session, client: RegistryClient | None = None, *, at: dateti
 
 
 def run(*, once: bool = False) -> None:
+    from .data_updates import release_read_lease
     # A separate process/container receives registry egress; analysis needs none.
     from . import models  # noqa: F401
     while True:
         try:
-            with SessionLocal() as db:
+            with release_read_lease(get_settings()), SessionLocal() as db:
                 if setting("enabled", True):
                     backfill_components(db)
                 worked = collect_one(db)
@@ -823,7 +845,7 @@ def run(*, once: bool = False) -> None:
             # Intelligence has its own bounded worker tick and transaction so a
             # failed upstream feed cannot roll back a completed package cache.
             from .vulnerability_intelligence import intelligence_collector_tick
-            with SessionLocal() as db:
+            with release_read_lease(get_settings()), SessionLocal() as db:
                 worked = intelligence_collector_tick(db) or worked
                 db.commit()
         except Exception as exc:

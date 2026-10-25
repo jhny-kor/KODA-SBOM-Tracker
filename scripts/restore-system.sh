@@ -51,18 +51,8 @@ else
   "$ROOT_DIR/scripts/verify-backup.sh" "$staged_backup"
 fi
 
-# Restored optional data may belong to an installation whose integration is
-# now disabled. Stop its writers explicitly, independent of active profiles.
-if [[ -f "${staged_backup}/dtrack-data.tar.gz" || -f "${staged_backup}/${DTRACK_DB_NAME:-dtrack}.dump" ]]; then
-  compose --profile dependency-track stop dtrack-frontend dtrack-apiserver
-  compose --profile dependency-track down
-else
-  compose down
-fi
+compose down
 alpine_untar "${staged_backup}/tracker-artifacts.tar.gz" "${TRACKER_ARTIFACTS_VOLUME_NAME}"
-if [[ -f "${staged_backup}/dtrack-data.tar.gz" ]]; then
-  alpine_untar "${staged_backup}/dtrack-data.tar.gz" "${DTRACK_DATA_VOLUME_NAME:-koda-sbom-dtrack-data}"
-fi
 alpine_untar "${staged_backup}/vuln-data.tar.gz" "${VULN_DATA_VOLUME_NAME}"
 
 compose up -d postgres
@@ -70,14 +60,9 @@ until compose exec -T postgres pg_isready -U "${POSTGRES_SUPERUSER}" -d postgres
   sleep 2
 done
 
-compose exec -T postgres psql -U "${POSTGRES_SUPERUSER}" -d postgres < "${staged_backup}/postgres-globals.sql"
+compose exec -T postgres sh /docker-entrypoint-initdb.d/10-init-multi-db.sh
 compose exec -T postgres dropdb --if-exists -U "${POSTGRES_SUPERUSER}" "${TRACKER_DB_NAME}"
 compose exec -T postgres createdb -U "${POSTGRES_SUPERUSER}" -O "${TRACKER_DB_USER}" "${TRACKER_DB_NAME}"
-if [[ -f "${staged_backup}/${DTRACK_DB_NAME:-dtrack}.dump" ]]; then
-  compose exec -T postgres dropdb --if-exists -U "${POSTGRES_SUPERUSER}" "${DTRACK_DB_NAME:-dtrack}"
-  compose exec -T postgres createdb -U "${POSTGRES_SUPERUSER}" -O "${DTRACK_DB_USER:-dtrack}" "${DTRACK_DB_NAME:-dtrack}"
-  cat "${staged_backup}/${DTRACK_DB_NAME:-dtrack}.dump" | compose exec -T postgres pg_restore -U "${POSTGRES_SUPERUSER}" -d "${DTRACK_DB_NAME:-dtrack}" --clean --if-exists
-fi
 cat "${staged_backup}/${TRACKER_DB_NAME}.dump" | compose exec -T postgres pg_restore -U "${POSTGRES_SUPERUSER}" -d "${TRACKER_DB_NAME}" --clean --if-exists
 
 echo "Restored backup from ${backup_dir}"

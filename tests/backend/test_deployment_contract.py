@@ -6,7 +6,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_dependency_track_is_optional_in_linux_readiness() -> None:
+def test_retired_analysis_is_absent_from_linux_readiness() -> None:
     compose = (ROOT / "compose.yaml").read_text()
     gateway = (ROOT / "deploy/nginx/gateway.conf.template").read_text()
     launchers = [
@@ -14,23 +14,14 @@ def test_dependency_track_is_optional_in_linux_readiness() -> None:
         (ROOT / "scripts/install-airgap.sh").read_text(),
     ]
 
-    assert "dtrack-frontend:\n        condition: service_healthy" not in compose
-    assert compose.count("dtrack-apiserver:\n        condition: service_healthy") == 1
-    assert compose.count("profiles: [dependency-track]") == 2
-    assert "http://127.0.0.1:9000/health/ready" in compose
-    assert "http://127.0.0.1:8080/dependency-track/" not in compose
-    assert "http://127.0.0.1:8080/dependency-track/api/version" not in compose
-    assert "API_BASE_URL: ${DTRACK_API_BASE_URL:-http://localhost:8088/dependency-track}" in compose
-    assert "BASE_PATH: ${DTRACK_BASE_PATH:-/dependency-track}/" in compose
-    assert "DTRACK_API_BASE_URL=http://localhost:8088/dependency-track" in (ROOT / ".env.example").read_text()
-    assert "DTRACK_API_BASE_URL=http://localhost:8088/dependency-track/api" not in (ROOT / ".env.example").read_text()
-    assert "location = /dependency-track {" in gateway
-    assert "if ($dtrack_disabled) { return 404; }" in gateway
-    assert "proxy_pass http://$dtrack_web;" in gateway
-    assert "resolver 127.0.0.11" in gateway
-    assert "proxy_pass http://${DTRACK_FRONTEND_UPSTREAM}${DTRACK_BASE_PATH}/;" not in gateway
-    assert "location = /dependency-track/static/config.json" in gateway
-    assert 'add_header Cache-Control "no-store" always;' in gateway
+    assert "dtrack-apiserver:" not in compose
+    assert "dtrack-frontend:" not in compose
+    assert "profiles: [dependency-track]" not in compose
+    assert "location = /dependency-track" not in gateway
+    assert "TRACKER_OFFLINE_MODE: \"true\"" in compose
+    assert "metadata-egress" not in compose
+    assert "location = /api/v1/vulnerability-intelligence/import-csv" in gateway
+    assert "client_max_body_size 65m;" in gateway
     assert "client_max_body_size 64k;" in gateway
     assert "location = /api/v1/sbom-runs" in gateway
     assert "client_max_body_size 501m;" in gateway
@@ -141,12 +132,3 @@ def test_maintenance_scripts_use_the_installed_compose_file() -> None:
 
     assert '--project-directory "$ROOT_DIR"' in library
     assert '-f "$ROOT_DIR/compose.yaml"' in library
-
-
-def test_dtrack_provisioner_accepts_unchanged_permissions() -> None:
-    provisioner = (ROOT / "scripts/configure-dtrack-key.sh").read_text()
-    verifier = (ROOT / "scripts/verify-dtrack-connection.sh").read_text()
-
-    assert 'exc.code == 304 and method == "PUT" and path == "v1/permission/team"' in provisioner
-    assert 'get("v1/user/self/permissions")' not in verifier
-    assert 'team.get("permissions", [])' in verifier

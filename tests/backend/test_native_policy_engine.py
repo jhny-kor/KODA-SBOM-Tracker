@@ -120,21 +120,17 @@ def test_invalid_or_ambiguous_policy_documents_are_rejected(payload):
         PolicyDocument.model_validate(payload)
 
 
-def test_native_grype_completion_requires_no_dependency_track(db, tmp_path, monkeypatch):
+def test_native_grype_completion_is_self_contained(db, tmp_path, monkeypatch):
     run = make_run(db, tmp_path, [{"name": "safe", "licenses": [{"license": {"id": "MIT"}}]}])
     captured = {}
-    settings = Settings(grype_db_dir=tmp_path / "current" / "grype-db", dependency_track_enabled=False)
+    settings = Settings(grype_db_dir=tmp_path / "current" / "grype-db")
     monkeypatch.setattr(services, "get_settings", lambda: settings)
     monkeypatch.setattr(services, "load_context", lambda _: VulnerabilityContext(None, {}, {}, {}, {}))
     def grype(*args, **kwargs):
         captured.update({"command": args[0], **kwargs["env"]})
         return SimpleNamespace(returncode=0, stdout=json.dumps({"matches": [], "descriptor": {"version": "0.109.1"}}), stderr="")
     monkeypatch.setattr(services.subprocess, "run", grype)
-    def no_dtrack():
-        raise AssertionError("Dependency-Track must not be called")
-    monkeypatch.setattr(services, "DependencyTrackClient", no_dtrack)
     revision = services.analyze_offline(db, run)
-    asyncio.run(services.sync_dependency_track(db, run))
     assert captured["command"][0] == settings.grype_binary
     assert captured["GRYPE_DB_CACHE_DIR"] == str(settings.grype_db_dir)
     assert captured["GRYPE_DB_AUTO_UPDATE"] == "false"
@@ -189,32 +185,6 @@ def test_invalid_stored_policy_is_explicit_partial_failure(db, tmp_path, monkeyp
     assert run.state == ProcessingState.PARTIAL
 
 
-def test_optional_dtrack_never_overwrites_native_policy_or_completion(db, tmp_path, monkeypatch):
-    run = make_run(db, tmp_path)
-    run.analysis_state = JobState.COMPLETED
-    run.state = ProcessingState.COMPLETED
-    revision = AnalysisRevision(run_id=run.id, sequence=1, state=JobState.COMPLETED, policy_state="completed", policies=[{"policyId": "native"}])
-    db.add(revision)
-    db.flush()
-    class Client:
-        configured = True
-        async def ensure_collection(self, *args): return "collection"
-        async def upload(self, **kwargs): return {"project": "project"}
-        async def project_snapshot(self, *args): return ({"components": 4}, [{"uuid": "dtrack"}])
-        async def promote_latest(self, *args): pass
-    monkeypatch.setattr(services, "get_settings", lambda: SimpleNamespace(dependency_track_enabled=True))
-    monkeypatch.setattr(services, "DependencyTrackClient", Client)
-    asyncio.run(services.sync_dependency_track(db, run))
-    assert revision.policies == [{"policyId": "native"}]
-    assert run.dtrack_policies == [{"uuid": "dtrack"}]
-    assert run.state == ProcessingState.COMPLETED
-    class FailedClient(Client):
-        async def upload(self, **kwargs): raise RuntimeError("offline")
-    monkeypatch.setattr(services, "DependencyTrackClient", FailedClient)
-    asyncio.run(services.sync_dependency_track(db, run))
-    assert run.dtrack_state == JobState.FAILED
-    assert run.state == ProcessingState.COMPLETED
-    assert revision.policies == [{"policyId": "native"}]
 
 
 def test_name_only_finding_versions_have_separate_metrics_policy_identity_and_exception():

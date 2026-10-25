@@ -15,12 +15,8 @@ services:
       - ./deploy/nginx/gateway.conf.template:/etc/nginx/templates/default.conf.template:ro
     environment:
       GATEWAY_SERVER_NAME: ${GATEWAY_SERVER_NAME:-_}
-      TRACKER_DEPENDENCY_TRACK_ENABLED: ${TRACKER_DEPENDENCY_TRACK_ENABLED:-false}
-      DTRACK_BASE_PATH: ${DTRACK_BASE_PATH:-/dependency-track}
       PORTAL_API_UPSTREAM: portal-api:${PORTAL_API_PORT:-8000}
       PORTAL_WEB_UPSTREAM: portal-web:${PORTAL_WEB_PORT:-8080}
-      DTRACK_FRONTEND_UPSTREAM: dtrack-frontend:8080
-      DTRACK_APISERVER_UPSTREAM: dtrack-apiserver:8080
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/healthz || exit 1"]
       interval: 15s
@@ -65,6 +61,9 @@ services:
     image: ${PORTAL_API_IMAGE}:${PORTAL_IMAGE_TAG:-dev}
     container_name: ${COMPOSE_PROJECT_NAME:-koda-sbom}-portal-api
     environment:
+      TRACKER_DATA_UPDATE_VERIFY_KEY: /run/secrets/tracker-data-update-verify.pub
+      TRACKER_OFFLINE_MODE: "true"
+      TRACKER_EPSS_POLICY_MAX_AGE_DAYS: ${TRACKER_EPSS_POLICY_MAX_AGE_DAYS:-7}
       TRACKER_DATABASE_URL: ${TRACKER_DATABASE_URL}
       TRACKER_ARTIFACT_DIR: ${ARTIFACT_ROOT:-/var/lib/sbom-tracker/artifacts}
       TRACKER_MAX_UPLOAD_BYTES: ${UPLOAD_MAX_BYTES:-524288000}
@@ -90,16 +89,13 @@ services:
       TRACKER_NOTIFICATION_WEBHOOK_URL: ${TRACKER_NOTIFICATION_WEBHOOK_URL:-}
       TRACKER_NOTIFICATION_WEBHOOK_SECRET: ${TRACKER_NOTIFICATION_WEBHOOK_SECRET:-}
       TRACKER_NOTIFICATION_ALLOWED_HOSTS: ${TRACKER_NOTIFICATION_ALLOWED_HOSTS:-}
-      TRACKER_DEPENDENCY_TRACK_ENABLED: ${TRACKER_DEPENDENCY_TRACK_ENABLED:-false}
-      TRACKER_DEPENDENCY_TRACK_URL: ${TRACKER_DEPENDENCY_TRACK_URL:-http://dtrack-apiserver:8080}
-      TRACKER_DEPENDENCY_TRACK_API_KEY: ${TRACKER_DEPENDENCY_TRACK_API_KEY:-}
-      TRACKER_DEPENDENCY_TRACK_UI_URL: ${TRACKER_DEPENDENCY_TRACK_UI_URL:-/dependency-track/}
-      TRACKER_PACKAGE_METADATA_ENABLED: ${TRACKER_PACKAGE_METADATA_ENABLED:-true}
+      TRACKER_PACKAGE_METADATA_ENABLED: "false"
       TRACKER_PACKAGE_METADATA_TTL_SECONDS: ${TRACKER_PACKAGE_METADATA_TTL_SECONDS:-86400}
       TRACKER_GRYPE_BINARY: ${TRACKER_GRYPE_BINARY:-grype}
       TRACKER_GRYPE_DB_DIR: ${TRACKER_GRYPE_DB_DIR:-/var/lib/sbom-tracker/vuln-data/current/grype-db}
       TRACKER_CYCLONEDX_CLI_BINARY: /usr/local/bin/cyclonedx
     volumes:
+      - ${TRACKER_DATA_UPDATE_VERIFY_KEY_FILE:-./config/data-update-verify.pub}:/run/secrets/tracker-data-update-verify.pub:ro
       - tracker-artifacts:${ARTIFACT_ROOT:-/var/lib/sbom-tracker/artifacts}
       - data-updates:/var/lib/sbom-tracker/data-updates
       - vuln-data:${VULN_DATA_ROOT:-/var/lib/sbom-tracker/vuln-data}:ro
@@ -127,6 +123,9 @@ services:
     container_name: ${COMPOSE_PROJECT_NAME:-koda-sbom}-portal-worker
     command: ["koda-tracker-worker"]
     environment:
+      TRACKER_DATA_UPDATE_VERIFY_KEY: /run/secrets/tracker-data-update-verify.pub
+      TRACKER_OFFLINE_MODE: "true"
+      TRACKER_EPSS_POLICY_MAX_AGE_DAYS: ${TRACKER_EPSS_POLICY_MAX_AGE_DAYS:-7}
       TRACKER_DATABASE_URL: ${TRACKER_DATABASE_URL}
       TRACKER_ARTIFACT_DIR: ${ARTIFACT_ROOT:-/var/lib/sbom-tracker/artifacts}
       TRACKER_MAX_UPLOAD_BYTES: ${UPLOAD_MAX_BYTES:-524288000}
@@ -135,16 +134,13 @@ services:
       TRACKER_NOTIFICATION_WEBHOOK_SECRET: ${TRACKER_NOTIFICATION_WEBHOOK_SECRET:-}
       TRACKER_NOTIFICATION_ALLOWED_HOSTS: ${TRACKER_NOTIFICATION_ALLOWED_HOSTS:-}
       TRACKER_MAX_QUEUED_JOBS: ${TRACKER_MAX_QUEUED_JOBS:-100}
-      TRACKER_DEPENDENCY_TRACK_ENABLED: ${TRACKER_DEPENDENCY_TRACK_ENABLED:-false}
-      TRACKER_DEPENDENCY_TRACK_URL: ${TRACKER_DEPENDENCY_TRACK_URL:-http://dtrack-apiserver:8080}
-      TRACKER_DEPENDENCY_TRACK_API_KEY: ${TRACKER_DEPENDENCY_TRACK_API_KEY:-}
-      TRACKER_DEPENDENCY_TRACK_UI_URL: ${TRACKER_DEPENDENCY_TRACK_UI_URL:-/dependency-track/}
-      TRACKER_PACKAGE_METADATA_ENABLED: ${TRACKER_PACKAGE_METADATA_ENABLED:-true}
+      TRACKER_PACKAGE_METADATA_ENABLED: "false"
       TRACKER_PACKAGE_METADATA_TTL_SECONDS: ${TRACKER_PACKAGE_METADATA_TTL_SECONDS:-86400}
       TRACKER_GRYPE_BINARY: ${TRACKER_GRYPE_BINARY:-grype}
       TRACKER_GRYPE_DB_DIR: ${TRACKER_GRYPE_DB_DIR:-/var/lib/sbom-tracker/vuln-data/current/grype-db}
       TRACKER_CYCLONEDX_CLI_BINARY: /usr/local/bin/cyclonedx
     volumes:
+      - ${TRACKER_DATA_UPDATE_VERIFY_KEY_FILE:-./config/data-update-verify.pub}:/run/secrets/tracker-data-update-verify.pub:ro
       - tracker-artifacts:${ARTIFACT_ROOT:-/var/lib/sbom-tracker/artifacts}
       - vuln-data:${VULN_DATA_ROOT:-/var/lib/sbom-tracker/vuln-data}:ro
       - backups:/var/lib/sbom-tracker/backups
@@ -166,8 +162,10 @@ services:
     container_name: ${COMPOSE_PROJECT_NAME:-koda-sbom}-portal-metadata-collector
     command: ["python", "-m", "koda_tracker.package_metadata"]
     environment:
+      TRACKER_OFFLINE_MODE: "true"
+      TRACKER_EPSS_POLICY_MAX_AGE_DAYS: ${TRACKER_EPSS_POLICY_MAX_AGE_DAYS:-7}
       TRACKER_DATABASE_URL: ${TRACKER_DATABASE_URL}
-      TRACKER_PACKAGE_METADATA_ENABLED: ${TRACKER_PACKAGE_METADATA_ENABLED:-true}
+      TRACKER_PACKAGE_METADATA_ENABLED: "false"
       TRACKER_PACKAGE_METADATA_TTL_SECONDS: ${TRACKER_PACKAGE_METADATA_TTL_SECONDS:-86400}
       TRACKER_PACKAGE_METADATA_REQUEST_TIMEOUT_SECONDS: ${TRACKER_PACKAGE_METADATA_REQUEST_TIMEOUT_SECONDS:-10}
       TRACKER_PACKAGE_METADATA_MIN_INTERVAL_SECONDS: ${TRACKER_PACKAGE_METADATA_MIN_INTERVAL_SECONDS:-1}
@@ -185,35 +183,6 @@ services:
       retries: 5
     networks:
       - app
-      - metadata-egress
-    restart: unless-stopped
-
-  portal-project-sync:
-    depends_on:
-      portal-api:
-        condition: service_healthy
-    image: ${PORTAL_API_IMAGE}:${PORTAL_IMAGE_TAG:-dev}
-    container_name: ${COMPOSE_PROJECT_NAME:-koda-sbom}-portal-project-sync
-    command: ["python", "-m", "koda_tracker.project_catalog"]
-    environment:
-      TRACKER_DATABASE_URL: ${TRACKER_DATABASE_URL}
-      TRACKER_LDAP_ENCRYPTION_KEY: ${TRACKER_LDAP_ENCRYPTION_KEY}
-      TRACKER_ARTIFACT_DIR: ${ARTIFACT_ROOT:-/var/lib/sbom-tracker/artifacts}
-    volumes:
-      - tracker-artifacts:${ARTIFACT_ROOT:-/var/lib/sbom-tracker/artifacts}
-    read_only: true
-    cap_drop: [ALL]
-    security_opt: [no-new-privileges:true]
-    tmpfs:
-      - /tmp:rw,noexec,nosuid,size=64m
-    healthcheck:
-      test: ["CMD-SHELL", "python -c \"from pathlib import Path; raise SystemExit('koda_tracker.project_catalog' not in Path('/proc/1/cmdline').read_bytes().decode(errors='ignore'))\""]
-      interval: 20s
-      timeout: 5s
-      retries: 5
-    networks:
-      - app
-      - metadata-egress
     restart: unless-stopped
 
   portal-data-updater:
@@ -224,12 +193,18 @@ services:
     container_name: ${COMPOSE_PROJECT_NAME:-koda-sbom}-portal-data-updater
     command: ["python", "-m", "koda_tracker.worker", "--data-updates"]
     environment:
+      TRACKER_DATA_UPDATE_VERIFY_KEY: /run/secrets/tracker-data-update-verify.pub
+      TRACKER_OFFLINE_MODE: "true"
+      TRACKER_EPSS_POLICY_MAX_AGE_DAYS: ${TRACKER_EPSS_POLICY_MAX_AGE_DAYS:-7}
       TRACKER_DATABASE_URL: ${TRACKER_DATABASE_URL}
+      TRACKER_ARTIFACT_DIR: ${ARTIFACT_ROOT:-/var/lib/sbom-tracker/artifacts}
       TRACKER_GRYPE_BINARY: ${TRACKER_GRYPE_BINARY:-grype}
       TRACKER_DATA_UPDATE_KODA_GRYPE_BINARY: /usr/local/bin/koda-grype
       TRACKER_GRYPE_DB_DIR: ${TRACKER_GRYPE_DB_DIR:-/var/lib/sbom-tracker/vuln-data/current/grype-db}
       TRACKER_DATA_UPDATE_SPOOL_DIR: /var/lib/sbom-tracker/data-updates
     volumes:
+      - tracker-artifacts:${ARTIFACT_ROOT:-/var/lib/sbom-tracker/artifacts}
+      - ${TRACKER_DATA_UPDATE_VERIFY_KEY_FILE:-./config/data-update-verify.pub}:/run/secrets/tracker-data-update-verify.pub:ro
       - data-updates:/var/lib/sbom-tracker/data-updates
       - vuln-data:${VULN_DATA_ROOT:-/var/lib/sbom-tracker/vuln-data}
     read_only: true
@@ -249,10 +224,6 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: postgres
       POSTGRES_INITDB_ARGS: ${POSTGRES_INITDB_ARGS:---encoding=UTF-8 --locale=C.UTF-8}
-      TRACKER_DEPENDENCY_TRACK_ENABLED: ${TRACKER_DEPENDENCY_TRACK_ENABLED:-false}
-      DTRACK_DB_NAME: ${DTRACK_DB_NAME:-dtrack}
-      DTRACK_DB_USER: ${DTRACK_DB_USER:-dtrack}
-      DTRACK_DB_PASSWORD: ${DTRACK_DB_PASSWORD:-}
       TRACKER_DB_NAME: ${TRACKER_DB_NAME:-sbom_tracker}
       TRACKER_DB_USER: ${TRACKER_DB_USER:-sbom_tracker}
       TRACKER_DB_PASSWORD: ${TRACKER_DB_PASSWORD}
@@ -271,66 +242,8 @@ services:
       - app
     restart: unless-stopped
 
-  dtrack-apiserver:
-    profiles: [dependency-track]
-    image: ${DTRACK_APISERVER_IMAGE}
-    container_name: ${COMPOSE_PROJECT_NAME:-koda-sbom}-dtrack-apiserver
-    depends_on:
-      postgres:
-        condition: service_healthy
-    environment:
-      DT_DATASOURCE_URL: jdbc:postgresql://postgres:${POSTGRES_PORT:-5432}/${DTRACK_DB_NAME:-dtrack}
-      DT_DATASOURCE_USERNAME: ${DTRACK_DB_USER:-dtrack}
-      DT_DATASOURCE_PASSWORD: ${DTRACK_DB_PASSWORD:-}
-      DT_METRICS_ENABLED: "true"
-      DT_CORS_ENABLED: "false"
-      EXTRA_JAVA_OPTIONS: -Xms1g -Xmx2g
-    volumes:
-      - dtrack-data:/data
-    expose:
-      - "8080"
-      - "9000"
-    healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:9000/health/ready || exit 1"]
-      interval: 20s
-      timeout: 5s
-      retries: 15
-      start_period: 60s
-    networks:
-      - app
-    restart: unless-stopped
-
-  dtrack-frontend:
-    profiles: [dependency-track]
-    image: ${DTRACK_FRONTEND_IMAGE}
-    container_name: ${COMPOSE_PROJECT_NAME:-koda-sbom}-dtrack-frontend
-    depends_on:
-      dtrack-apiserver:
-        condition: service_healthy
-    environment:
-      # Dependency-Track's frontend appends /api to this value. Keep the
-      # public frontend/API base path here, without the trailing /api.
-      API_BASE_URL: ${DTRACK_API_BASE_URL:-http://localhost:8088/dependency-track}
-      # The frontend's relative JS/CSS URLs require a directory base. Keep
-      # DTRACK_BASE_PATH itself slashless for gateway/API routing, and add the
-      # trailing slash only for Dependency-Track frontend URL resolution.
-      BASE_PATH: ${DTRACK_BASE_PATH:-/dependency-track}/
-      TITLE: ${DTRACK_FRONTEND_TITLE:-KODA Dependency-Track}
-    expose:
-      - "8080"
-    healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/ || exit 1"]
-      interval: 15s
-      timeout: 5s
-      retries: 10
-      start_period: 15s
-    networks:
-      - app
-    restart: unless-stopped
 
 networks:
-  metadata-egress:
-    name: ${COMPOSE_PROJECT_NAME:-koda-sbom}-metadata-egress
   edge:
     name: ${COMPOSE_PROJECT_NAME:-koda-sbom}-edge
   app:
@@ -343,8 +256,6 @@ networks:
 volumes:
   postgres-data:
     name: ${POSTGRES_DATA_VOLUME_NAME:-koda-sbom-postgres-data}
-  dtrack-data:
-    name: ${DTRACK_DATA_VOLUME_NAME:-koda-sbom-dtrack-data}
   tracker-artifacts:
     name: ${TRACKER_ARTIFACTS_VOLUME_NAME:-koda-sbom-tracker-artifacts}
   vuln-data:

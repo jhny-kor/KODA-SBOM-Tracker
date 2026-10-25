@@ -50,7 +50,6 @@ def main():
     reviewer_id = None
     try:
         check('native advanced permissions', all(p in user['permissions'] for p in ('vex.manage', 'vex.approve', 'reanalysis.manage', 'notifications.manage')))
-        check('Dependency-Track disabled', client.request('GET', '/api/v1/dependency-track/status')['enabled'] is False)
         service = client.request('POST', '/api/v1/services', data={'slug': 'advanced-' + unique, 'name': '고급 기능 실검증 ' + unique}, expected=201)
         environment = client.request('GET', '/api/v1/environments')[0]
         rule = {'id': 'cel-' + unique, 'name': '프로젝트 전용 KEV·수정버전 조건', 'kind': 'cel', 'target': 'vulnerability', 'expression': 'vulnerability.kev && size(vulnerability.fixedIn) > 0 && component.name == "log4j-core"', 'enabled': True, 'action': 'fail', 'values': [], 'serviceIds': [service['id']], 'environmentIds': [environment['id']], 'releaseVersions': ['1.0']}

@@ -95,7 +95,6 @@ def test_upload_validate_apply_rollback_lifecycle(tmp_path, monkeypatch) -> None
         pending = client.post("/api/v1/vulnerability-data-bundles/upload?kind=vuln-data", content=_archive(tmp_path, "three"), headers=headers).json()
         monkeypatch.setattr("koda_tracker.worker.analyze_offline", lambda *args: None)
         async def no_external_sync(*args): pass
-        monkeypatch.setattr("koda_tracker.worker.sync_dependency_track", no_external_sync)
         asyncio.run(process_one())  # Other tests may have left ordinary jobs queued.
         assert client.get(f"/api/v1/vulnerability-data-bundles/jobs/{pending['id']}").json()["state"] == "queued"
         assert asyncio.run(process_data_update_one()) is True

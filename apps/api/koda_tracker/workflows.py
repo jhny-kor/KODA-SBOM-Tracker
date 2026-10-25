@@ -278,7 +278,8 @@ def import_vex(db, run, author, document):
 
 def webhook_settings(settings=None):
     settings = settings or get_settings()
-    enabled = bool(getattr(settings, "notification_webhook_enabled", False))
+    from .network_policy import offline_mode
+    enabled = not offline_mode(settings) and bool(getattr(settings, "notification_webhook_enabled", False))
     url = getattr(settings, "notification_webhook_url", "") or ""
     secret = getattr(settings, "notification_webhook_secret", "") or ""
     allowed = {h.strip().lower() for h in (getattr(settings, "notification_allowed_hosts", "") or "").split(",") if h.strip()}

@@ -138,6 +138,15 @@ def test_authenticated_upload_idempotency_and_artifact_round_trip() -> None:
             "/api/v1/comparisons",
             params={"baseRunId": first.json()["runId"], "targetRunId": second.json()["runId"]},
         )
+        assert comparison.status_code == 409  # Uploaded target has no completed analysis yet.
+        with SessionLocal() as db:
+            db.add(AnalysisRevision(run_id=second.json()["runId"], sequence=1,
+                                    state=JobState.COMPLETED, findings=[], policies=[]))
+            db.commit()
+        comparison = client.get(
+            "/api/v1/comparisons",
+            params={"baseRunId": first.json()["runId"], "targetRunId": second.json()["runId"]},
+        )
         assert comparison.status_code == 200
         assert comparison.json()["components"] == []
 
@@ -500,50 +509,3 @@ def test_vulnerability_bundle_sync_registers_current_release(monkeypatch, tmp_pa
             assert activated.json()["active"] is True
     finally:
         get_settings.cache_clear()
-
-
-def test_run_retry_reanalysis_and_logical_archive_keep_artifact(monkeypatch) -> None:
-    monkeypatch.setattr(get_settings(), "dependency_track_enabled", True)
-    sbom = json.dumps({"bomFormat": "CycloneDX", "specVersion": "1.6", "components": []}).encode()
-    with TestClient(app) as client:
-        login = client.post(
-            "/api/v1/auth/login",
-            json={"username": "test-admin", "password": "correct-horse-battery-staple"},
-        )
-        csrf = login.json()["csrfToken"]
-        headers = {"X-CSRF-Token": csrf}
-        service_id = client.get("/api/v1/services").json()[0]["id"]
-        environment_id = client.get("/api/v1/environments").json()[0]["id"]
-        upload = client.post(
-            "/api/v1/sbom-runs",
-            data={"serviceId": service_id, "environmentId": environment_id, "releaseVersion": "archive-test"},
-            files={"sbom": ("archive.cdx.json", sbom, "application/json")},
-            headers=headers,
-        )
-        assert upload.status_code == 202
-        run_id = upload.json()["runId"]
-
-        retry = client.post(f"/api/v1/sbom-runs/{run_id}/retry-dependency-track", headers=headers)
-        assert retry.status_code == 202
-        analysis = client.post(f"/api/v1/sbom-runs/{run_id}/analyses", headers=headers)
-        assert analysis.status_code == 202
-        archived = client.post(
-            f"/api/v1/sbom-runs/{run_id}/archive",
-            json={"reason": "보존 정책에 따른 QA 회차 보관"},
-            headers=headers,
-        )
-        assert archived.status_code == 200
-        assert archived.json()["state"] == "archived"
-        assert client.post(
-            f"/api/v1/sbom-runs/{run_id}/archive",
-            json={"reason": "중복 보관 시도"},
-            headers=headers,
-        ).status_code == 409
-        assert client.post(f"/api/v1/sbom-runs/{run_id}/retry-dependency-track", headers=headers).status_code == 409
-        assert client.post(f"/api/v1/sbom-runs/{run_id}/analyses", headers=headers).status_code == 409
-        detail = client.get(f"/api/v1/sbom-runs/{run_id}")
-        assert detail.status_code == 200
-        assert detail.json()["state"] == "archived"
-        artifact = client.get(f"/api/v1/sbom-runs/{run_id}/artifact")
-        assert artifact.status_code == 200
-        assert hashlib.sha256(artifact.content).hexdigest() == hashlib.sha256(sbom).hexdigest()

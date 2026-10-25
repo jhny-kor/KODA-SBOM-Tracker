@@ -56,8 +56,45 @@ else
   "$script_dir/verify-airgap-release.sh" "$staged_archive"
 fi
 tar -xzf "$staged_archive" -C "$extracted_release"
+[[ -f "$extracted_release/scripts/remove-retired-analysis.py" ]] || { echo "release lacks required upgrade cleanup" >&2; exit 1; }
+[[ -f "$extracted_release/scripts/release-images.sh" ]] || { echo "release lacks required image identity helper" >&2; exit 1; }
+legacy_env="$tmp/previous.env"
+if [[ -f "$install_dir/.env" ]]; then
+  cp "$install_dir/.env" "$legacy_env"
+else
+  cp "$env_file" "$legacy_env"
+fi
+# Keep the registered host public-key path valid after relocating the runtime .env.
+original_env_file="$env_file"
+cp "$env_file" "$tmp/runtime.env"
+chmod 600 "$tmp/runtime.env"
+python3 - "$original_env_file" "$tmp/runtime.env" <<'PY_VERIFY_KEY'
+from pathlib import Path
+import re
+import sys
+source, destination = map(Path, sys.argv[1:])
+lines = destination.read_text().splitlines()
+for index, line in enumerate(lines):
+    match = re.fullmatch(r"\s*(?:export\s+)?TRACKER_DATA_UPDATE_VERIFY_KEY_FILE\s*=(.*)", line)
+    if not match: continue
+    value = match.group(1).strip().strip("\"'")
+    if not value: continue
+    key = Path(value)
+    if not key.is_absolute(): key = source.parent / key
+    key = key.resolve(strict=True)
+    if any(character in str(key) for character in "\n\r'"):
+        raise SystemExit('unsafe registered public-key path')
+    lines[index] = "TRACKER_DATA_UPDATE_VERIFY_KEY_FILE='" + str(key) + "'"
+destination.write_text("\n".join(lines) + "\n")
+PY_VERIFY_KEY
+env_file="$tmp/runtime.env"
+"$extracted_release/scripts/preflight-airgap.sh" "$env_file"
+python3 "$extracted_release/scripts/remove-retired-analysis.py" --env-file "$legacy_env" --phase resources
 cp -a "$extracted_release/." "$install_dir/"
 [[ "$env_file" == "$install_dir/.env" ]] || cp "$env_file" "$install_dir/.env"
+python3 "$install_dir/scripts/remove-retired-analysis.py" --env-file "$legacy_env" --install-dir "$install_dir" --phase files
+source "$install_dir/scripts/release-images.sh"
+apply_release_images "$install_dir/config/release-images.env" "$install_dir/.env"
 "$install_dir/scripts/preflight-airgap.sh" "$install_dir/.env"
 declare -A loaded_ids=()
 while IFS= read -r -d '' image; do
@@ -93,25 +130,22 @@ done < "$install_dir/config/images.lock"
 
 cd "$install_dir"
 load_env "$install_dir/.env"
-profile_args=()
-dependency_track_enabled && profile_args+=(--profile dependency-track)
-if dependency_track_enabled; then
-  docker compose --env-file .env -f compose.yaml -f compose.airgap.yaml ${profile_args[@]+"${profile_args[@]}"} up -d --no-build --pull never --wait --wait-timeout "${AIRGAP_HEALTH_TIMEOUT:-420}" postgres
-  docker compose --env-file .env -f compose.yaml -f compose.airgap.yaml ${profile_args[@]+"${profile_args[@]}"} exec -T postgres sh /docker-entrypoint-initdb.d/10-init-multi-db.sh
-fi
-docker compose --env-file .env -f compose.yaml -f compose.airgap.yaml ${profile_args[@]+"${profile_args[@]}"} up -d --no-build --pull never
+docker compose --env-file .env -f compose.yaml -f compose.airgap.yaml up -d --no-build --pull never --wait --wait-timeout "${AIRGAP_HEALTH_TIMEOUT:-420}" postgres
+python3 "$install_dir/scripts/remove-retired-analysis.py" --env-file "$legacy_env" --phase database
+docker compose --env-file .env -f compose.yaml -f compose.airgap.yaml up -d --no-build --pull never --remove-orphans
 deadline=$((SECONDS + ${AIRGAP_HEALTH_TIMEOUT:-420}))
 while (( SECONDS < deadline )); do
-  if compose_services_ready --env-file .env -f compose.yaml -f compose.airgap.yaml ${profile_args[@]+"${profile_args[@]}"}; then
+  if compose_services_ready --env-file .env -f compose.yaml -f compose.airgap.yaml; then
     if (( import_vuln )); then
       [[ -d vulnerability-data ]] || { echo "--import-vuln-bundle requested but release has no bundle" >&2; exit 1; }
       ENV_FILE="$install_dir/.env" "$install_dir/scripts/import-vuln-bundle.sh" "$install_dir/vulnerability-data"
     fi
     echo "Air-gap services are healthy"
+    echo "Installed application image tag: ${PORTAL_IMAGE_TAG:-dev}"
     exit 0
   fi
   sleep 5
 done
 echo "Timed out waiting for air-gap service health" >&2
-docker compose --env-file .env -f compose.yaml -f compose.airgap.yaml ${profile_args[@]+"${profile_args[@]}"} ps >&2 || true
+docker compose --env-file .env -f compose.yaml -f compose.airgap.yaml ps >&2 || true
 exit 1

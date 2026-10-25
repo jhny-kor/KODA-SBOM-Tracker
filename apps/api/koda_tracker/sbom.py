@@ -16,6 +16,16 @@ class SbomValidationError(ValueError):
     pass
 
 
+def _normalize_json(payload):
+    if isinstance(payload, dict) and "spdxVersion" in payload:
+        from .spdx import to_cyclonedx
+        try:
+            return to_cyclonedx(payload), "application/spdx+json"
+        except (ValueError, TypeError, RecursionError) as exc:
+            raise SbomValidationError(str(exc)) from exc
+    return payload, "application/vnd.cyclonedx+json"
+
+
 def iter_components(components):
     """Yield every component in stable preorder, without recursive Python calls.
 
@@ -70,7 +80,7 @@ def parse_sbom(raw: bytes) -> tuple[dict, str]:
             payload = json.loads(raw)
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise SbomValidationError("유효한 JSON 문서가 아닙니다") from exc
-        media = "application/vnd.cyclonedx+json"
+        payload, media = _normalize_json(payload)
     elif stripped.startswith(b"<"):
         # Scan the complete bounded upload; a declaration after the XML prolog
         # must not bypass XXE/DTD rejection by sitting beyond a short prefix.
@@ -97,7 +107,7 @@ def parse_sbom_file(path: Path) -> tuple[dict, str]:
                 payload = json.load(candidate)
             except (UnicodeDecodeError, json.JSONDecodeError) as exc:
                 raise SbomValidationError("유효한 JSON 문서가 아닙니다") from exc
-            media = "application/vnd.cyclonedx+json"
+            payload, media = _normalize_json(payload)
         elif prefix.startswith(b"<"):
             carry = b""
             while chunk := candidate.read(1024 * 1024):
@@ -136,6 +146,22 @@ def validate_with_cyclonedx_cli(raw: bytes, binary: str) -> None:
 def validate_file_with_cyclonedx_cli(path: Path, binary: str, *, input_format: str | None = None) -> None:
     if not binary:
         return
+    # SPDX's original file is retained as the uploaded artifact. Validate the
+    # normalized CycloneDX view with this optional CycloneDX-only validator.
+    with path.open("rb") as source:
+        prefix = source.read(4096).lstrip()
+        if prefix.startswith((b"{", b"[")):
+            source.seek(0)
+            try:
+                candidate = json.load(source)
+            except (UnicodeError, json.JSONDecodeError) as exc:
+                raise SbomValidationError("유효한 JSON 문서가 아닙니다") from exc
+            if isinstance(candidate, dict) and "spdxVersion" in candidate:
+                normalized, _ = _normalize_json(candidate)
+                with tempfile.NamedTemporaryFile("w", suffix=".json", encoding="utf-8") as converted:
+                    json.dump(normalized, converted, ensure_ascii=False)
+                    converted.flush()
+                    return validate_file_with_cyclonedx_cli(Path(converted.name), binary, input_format="json")
     command = [binary, "validate", "--input-file", str(path)]
     if input_format:
         command.extend(["--input-format", input_format])

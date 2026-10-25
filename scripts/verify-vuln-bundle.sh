@@ -9,7 +9,10 @@ require_arg "$bundle_dir" "usage: $0 <bundle-dir>"
 
 test -f "${bundle_dir}/metadata.env"
 test -f "${bundle_dir}/manifest.sha256"
+validate_manifest_paths "${bundle_dir}/manifest.sha256"
+validate_manifest_inventory "${bundle_dir}/manifest.sha256" "$bundle_dir"
 verify_manifest "${bundle_dir}/manifest.sha256"
+python3 "$ROOT_DIR/scripts/stage-intelligence.py" --verify "$bundle_dir"
 
 grep -q '^BUNDLE_VERSION=' "${bundle_dir}/metadata.env"
 grep -q '^DATASET_DATE=' "${bundle_dir}/metadata.env"

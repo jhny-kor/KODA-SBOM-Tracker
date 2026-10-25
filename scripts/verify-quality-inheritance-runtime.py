@@ -74,7 +74,6 @@ def main():
         return result
 
     try:
-        check('Dependency-Track remains disabled', c.request('GET','/api/v1/dependency-track/status')['enabled'] is False)
         suffix = uuid.uuid4().hex[:8]
         source = 'quality-weight-' + suffix
         service = c.request('POST','/api/v1/services', expected=201, data={'slug':source,'name':'가중·상속 품질 검증 ' + suffix})

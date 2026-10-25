@@ -14,7 +14,6 @@
 | `postgres` | 계정·회차·정책·검토·알림을 보관하는 `sbom_tracker` DB와 전용 계정 초기화 |
 | `portal-data-updater` | 오프라인 데이터 검증·활성화·롤백 전용 worker |
 | `portal-metadata-collector` | 공식 패키지 저장소·관측 CVE의 EPSS 수집 |
-| `portal-project-sync` | 선택적으로 등록한 원본의 주기 동기화·재시도 |
 
 ## 2. 초기 기동
 
@@ -209,7 +208,7 @@ cd ~/koda-suite
 
 docker inspect -f '{{range .Mounts}}{{println .Type .Source "->" .Destination "rw=" .RW}}{{end}}' nginx
 docker exec nginx nginx -T 2>&1 | \
-  grep -nE 'server_name koda\.ssis\.or\.kr|configuration file /etc/nginx/conf\.d/koda\.conf'
+  grep -nE 'server_name koda\.example\.internal|configuration file /etc/nginx/conf\.d/koda\.conf'
 docker exec nginx nginx -t
 docker exec nginx nginx -s reload
 
@@ -386,7 +385,7 @@ PostgreSQL만 기동한 상태로 끝납니다. 따라서 마지막 `start-airga
 
 업그레이드 기동 시 기존 DB에는 환경 활성 상태 컬럼과 관리자 역할의 `sbom.delete`
 권한이 보강됩니다. 기존 취약점 원본과 감사 로그를 보존하므로 기동 전 `sbom_tracker`
-DB와 artifact volume을 함께 백업합니다. 이전 시스템 자료의 이관은 별도 절차로 검증합니다.
+DB와 artifact volume을 함께 백업합니다.
 
 Tracker 단독 설치를 같은 디렉터리에서 갱신하는 예시는 다음과 같습니다.
 
@@ -438,12 +437,9 @@ KODA_TRACKER_TOKEN='서비스 범위 토큰' \
 동일 `Idempotency-Key` 재전송은 같은 회차를 반환하고, 다른 키로 같은 파일을
 올리면 blob은 중복 저장하지 않으면서 새 회차를 배정합니다.
 
-### 기존 백업과 이관 자료
+### 기존 백업
 
-현재 KODA 백업은 데이터베이스·artifact·취약점 데이터의 구성과 manifest를 검증한 뒤
-복원합니다. 이전 시스템 자료는 원본을 별도 보존하고, 현재 백업 형식과 같다고 가정하지
-않습니다. 필요한 항목만 명시적으로 이관한 뒤 정책 조건·범위·예외와 기록 수를 비교합니다.
-서명 검증과 무서명 명시적 opt-in 규칙은 기존대로 유지합니다.
+현재 KODA 백업은 데이터베이스·artifact·취약점 자료를 함께 검증한 후 격리된 복원 대상에서 복구합니다. 다른 제품의 백업을 현재 DB로 직접 복원하지 않습니다.
 
 ## 고급 정책·VEX·자동 재분석
 
@@ -503,80 +499,11 @@ TRACKER_NOTIFICATION_WEBHOOK_SECRET=<별도 생성한 충분히 긴 비밀키>
 
 기본 Docker `app` 네트워크는 `internal: true`입니다. 같은 네트워크의 내부 수신기를 연결하거나 필요한 목적지로만 도달할 수 있는 별도 네트워크 구성을 운영자가 제공해야 합니다. URL 지정만으로 외부 통신이 열리지는 않습니다. HTTP는 명시적으로 허용한 내부 호스트에서만 사용할 수 있고, 리디렉션과 환경 proxy는 사용하지 않습니다. `X-KODA-Signature: sha256=<HMAC>`를 원본 요청 바이트로 검증하고 `Idempotency-Key`의 이벤트 ID를 중복 처리하지 않도록 저장합니다. 네트워크 오류에도 보관함 기록은 남습니다.
 
-### 기존 시스템 이관 시 의미 보존
+## 자체 프로젝트와 패키지 메타데이터
 
-| 항목 | KODA에서 확인할 기준 |
-| --- | --- |
-| 프로젝트 계층 | 서비스·환경·릴리스·회차 식별자를 대응시키고 원본 식별자와 출처를 보존 |
-| 최신 회차 | 최신 표시를 새 SBOM 생성이나 새 Grype 분석으로 해석하지 않음 |
-| 분석 기록 | 원본 결과와 KODA 자체 재평가 결과를 구분하고 기준일·도구 버전·정책 버전을 함께 기록 |
-| 정책 | 조건·연산자·대상·범위·라이선스 그룹·예외를 확인하고 대응할 수 없는 의미는 보류 |
-| 저장소 메타데이터 | 패키지 나이·최신 버전·버전 거리는 실제 공급 데이터의 출처와 기준일을 확인 |
+### 프로젝트 계층·태그·최신 버전
 
-동일한 이름의 정책이라고 의미가 같지는 않습니다. Grype DB에 없는 저장소 최신성 정보를
-추정해서 채우지 않습니다. 필요한 데이터를 명시적으로 공급하거나 평가 불가로 표시하고,
-이관 도구의 실행만으로 의미적 동등성이 검증됐다고 판단하지 않습니다.
-
-## 기존 자료 자동이관과 패키지 메타데이터
-
-설정의 **기존 시스템 이관**은 관리자만 적용할 수 있습니다. 원본 API 주소·키를 입력해
-수집하거나 CLI가 만든 JSON 번들을 가져옵니다. 원본 키는 이관 레코드에 저장하지 않습니다.
-원본은 읽기만 하고 프로젝트·SBOM·취약점·정책·검토·정책 위반 증거를 번들에 보존합니다.
-
-1. `POST /api/v1/legacy-migrations/export-stage`에 `baseUrl`, `apiKey`,
-   `allowedOrigins`(정확한 scheme/host/port), 선택적 `projectUuids`를 보냅니다.
-   오프라인 번들은 `POST /api/v1/legacy-migrations/stage`의 `bundle`로 제출합니다.
-2. 응답의 `report.canApply`, `blockers`, `warnings`, 변환 규칙과 프로젝트 범위를 확인합니다.
-   조건을 생략해 통과시키지 않으며 하나라도 변환 불가능하면 적용을 차단합니다.
-3. `POST /api/v1/legacy-migrations/{id}/apply`에 `expectedDigest`,
-   `expectedPolicyVersion`, `trustSourceReviews`를 제출합니다. 기본값은 원본 검토를
-   미승인 증거로 보존하는 `false`입니다. `true`는 관리자가 원본의 판단을 신뢰하는 명시적
-   선택이며 근거·원작성자·정확한 회차 범위를 보존합니다. 신뢰할 수 없는 복합 억제는 차단합니다.
-4. 적용은 트랜잭션으로 실행하고 원본 ID 매핑으로 재실행 중복을 막습니다.
-   `GET /api/v1/legacy-migrations`에서 이력을, `GET /{id}/bundle`에서 원본을 확인합니다.
-5. 이관된 과거 결과는 원본 분석 증거입니다. 현재 Grype DB 분석은 별도 새 리비전으로 실행합니다.
-
-지원 변환은 FAIL/WARN/INFO, 조건별 ALL/ANY, 심각도·취약점 ID·CWE ANY/ALL·EPSS,
-좌표·PURL·CPE·SWID·해시·내부 구성요소·버전 비교, 라이선스/그룹의 혼합·IS_NOT·SPDX
-AND/OR/WITH/PLUS/or-later, 달력 AGE와 단위별 버전 거리입니다.
-출처 버전(`source.version`)이 있어야 버전별 의미가 다른 조건을 변환합니다.
-
-- 원본 5.x AGE: **현재 artifact의 공개 시각 + UTC 달력 기간**입니다. `P1Y2M`,
-  주·일 단위를 지원하고 월말·윤년을 처리합니다. 현재 버전 `ageDays`의 경과 24시간 수와 다릅니다.
-- 원본 4.x AGE: **최신 버전의 시각 + 명시한 IANA 시간대**입니다. `sourceTimeZone`을 지정합니다.
-- VERSION_DISTANCE: 직접 의존성만 대상으로 epoch→major→minor→patch 중 처음 다른 단위의
-  절대 차이를 계산합니다. 이후 단위 -1은 미산출입니다. 안정 릴리스 개수와 섞지 않습니다.
-  직접 의존성은 원본 directDependencies 또는 CycloneDX 루트 dependency graph로 확인합니다.
-  그래프가 없으면 추정하지 않고 데이터 부족 경고를 기록합니다.
-- 5.x PURL·CPE·SWID는 원본과 같은 RE2 표현식을 사용합니다. 잘못된 패턴은 적용 전에 차단합니다.
-  4.8~4.13의 Java Matcher 조건은 이미지에 포함한 Java 21 `java.util.regex.Pattern`으로
-  별도 평가합니다. lookbehind·번호/이름 역참조·문자 클래스 교집합/차집합·Unicode·atomic group·
-  possessive quantifier를 RE2로 축약하지 않습니다. 원본의 `*` 치환·앞뒤 wildcard·전체 일치를 보존합니다.
-  실제 원본 4.13.4 PolicyEngine과 샘플 정책 19종을 대조한 기록은
-  [Java 정규식 검증](verification-java-regex-20261018-ko.md)에 있습니다.
-- 4.x 좌표의 `NO_MATCH`는 group·name·version을 각각 반전한 뒤 AND합니다. 실제 group/name의
-  ASCII trim·null·빈 문자열, 비교 연산자가 없는 버전의 정규식도 원본 기준으로 처리합니다.
-  원본 4.0~4.7은 별도 리터럴 count helper로 자동이관합니다. PURL·CPE·SWID의 `*`는 일반 문자이며,
-  좌표의 정확한 `*`만 wildcard입니다. 원본 ALL의 원시 위반 개수 판정과 4.0 Optional/4.1 목록,
-  4.2 버전 비교의 차이를 보존합니다. [실제 4.7.1 대조 기록](verification-literal-20261018-ko.md)을 참조하세요.
-- Java 정규식은 패턴 2,048자·종류 200개·대상 문자열 64KiB·평가 100,000회,
-  배치 입력 4MiB·출력 1MiB·wall time 6초·CPU 5초·heap 64MiB·stack 256KiB·Linux
-  주소 공간 2GiB 한도를 적용합니다. 문법 오류는 저장/이관 전에 차단하며 시간 초과·stack 고갈·
-  JVM 부재·입출력 한도 초과는 정책 평가 **실패**입니다. 불일치나 정상 통과로 바꾸지 않습니다.
-  Docker/오프라인 이미지는 JRE와 컴파일된 adapter를 포함하므로 호스트에 Java를 설치할 필요가 없습니다.
-  별도 Python 개발 실행은 JDK 21로 `RegexMatcher.java`를 컴파일한 후 신뢰된 실행 환경의
-  `KODA_JAVA_BINARY`·`KODA_JAVA_CLASSPATH`를 지정합니다. 정책 데이터로 경로·JVM 옵션을 지정할 수 없습니다.
-  원본에 유효하지 않은 조건이나 버전을 확인할 수 없는 조건을 의미가 다른 규칙으로 바꾸지 않습니다.
-
-프로젝트·태그·하위 프로젝트·최신 표시 범위는 `projectScope`로 저장합니다.
-카탈로그의 부모·태그·활성·최신 버전 표시를 매 새 분석에서 조회하므로 새 회차에도 적용됩니다.
-같은 프로젝트 UUID의 버전이 바뀌면 과거 버전 회차는 최신 버전 범위에서 제외되고, 같은 버전의
-과거 회차는 포함됩니다. 이전 리비전에는 당시 범위와 메타데이터·취약점 근거가 보존됩니다.
-무기한 예외는 정확한 `runId` 범위를 계속 보존합니다.
-
-### 프로젝트 계층·태그·최신 버전과 주기 동기화
-
-설정의 **기존 시스템 이관** 아래에서 카탈로그를 확인하고 자체 프로젝트를 등록합니다.
+프로젝트 카탈로그에서 자체 프로젝트를 등록하고 계층·태그·최신 범위를 관리합니다.
 부모는 같은 원본의 프로젝트 ID로 지정하며 순환 계층은 거절합니다. 최신 표시를 켜면 같은
 원본·이름의 다른 버전 최신 표시는 해제합니다. 기존 회차를 연결하거나 같은 서비스·환경·버전의
 업로드를 자동 대응시킵니다. 카탈로그 변경은 과거 SBOM·분석을 덮어쓰지 않습니다.
@@ -586,30 +513,6 @@ AND/OR/WITH/PLUS/or-later, 달력 AGE와 단위별 버전 거리입니다.
 - 변경 시 `expectedRevision`을 보내며 충돌은 HTTP 409로 다시 조회합니다.
 - 정책 `projectScope`는 `sourceId`, `projectIds`, `tags`, `includeChildren`, `onlyLatest`입니다.
   프로젝트 또는 태그가 맞는 집합에 적용하고, ID·태그를 모두 비우면 같은 원본 전체입니다.
-
-원본을 계속 유지하는 경우에만 **자동 동기화 원본 등록**에서 주소·읽기 키·프로젝트 목록·주기를
-설정하고 활성화합니다. 기본은 비활성입니다. 원본이 종료된 경우 KODA 카탈로그 편집만 사용합니다.
-
-- `GET/POST /api/v1/project-sync-sources`, `PATCH /api/v1/project-sync-sources/{id}`
-- `POST /api/v1/project-sync-sources/{id}/run-now`: 지금 접수·실패 후 재시도
-- `GET /api/v1/project-sync-sources/{id}/events`: 성공·재시도·차단 근거
-- 주기 5~10,080분, 작업 임대 10분, 통신 실패 최대 5회 지수 지연 재시도입니다.
-- 원본 키는 기존 `TRACKER_LDAP_ENCRYPTION_KEY`로 암호화합니다. 이 키를 안전하게 보존해야
-  백업 복원 뒤에도 자격증명을 복호화할 수 있습니다. API 응답·감사에 키나 암호문을 반환하지 않습니다.
-- 전체 스냅샷에서 사라진 프로젝트만 비활성·비최신으로 처리합니다. 일부 프로젝트 수집에서는
-  누락된 다른 프로젝트를 삭제로 해석하지 않습니다. 원본 정책 삭제도 이력과 tombstone을 남깁니다.
-- KODA에서 수정·삭제한 원본 정책과 충돌하면 덮어쓰지 않고 검토 필요 상태로 중단합니다.
-- 내보내기마다 바뀌는 timestamp·serial·도구 정보·저장소 집계는 새 SBOM 회차로 취급하지 않습니다.
-  실제 재고·버전 변경은 새 회차·릴리스로 보존합니다. 원본 분석 변화는 별도 과거 증거 리비전입니다.
-
-번들은 최대 64MiB, 원본 단일 응답은 32MiB, 수집은 최대 5분으로 제한됩니다.
-큰 포트폴리오는 프로젝트를 나눠 수집합니다. 원본 origin 외부 리디렉션·환경 proxy·링크 로컬 주소는
-차단하고 DNS로 확인한 목적지에 연결합니다. CLI 예:
-
-```bash
-export LEGACY_SOURCE_API_KEY='<원본 읽기 키>'
-python scripts/import-legacy-data.py --help
-```
 
 ### 최신 버전·출시일 자동 수집
 
@@ -679,7 +582,7 @@ CWE·EPSS 또는 고급 helper가 필요한 데이터를 찾지 못하면 `polic
 
 ## Collection 집계와 사내 취약점 DB
 
-설정의 **기존 자료 이관 / 프로젝트 카탈로그**에서 부모 프로젝트의 Collection 방식을
+설정의 **프로젝트 카탈로그**에서 부모 프로젝트의 Collection 방식을
 선택하고 지표를 조회합니다. 일반 프로젝트는 `NONE`, Collection은 아래 방식을 사용합니다.
 
 | 방식 | 선택 범위 |
@@ -698,8 +601,7 @@ CWE·EPSS 또는 고급 helper가 필요한 데이터를 찾지 못하면 `polic
 
 - `GET /api/v1/project-catalog/{id}/metrics`: 합계, 커버리지, 프로젝트별 회차·분석 증거.
 - 카탈로그 생성/수정의 `collectionLogic`, `collectionTag`: 설정. 수정 시 `expectedRevision` 필요.
-- 조회에는 `migrations.manage`, 수정에는 관리자 역할·동일 권한·CSRF가 필요합니다.
-- 기존 자료 동기화는 원본 Collection 방식과 태그도 반영합니다. 전체 동등성은 미구현 기능 표를 참조합니다.
+- 카탈로그 조회에는 `catalog.manage`, 변경에는 관리자 역할과 같은 권한·CSRF 검증이 필요합니다.
 
 설정의 **사내 취약점 DB**에서 내부 ID(예: `KODA-2026-001`) 또는 CVE ID, 제목·설명,
 심각도·CVSS·CWE·별칭·참고 URL, 영향 패키지와 수정 버전을 작성합니다. 조회는 관리자와
@@ -721,7 +623,6 @@ CWE·EPSS 또는 고급 helper가 필요한 데이터를 찾지 못하면 `polic
 - `GET /api/v1/private-vulnerabilities/{id}/history`: 페이지별 불변 작성 이력.
 
 게시·게시 내용 변경·철회는 이전/현재 영향 버전에 해당하는 비보관 회차의 재분석 의도를
-같은 DB 트랜잭션에 저장합니다. `portal-project-sync`가 큐 여유에 맞춰 작업을 넣고
 `portal-worker`가 실제 Grype 분석을 실행합니다. 큐가 가득 차거나 이미 분석 중이면 의도를
 보존해 재시도합니다. `affectedRunsQueued`는 접수 수이며 완료 수가 아닙니다.
 재분석 완료를 확인한 뒤 결과를 판단합니다. 철회는 새 결과에서 제외하며 이전 분석은 변경하지 않습니다.

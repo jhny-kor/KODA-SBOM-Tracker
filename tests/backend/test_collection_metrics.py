@@ -36,7 +36,7 @@ def analysis(db, p, label=None, sequence=1, suppressed=False, analysis_state=Job
     label = label or p.id
     r = Release(id=label, service_id="s", environment_id="e", version=p.version)
     db.add(r); db.flush()
-    run = SbomRun(id=label, release_id=r.id, round_number=1, state=ProcessingState.COMPLETED, analysis_state=analysis_state, dtrack_state=JobState.COMPLETED, original_filename="sample.json", media_type="application/json", spec_version="1.6", sha256="a"*64, size_bytes=2, artifact_path="/sample", normalized_bom={}, created_at=now())
+    run = SbomRun(id=label, release_id=r.id, round_number=1, state=ProcessingState.COMPLETED, analysis_state=analysis_state, original_filename="sample.json", media_type="application/json", spec_version="1.6", sha256="a"*64, size_bytes=2, artifact_path="/sample", normalized_bom={}, created_at=now())
     db.add(run); db.flush()
     db.add(ProjectRunLink(run_id=run.id, project_id=p.id))
     db.add(RunComponent(run_id=run.id, identity_key=label, name="sample", version="1"))
@@ -91,7 +91,7 @@ def test_missing_failed_pending_and_archived_coverage_does_not_report_complete(d
 def test_newest_unarchived_round_and_latest_completed_revision_selected(db):
     root=project(db,"root",logic="AGGREGATE_DIRECT_CHILDREN")
     a=project(db,"a","root"); run,old=analysis(db,a)
-    new=SbomRun(id="new",release_id=run.release_id,round_number=2,state=ProcessingState.COMPLETED,analysis_state=JobState.COMPLETED,dtrack_state=JobState.COMPLETED,original_filename="new.json",media_type="application/json",spec_version="1.6",sha256="b"*64,size_bytes=2,artifact_path="/new",normalized_bom={},created_at=run.created_at+timedelta(seconds=1))
+    new=SbomRun(id="new",release_id=run.release_id,round_number=2,state=ProcessingState.COMPLETED,analysis_state=JobState.COMPLETED,original_filename="new.json",media_type="application/json",spec_version="1.6",sha256="b"*64,size_bytes=2,artifact_path="/new",normalized_bom={},created_at=run.created_at+timedelta(seconds=1))
     db.add(new); db.flush()
     revision=AnalysisRevision(run_id=new.id,sequence=1,state=JobState.COMPLETED,policy_state="completed",findings=[],policies=[])
     db.add(revision);db.flush()
@@ -102,20 +102,6 @@ def test_newest_unarchived_round_and_latest_completed_revision_selected(db):
     assert collection_metrics(db,root)["projects"][0]["runId"]==run.id
 
 
-def test_import_collection_config_and_native_revision_validation(db):
-    root=project(db,"root")
-    run,_=analysis(db,root)
-    bundle={"source":{"id":"sample"},"projects":[{"project":{"uuid":"root","name":"root","version":"root","collectionLogic":"AGGREGATE_DIRECT_CHILDREN_WITH_TAG","collectionTag":{"name":"prod"}}}]}
-    plan={"root":{"runId":run.id,"serviceId":"s","environmentId":"e"}}
-    project_catalog.upsert_source_projects(db,bundle,plan)
-    assert project_catalog.project_payload(root)["collectionTag"]=="prod"
-    version=root.revision
-    project_catalog.upsert_source_projects(db,bundle,plan)
-    assert root.revision==version
-    user=SimpleNamespace(username="admin")
-    with pytest.raises(Exception) as exc:
-        project_catalog_api.update_project(root.id,project_catalog_api.ProjectUpdate(expectedRevision=version,collectionTag=" "),db,user)
-    assert exc.value.status_code==422
 
 
 def test_deep_hierarchy_is_iterative_and_cycle_rejected(db):

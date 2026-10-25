@@ -1,0 +1,13 @@
+{
+  "model": "ssvc:DT_DP:1.0.0",
+  "upstreamCommit": "fa6a3a4cb3943d76e3f0057d84dc57b5fe3e064a",
+  "source": "https://github.com/CERTCC/SSVC/blob/fa6a3a4cb3943d76e3f0057d84dc57b5fe3e064a/data/csv/ssvc/deployer_patch_application_priority_1_0_0.csv",
+  "sha256": "68491dc72505bf0703f32d8a278fc59cdaee4f515922633312bf4cc67f1b1aab",
+  "license": "MIT (SEI)-style; full notice in LICENSE",
+  "decisionPoints": {
+    "exploitation": "ssvc:E:1.1.0",
+    "systemExposure": "ssvc:EXP:1.0.1",
+    "automatable": "ssvc:A:2.0.0",
+    "humanImpact": "ssvc:HI:2.0.2"
+  }
+}

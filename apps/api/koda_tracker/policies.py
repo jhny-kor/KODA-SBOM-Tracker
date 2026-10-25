@@ -16,6 +16,7 @@ from .models import AnalysisRevision, JobState, SbomPolicyRevision, SbomRun
 from .sbom import iter_components
 from .vulnerability import cvss_score, project_cve_findings
 from .vulnerability_intelligence import enrich_findings, enqueue_findings
+from .offline_intelligence_store import active_reference_document
 from .project_catalog import catalog_context_for_run, project_scope_matches
 from .legacy_policy import validate_legacy_conditions, prepare_legacy_contexts, validate_java_conditions
 
@@ -614,6 +615,16 @@ def evaluate_revision(db: Session, run: SbomRun, revision: AnalysisRevision) -> 
             components = enrich_components(db, components)
             enqueue_findings(db, revision.findings or [])
             revision.findings = enrich_findings(db, revision.findings or [])
+        if isinstance(run, SbomRun):
+            from .offline_intelligence_store import active_reference_document, sync_reference_bundle
+            from .offline_reference_enrichment import enrich_reference_context
+            from .vulnerability import active_bundle
+            from .config import get_settings
+            bundle = active_bundle(get_settings())
+            if bundle:
+                sync_reference_bundle(db, bundle.path, request_reanalysis=False)
+            components, revision.findings, reference_summary = enrich_reference_context(components, revision.findings or [], active_reference_document(db))
+            revision.data_sources = {**(revision.data_sources or {}), "offlineIntelligence": reference_summary}
         metadata_evidence = [value.get("packageMetadata") for value in components if value.get("packageMetadata")]
         sources = revision.data_sources or {}
         kev_source = sources.get("cisaKev") or {}

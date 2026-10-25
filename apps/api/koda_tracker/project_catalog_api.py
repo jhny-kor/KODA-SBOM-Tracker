@@ -1,16 +1,15 @@
-"""Administrator-managed native catalog and read-only legacy synchronization."""
+"""Administrator-managed native project catalog."""
 from __future__ import annotations
-from datetime import timedelta
 import re
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, ConfigDict, Field, SecretStr
-from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import and_, func, or_, select
+from sqlalchemy.orm import Session, selectinload
 from .collection_metrics import CollectionLogic, collection_config, collection_metrics, configure_collection
 from .db import get_db
-from .models import Environment, Release, SbomRun, Service, now
-from .project_catalog_models import NativeProject, ProjectRunLink, ProjectSyncSource, ProjectSyncEvent
-from .project_catalog import CatalogError, encrypt_key, link_run, project_payload, set_latest, sync_payload, tags_of, validate_hierarchy
+from .models import AnalysisRevision, Environment, Release, RunComponent, SbomRun, Service, now
+from .project_catalog_models import NativeProject, NativeReanalysisPending, ProjectRunLink
+from .project_catalog import CatalogError, link_run, project_payload, set_latest, tags_of, validate_hierarchy
 from .security import require_admin, require_csrf, require_permission
 from .services import audit
 
@@ -71,7 +70,7 @@ def _refresh_quality_scope(db: Session, source_id: str) -> int:
 
 
 @router.get("/project-catalog")
-def list_projects(sourceId: str | None = None, page: int = Query(1, ge=1), size: int = Query(50, ge=1, le=200), db: Session = Depends(get_db), _=Depends(require_permission("migrations.manage"))):
+def list_projects(sourceId: str | None = None, page: int = Query(1, ge=1), size: int = Query(50, ge=1, le=200), db: Session = Depends(get_db), _=Depends(require_permission("catalog.manage"))):
     query = select(NativeProject)
     if sourceId:
         query = query.where(NativeProject.source_id == sourceId)
@@ -80,7 +79,7 @@ def list_projects(sourceId: str | None = None, page: int = Query(1, ge=1), size:
 
 
 @router.post("/project-catalog", status_code=201)
-def create_project(body: ProjectCreate, db: Session = Depends(get_db), principal=Depends(require_admin), _permission=Depends(require_permission("migrations.manage")), _csrf=Depends(require_csrf)):
+def create_project(body: ProjectCreate, db: Session = Depends(get_db), principal=Depends(require_admin), _permission=Depends(require_permission("catalog.manage")), _csrf=Depends(require_csrf)):
     from .quality import quality_write_lock
     quality_write_lock(db)
     try:
@@ -107,7 +106,7 @@ def create_project(body: ProjectCreate, db: Session = Depends(get_db), principal
 
 
 @router.patch("/project-catalog/{project_id}")
-def update_project(project_id: str, body: ProjectUpdate, db: Session = Depends(get_db), principal=Depends(require_admin), _permission=Depends(require_permission("migrations.manage")), _csrf=Depends(require_csrf)):
+def update_project(project_id: str, body: ProjectUpdate, db: Session = Depends(get_db), principal=Depends(require_admin), _permission=Depends(require_permission("catalog.manage")), _csrf=Depends(require_csrf)):
     from .quality import quality_write_lock
     quality_write_lock(db)
     p = db.scalar(select(NativeProject).where(NativeProject.id == project_id).with_for_update())
@@ -147,7 +146,7 @@ def update_project(project_id: str, body: ProjectUpdate, db: Session = Depends(g
 
 
 @router.post("/project-catalog/{project_id}/runs")
-def attach_run(project_id: str, body: RunLinkRequest, db: Session = Depends(get_db), principal=Depends(require_admin), _permission=Depends(require_permission("migrations.manage")), _csrf=Depends(require_csrf)):
+def attach_run(project_id: str, body: RunLinkRequest, db: Session = Depends(get_db), principal=Depends(require_admin), _permission=Depends(require_permission("catalog.manage")), _csrf=Depends(require_csrf)):
     from .quality import quality_write_lock
     quality_write_lock(db)
     p = db.scalar(select(NativeProject).where(NativeProject.id == project_id).with_for_update())
@@ -168,8 +167,75 @@ def attach_run(project_id: str, body: RunLinkRequest, db: Session = Depends(get_
         db.rollback(); raise HTTPException(422, str(exc)) from exc
 
 
+@router.get("/project-catalog/{project_id}/runs")
+def list_project_runs(
+    project_id: str,
+    page: int = Query(1, ge=1),
+    size: int = Query(10, ge=1, le=100),
+    db: Session = Depends(get_db),
+    _catalog=Depends(require_permission("catalog.manage")),
+    _runs=Depends(require_permission("runs.view")),
+):
+    # Reuse the normal results summary, including current analysis availability.
+    # Import lazily because main registers this router during module loading.
+    from .main import _run_payload
+
+    project = db.get(NativeProject, project_id)
+    if project is None:
+        raise HTTPException(404, "프로젝트가 없습니다")
+    linked = select(ProjectRunLink.run_id).where(
+        ProjectRunLink.run_id == SbomRun.id,
+        ProjectRunLink.project_id == project.id,
+    ).exists()
+    association = linked
+    coordinates = (
+        NativeProject.service_id == project.service_id,
+        NativeProject.environment_id == project.environment_id,
+        NativeProject.version == project.version,
+    )
+    # Exactly mirror project_for_run: explicit links win, and an unlinked run
+    # inherits a catalog project only when its coordinates identify one project
+    # across all sources, including inactive projects. Do not persist new links.
+    candidates = db.scalar(select(func.count()).select_from(NativeProject).where(*coordinates))
+    if candidates == 1:
+        unlinked = ~select(ProjectRunLink.run_id).where(ProjectRunLink.run_id == SbomRun.id).exists()
+        association = or_(linked, and_(
+            unlinked,
+            Release.service_id == project.service_id,
+            Release.environment_id == project.environment_id,
+            Release.version == project.version,
+        ))
+    query = select(SbomRun).join(Release).where(association)
+    total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
+    items = list(db.scalars(query.options(
+        selectinload(SbomRun.release).selectinload(Release.service),
+        selectinload(SbomRun.release).selectinload(Release.environment),
+        selectinload(SbomRun.analyses).defer(AnalysisRevision.policies).defer(AnalysisRevision.policy_snapshot),
+    ).order_by(SbomRun.created_at.desc(), SbomRun.id.desc()).offset((page - 1) * size).limit(size)))
+    run_ids = [item.id for item in items]
+    pending_ids = set(db.scalars(select(NativeReanalysisPending.run_id).where(
+        NativeReanalysisPending.run_id.in_(run_ids),
+    ))) if run_ids else set()
+    component_counts, type_counts = {}, {}
+    if run_ids:
+        for run_id, kind, count in db.execute(select(
+            RunComponent.run_id, RunComponent.component_type, func.count(),
+        ).where(RunComponent.run_id.in_(run_ids)).group_by(RunComponent.run_id, RunComponent.component_type)):
+            component_counts[run_id] = component_counts.get(run_id, 0) + count
+            type_counts.setdefault(run_id, {})[kind or "library"] = count
+    return {
+        "items": [_run_payload(
+            item,
+            component_count=component_counts.get(item.id, 0),
+            component_type_counts=type_counts.get(item.id, {}),
+            native_reanalysis_pending=item.id in pending_ids,
+        ) for item in items],
+        "total": total, "page": page, "size": size,
+    }
+
+
 @router.get("/project-catalog/{project_id}/metrics")
-def get_collection_metrics(project_id: str, db: Session = Depends(get_db), _=Depends(require_permission("migrations.manage"))):
+def get_collection_metrics(project_id: str, db: Session = Depends(get_db), _=Depends(require_permission("catalog.manage"))):
     p = db.get(NativeProject, project_id)
     if p is None:
         raise HTTPException(404, "프로젝트가 없습니다")
@@ -177,94 +243,3 @@ def get_collection_metrics(project_id: str, db: Session = Depends(get_db), _=Dep
         return collection_metrics(db, p)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
-
-
-class SyncCreate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    name: str = Field(min_length=1, max_length=255)
-    baseUrl: str = Field(max_length=2048)
-    allowedOrigins: list[str] = Field(min_length=1, max_length=20)
-    apiKey: SecretStr
-    projectUuids: list[str] = Field(default_factory=list, max_length=10000)
-    sourceTimeZone: str | None = Field(default=None, max_length=64)
-    enabled: bool = False
-    intervalMinutes: int = Field(default=1440, ge=5, le=10080)
-
-
-class SyncUpdate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    expectedVersion: int = Field(ge=1)
-    enabled: bool | None = None
-    intervalMinutes: int | None = Field(default=None, ge=5, le=10080)
-    apiKey: SecretStr | None = None
-
-
-@router.get("/project-sync-sources")
-def list_sources(page: int = Query(1, ge=1), size: int = Query(20, ge=1, le=100), db: Session = Depends(get_db), _=Depends(require_permission("migrations.manage"))):
-    return {"items": [sync_payload(s) for s in db.scalars(select(ProjectSyncSource).order_by(ProjectSyncSource.name, ProjectSyncSource.id).offset((page - 1) * size).limit(size))], "total": db.scalar(select(func.count()).select_from(ProjectSyncSource)) or 0, "page": page, "size": size}
-
-
-@router.post("/project-sync-sources", status_code=201)
-def create_source(body: SyncCreate, db: Session = Depends(get_db), principal=Depends(require_admin), _permission=Depends(require_permission("migrations.manage")), _csrf=Depends(require_csrf)):
-    from .migration import validate_source_url
-    try:
-        origin = validate_source_url(body.baseUrl, body.allowedOrigins)
-        if not body.apiKey.get_secret_value().strip():
-            raise CatalogError("원본 API 키가 필요합니다")
-        s = ProjectSyncSource(name=body.name, base_url=origin, allowed_origins=body.allowedOrigins, project_uuids=body.projectUuids, source_timezone=body.sourceTimeZone, key_ciphertext=encrypt_key(body.apiKey.get_secret_value()), enabled=body.enabled, interval_minutes=body.intervalMinutes, actor_id=principal.id, actor_name=principal.username, next_run_at=now() if body.enabled else None)
-        db.add(s); db.flush()
-        audit(db, principal.username, "project_sync.create", "project_sync_source", s.id, {"baseUrl": origin, "enabled": s.enabled})
-        db.commit()
-        return sync_payload(s)
-    except ValueError as exc:
-        db.rollback(); raise HTTPException(422, str(exc)) from exc
-
-
-@router.patch("/project-sync-sources/{source_id}")
-def update_source(source_id: str, body: SyncUpdate, db: Session = Depends(get_db), principal=Depends(require_admin), _permission=Depends(require_permission("migrations.manage")), _csrf=Depends(require_csrf)):
-    s = db.scalar(select(ProjectSyncSource).where(ProjectSyncSource.id == source_id).with_for_update())
-    if not s:
-        raise HTTPException(404, "동기화 원본이 없습니다")
-    if s.version != body.expectedVersion:
-        raise HTTPException(409, "동기화 설정이 변경되었습니다")
-    if s.state == "running":
-        raise HTTPException(409, "동기화 실행 중에는 설정을 변경할 수 없습니다")
-    try:
-        if body.apiKey:
-            if not body.apiKey.get_secret_value().strip():
-                raise CatalogError("원본 API 키가 비었습니다")
-            s.key_ciphertext = encrypt_key(body.apiKey.get_secret_value())
-        if body.enabled is not None:
-            s.enabled = body.enabled
-        if body.intervalMinutes is not None:
-            s.interval_minutes = body.intervalMinutes
-        s.version += 1
-        s.next_run_at = now() if s.enabled else None
-        s.state, s.attempts, s.last_error = "idle", 0, None
-        audit(db, principal.username, "project_sync.update", "project_sync_source", s.id, {"enabled": s.enabled, "intervalMinutes": s.interval_minutes, "credentialReplaced": body.apiKey is not None})
-        db.commit()
-        return sync_payload(s)
-    except ValueError as exc:
-        db.rollback(); raise HTTPException(422, str(exc)) from exc
-
-
-@router.post("/project-sync-sources/{source_id}/run-now", status_code=202)
-def run_source(source_id: str, db: Session = Depends(get_db), principal=Depends(require_admin), _permission=Depends(require_permission("migrations.manage")), _csrf=Depends(require_csrf)):
-    s = db.scalar(select(ProjectSyncSource).where(ProjectSyncSource.id == source_id).with_for_update())
-    if not s:
-        raise HTTPException(404, "동기화 원본이 없습니다")
-    if s.state == "running":
-        return sync_payload(s)
-    if not s.enabled:
-        raise HTTPException(409, "동기화를 활성화한 뒤 실행하세요")
-    s.next_run_at, s.attempts, s.state, s.last_error = now(), 0, "idle", None
-    audit(db, principal.username, "project_sync.enqueue", "project_sync_source", s.id)
-    db.commit()
-    return sync_payload(s)
-
-
-@router.get("/project-sync-sources/{source_id}/events")
-def source_events(source_id: str, page: int = Query(1, ge=1), size: int = Query(20, ge=1, le=100), db: Session = Depends(get_db), _=Depends(require_permission("migrations.manage"))):
-    query = select(ProjectSyncEvent).where(ProjectSyncEvent.source_id == source_id)
-    events = list(db.scalars(query.order_by(ProjectSyncEvent.started_at.desc()).offset((page - 1) * size).limit(size)))
-    return {"items": [{"id": e.id, "attempt": e.attempt, "state": e.state, "startedAt": e.started_at.isoformat(), "finishedAt": e.finished_at.isoformat() if e.finished_at else None, "migrationId": e.migration_id, "detail": e.detail} for e in events], "total": db.scalar(select(func.count()).select_from(query.subquery())) or 0, "page": page, "size": size}

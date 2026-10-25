@@ -12,7 +12,13 @@ FROM ${KODA_GRYPE_IMAGE} AS koda_grype
 FROM ${GRYPE_IMAGE} AS grype
 FROM ${CYCLONEDX_CLI_IMAGE} AS cyclonedx
 FROM ${PYTHON_BASE_IMAGE}
-LABEL org.opencontainers.image.licenses="Apache-2.0"
+ARG KODA_IMAGE_CREATED=unknown
+ARG KODA_IMAGE_REVISION=unknown
+ARG KODA_IMAGE_VERSION=dev
+LABEL org.opencontainers.image.licenses="Apache-2.0" \
+      org.opencontainers.image.created="$KODA_IMAGE_CREATED" \
+      org.opencontainers.image.revision="$KODA_IMAGE_REVISION" \
+      org.opencontainers.image.version="$KODA_IMAGE_VERSION"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \

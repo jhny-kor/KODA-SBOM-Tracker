@@ -9,6 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .db import get_db
+from .data_updates import reference_access
 from .models import RunComponent, SbomRun
 from .package_metadata import (BACKFILL_BATCH, MAX_CACHE_IMPORT, MAX_RESPONSE_BYTES, SUPPORTED_ECOSYSTEMS,
                                enqueue_components, enrich_components, iso, metadata_payload, metadata_summary,
@@ -78,9 +79,13 @@ class ImportRequest(BaseModel):
     total: int | None = None
 
 
-@router.post("/package-metadata/import")
+@router.post("/package-metadata/import", dependencies=[Depends(reference_access)])
 def import_metadata(body: ImportRequest, db: Session = Depends(get_db), principal=Depends(require_permission("metadata.manage")),
                     _csrf=Depends(require_csrf)):
+    from .data_updates import reference_import_allowed
+    from .config import get_settings
+    try: reference_import_allowed(get_settings())
+    except ValueError as exc: raise HTTPException(409,str(exc)) from exc
     # An administrator explicitly imports an offline snapshot. It is labelled
     # as imported, never misrepresented as a fresh live-registry observation.
     from .package_metadata import allowed_registry_url

@@ -74,10 +74,10 @@ describe("KODA SBOM Tracker", () => {
     render(<SettingsPage
       users={[]} services={[{ id: "svc", name: "결제 API", slug: "payment", active: true }]}
       environments={[{ id: "prod", name: "운영", slug: "prod", active: true, sortOrder: 1 }]}
-      tokens={[]} dtrackStatus={null} ldapSettings={null} policies={[]} roleCatalog={[]}
+      tokens={[]} ldapSettings={null} policies={[]} roleCatalog={[]}
       bundles={[]} auditEvents={[]} isAdmin={false} canVulnerability={false}
       canVulnerabilityManage={false} canAudit={false} canUsers={false} canTokens={false}
-      canDtrack={false} canPolicyEdit={false} canRoles={false} canServices
+      canPolicyEdit={false} canRoles={false} canServices
       canCatalogManage={false} initialTab="services" onSync={async () => {}}
       onActivate={async () => {}} onPolicyChanged={async () => {}} onLdapChanged={() => {}}
       onChanged={() => {}}
@@ -95,10 +95,10 @@ describe("KODA SBOM Tracker", () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ id: "token-1", name: "group-project", token: "koda_secret", serviceId: "svc-uuid" }), { status: 201, headers: { "Content-Type": "application/json" } }));
     render(<SettingsPage
       users={[]} services={[{ id: "svc-uuid", name: "group/project", slug: "group-project", active: true }]}
-      tokens={[]} dtrackStatus={null} ldapSettings={null} policies={[]} roleCatalog={[]}
+      tokens={[]} ldapSettings={null} policies={[]} roleCatalog={[]}
       bundles={[]} auditEvents={[]} isAdmin canVulnerability={false}
       canVulnerabilityManage={false} canAudit={false} canUsers={false} canTokens
-      canDtrack={false} canPolicyEdit={false} canRoles={false}
+      canPolicyEdit={false} canRoles={false}
       onSync={async () => {}} onActivate={async () => {}} onPolicyChanged={async () => {}}
       onLdapChanged={() => {}} onChanged={() => {}}
     />);
@@ -116,11 +116,10 @@ describe("KODA SBOM Tracker", () => {
     render(<SettingsPage
       users={[]} services={[{ id: "svc-uuid", name: "group/project", slug: "gitlab-42-a1b2c3d4e5f6", active: true }]}
       environments={[{ id: "env-uuid", name: "GitLab 소스", slug: "gitlab-source", active: true, sortOrder: 50 }]}
-      tokens={[{ id: "token-1", name: "group-project", serviceId: "svc-uuid", active: true, createdAt: "2026-08-29T00:00:00Z" }]}
-      dtrackStatus={{ configured: true, reachable: true, authenticated: true, version: "4.13", team: "koda", permissions: [], missingPermissions: [] }} ldapSettings={null} policies={[]} roleCatalog={[]}
+      tokens={[{ id: "token-1", name: "group-project", serviceId: "svc-uuid", active: true, createdAt: "2026-08-29T00:00:00Z" }]} ldapSettings={null} policies={[]} roleCatalog={[]}
       bundles={[]} auditEvents={[]} isAdmin canVulnerability={false}
       canVulnerabilityManage={false} canAudit={false} canUsers={false} canTokens
-      canDtrack canPolicyEdit={false} canRoles={false} canServices
+      canPolicyEdit={false} canRoles={false} canServices
       canCatalogManage={false} onSync={async () => {}} onActivate={async () => {}}
       onPolicyChanged={async () => {}} onLdapChanged={() => {}} onChanged={() => {}}
     />);
@@ -128,22 +127,24 @@ describe("KODA SBOM Tracker", () => {
     fireEvent.click(screen.getByRole("tab", { name: "연동 설정" }));
     expect(screen.getByRole("heading", { name: "KODA GitLab 자동 연동" })).toBeInTheDocument();
     expect(screen.getByText("GitLab 저장소 → KODA 점검·CycloneDX 생성 → Tracker 회차 수신·분석 → KODA가 GitLab 결과 MR·취약점 이슈 저장")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "기존 외부 시스템 연결" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "기존 외부 시스템 연결" })).not.toBeInTheDocument();
     expect(screen.getByText("gitlab-source 환경이 자동 준비되었습니다.")).toBeInTheDocument();
     expect(screen.getByRole("row", { name: /group\/project.*활성/ })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "자동 생성 항목 보기" }));
     expect(screen.getByRole("heading", { name: "서비스 1개" })).toBeInTheDocument();
   });
 
+
+
   it("orders catalog actions and hides deleted services and environments", async () => {
     vi.spyOn(window, "confirm").mockReturnValue(true);
     render(<SettingsPage
       users={[]} services={[{ id: "svc", name: "결제 API", slug: "payment", active: true }]}
       environments={[{ id: "prod", name: "운영", slug: "prod", active: true, sortOrder: 1 }]}
-      tokens={[]} dtrackStatus={null} ldapSettings={null} policies={[]} roleCatalog={[]}
+      tokens={[]} ldapSettings={null} policies={[]} roleCatalog={[]}
       bundles={[]} auditEvents={[]} isAdmin={false} canVulnerability={false}
       canVulnerabilityManage={false} canAudit={false} canUsers={false} canTokens={false}
-      canDtrack={false} canPolicyEdit={false} canRoles={false} canServices
+      canPolicyEdit={false} canRoles={false} canServices
       canCatalogManage initialTab="services" onSync={async () => {}}
       onActivate={async () => {}} onPolicyChanged={async () => {}} onLdapChanged={() => {}}
       onChanged={() => {}}
@@ -159,11 +160,11 @@ describe("KODA SBOM Tracker", () => {
   it("shows a users-only manager settings surface", () => {
     render(<SettingsPage
       users={[{ id: "u2", username: "analyst", role: "analyst", active: true }]}
-      services={[]} tokens={[]} dtrackStatus={null} ldapSettings={null}
+      services={[]} tokens={[]} ldapSettings={null}
       policies={[{ role: "admin", permissions: ["roles.manage"] }]}
       roleCatalog={["roles.manage"]} bundles={[]} auditEvents={[]}
       isAdmin={false} canVulnerability={false} canVulnerabilityManage={false} canAudit={false}
-      canUsers canTokens={false} canDtrack={false}
+      canUsers canTokens={false}
       canPolicyEdit={false} canRoles={false} onSync={async () => {}} onActivate={async () => {}}
       onPolicyChanged={async () => {}} onLdapChanged={() => {}} onChanged={() => {}}
     />);
@@ -181,11 +182,11 @@ describe("KODA SBOM Tracker", () => {
         { id: "pending", username: "new-user", role: "viewer", active: false, status: "pending" },
         { id: "inactive", username: "stopped-user", role: "viewer", active: false, status: "inactive" },
       ]}
-      services={[]} tokens={[]} dtrackStatus={null} ldapSettings={null}
+      services={[]} tokens={[]} ldapSettings={null}
       policies={[{ role: "admin", permissions: ["roles.manage"] }]}
       roleCatalog={["roles.manage"]} bundles={[]} auditEvents={[]}
       isAdmin canVulnerability={false} canVulnerabilityManage={false} canAudit={false}
-      canUsers canTokens={false} canDtrack={false}
+      canUsers canTokens={false}
       canPolicyEdit canRoles onSync={async () => {}} onActivate={async () => {}}
       onPolicyChanged={async () => {}} onLdapChanged={() => {}} onChanged={() => {}}
     />);
@@ -197,13 +198,13 @@ describe("KODA SBOM Tracker", () => {
 
   it("groups administrator security data under Korean settings tabs", () => {
     render(<SettingsPage
-      users={[]} services={[]} tokens={[]} dtrackStatus={null} ldapSettings={null}
+      users={[]} services={[]} tokens={[]} ldapSettings={null}
       policies={[{ role: "admin", permissions: ["audit.view", "vulnerability.view"] }]}
       roleCatalog={["audit.view", "vulnerability.view"]}
       bundles={[{ id: "bundle-1", version: "2026.08", dataAsOf: "2026-08-01", nvdDataAsOf: "2026-08-01", kevDataAsOf: "2026-08-01", grypeDbSchema: "6", aliasCount: 1, kevCount: 1, manifestSha256: "secret-sha", active: true, importedAt: "2026-08-01T00:00:00Z" }]}
       auditEvents={[{ id: "audit-1", actor: "admin", action: "login", targetType: "session", targetId: "1", detail: { sha256: "secret-sha", round: 1 }, createdAt: "2026-08-01T00:00:00Z" }]}
       isAdmin canVulnerability canVulnerabilityManage canAudit
-      canUsers={false} canTokens={false} canDtrack={false} canPolicyEdit canRoles
+      canUsers={false} canTokens={false} canPolicyEdit canRoles
       onSync={async () => {}} onActivate={async () => {}}
       onPolicyChanged={async () => {}} onLdapChanged={() => {}} onChanged={() => {}}
     />);
@@ -224,11 +225,11 @@ describe("KODA SBOM Tracker", () => {
   it("groups permissions and disables sbom.delete outside the admin role", () => {
     const catalog = ["dashboard.view", "services.view", "runs.view", "compare.view", "vulnerability.view", "audit.view", "settings.view", "sbom.upload", "catalog.manage", "users.manage", "sbom.delete"];
     render(<SettingsPage
-      users={[]} services={[]} tokens={[]} dtrackStatus={null} ldapSettings={null}
+      users={[]} services={[]} tokens={[]} ldapSettings={null}
       policies={[{ role: "admin", permissions: ["sbom.delete"] }, { role: "viewer", permissions: [] }]}
       roleCatalog={catalog} bundles={[]} auditEvents={[]} isAdmin canVulnerability={false}
       canVulnerabilityManage={false} canAudit={false} canUsers={false} canTokens={false}
-      canDtrack={false} canPolicyEdit canRoles onSync={async () => {}} onActivate={async () => {}}
+      canPolicyEdit canRoles onSync={async () => {}} onActivate={async () => {}}
       onPolicyChanged={async () => {}} onLdapChanged={() => {}} onChanged={() => {}}
     />);
     fireEvent.click(screen.getByRole("tab", { name: "권한 관리" }));
@@ -352,6 +353,8 @@ describe("KODA SBOM Tracker", () => {
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: /SBOM 업로드/ }));
     expect(screen.getByRole("dialog", { name: "SBOM 업로드" })).toBeInTheDocument();
+    expect(screen.getByText("지원 형식: CycloneDX 1.4, 1.5, 1.6, 1.7 (JSON/XML) · SPDX 2.3 (JSON)")).toBeInTheDocument();
+    expect(screen.getByLabelText("SBOM 파일")).toHaveAccessibleDescription(/CycloneDX 1\.4, 1\.5, 1\.6, 1\.7.*SPDX 2\.3/);
   });
 
   it("shows analysis charts on the server dashboard", async () => {

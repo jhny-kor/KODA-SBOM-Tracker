@@ -9,6 +9,7 @@ usage() {
 usage: build-vuln-bundle.sh <output-dir> --grype-db <grype-db-dir> --data-date YYYY-MM-DD
   [--version VERSION] [--nvd-index FILE | --nvd-feed FILE ...]
   [--nvd-date YYYY-MM-DD] [--alias-index FILE] [--kev FILE] [--kev-date YYYY-MM-DD]
+  [--epss FIRST_CSV_OR_GZ] [--intelligence-index intelligence.json]
 
 The command is offline-first: it never downloads vulnerability data. Fetch
 and verify source feeds on an approved build host, then pass their paths here.
@@ -25,6 +26,8 @@ nvd_date="unknown"
 alias_index=""
 kev_catalog=""
 kev_date="unknown"
+epss_snapshot=""
+intelligence_index=""
 nvd_feeds=()
 
 [[ $# -ge 1 ]] || usage
@@ -41,6 +44,8 @@ while [[ $# -gt 0 ]]; do
     --alias-index) alias_index="${2:-}"; shift 2 ;;
     --kev) kev_catalog="${2:-}"; shift 2 ;;
     --kev-date) kev_date="${2:-}"; shift 2 ;;
+    --epss) epss_snapshot="${2:-}"; shift 2 ;;
+    --intelligence-index) intelligence_index="${2:-}"; shift 2 ;;
     *) echo "unknown argument: $1" >&2; usage ;;
   esac
 done
@@ -96,6 +101,13 @@ mkdir -p "$stage_dir/grype-db"
 cp -a "$grype_root/." "$stage_dir/grype-db/"
 
 metadata_extra=()
+sidecars=(--destination "$stage_dir")
+[[ -z "$epss_snapshot" ]] || sidecars+=(--epss "$epss_snapshot")
+[[ -z "$intelligence_index" ]] || sidecars+=(--intelligence-index "$intelligence_index")
+sidecar_metadata="$(python3 "$ROOT_DIR/scripts/stage-intelligence.py" "${sidecars[@]}")"
+while IFS= read -r line; do
+  [[ -z "$line" ]] || metadata_extra+=("$line")
+done <<< "$sidecar_metadata"
 if [[ -n "$nvd_index" ]]; then
   cp "$nvd_index" "$stage_dir/nvd.json"
   metadata_extra+=("NVD_INDEX=nvd.json" "NVD_SHA256=$(sha256_file "$stage_dir/nvd.json" | awk '{print $1}')")

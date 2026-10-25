@@ -59,6 +59,3 @@ import-vuln:
 
 rollback-vuln:
 	./scripts/rollback-vuln-bundle.sh
-
-verify-dtrack:
-	./scripts/verify-dtrack-connection.sh

@@ -129,7 +129,6 @@ class Service(Base):
     slug: Mapped[str] = mapped_column(String(128), unique=True, index=True)
     name: Mapped[str] = mapped_column(String(255))
     active: Mapped[bool] = mapped_column(Boolean, default=True)
-    dtrack_collection_uuid: Mapped[str | None] = mapped_column(String(36), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
@@ -164,7 +163,6 @@ class SbomRun(Base):
     round_number: Mapped[int] = mapped_column(Integer)
     state: Mapped[ProcessingState] = mapped_column(Enum(ProcessingState), default=ProcessingState.QUEUED)
     analysis_state: Mapped[JobState] = mapped_column(Enum(JobState), default=JobState.QUEUED)
-    dtrack_state: Mapped[JobState] = mapped_column(Enum(JobState), default=JobState.QUEUED)
     source: Mapped[str] = mapped_column(String(32), default="manual")
     original_filename: Mapped[str] = mapped_column(String(255))
     media_type: Mapped[str] = mapped_column(String(64))
@@ -178,11 +176,6 @@ class SbomRun(Base):
     idempotency_actor: Mapped[str | None] = mapped_column(String(128), nullable=True)
     idempotency_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
     note: Mapped[str] = mapped_column(Text, default="")
-    dtrack_project_uuid: Mapped[str | None] = mapped_column(String(36), nullable=True)
-    dtrack_token: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    dtrack_error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    dtrack_metrics: Mapped[dict] = mapped_column(JSON, default=dict)
-    dtrack_policies: Mapped[list] = mapped_column(JSON, default=list)
     # Additive provenance for KODA scheduled server scans.  Manual and legacy
     # API rows keep an empty object so existing clients remain compatible.
     source_metadata: Mapped[dict] = mapped_column(JSON, default=dict)
@@ -224,8 +217,7 @@ class AnalysisRevision(Base):
     data_sources: Mapped[dict] = mapped_column(JSON, default=dict)
     findings: Mapped[list] = mapped_column(JSON, default=list)
     policies: Mapped[list] = mapped_column(JSON, default=list)
-    # Native policy evidence is revision-scoped; legacy DTrack policies remain
-    # readable with policy_version=None and policy_state=not_evaluated.
+    # Policy evidence is scoped to the analysis revision.
     policy_state: Mapped[str] = mapped_column(String(32), default="not_evaluated")
     policy_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     policy_snapshot: Mapped[dict] = mapped_column(JSON, default=dict)

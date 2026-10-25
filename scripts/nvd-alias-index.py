@@ -9,6 +9,7 @@ without network access.
 from __future__ import annotations
 
 import argparse
+import copy
 import gzip
 import json
 import re
@@ -77,17 +78,29 @@ def _cve_record(record: dict[str, Any]) -> dict[str, Any] | None:
             break
     cpes: list[str] = []
     configurations = cve.get("configurations", [])
-    for configuration in configurations if isinstance(configurations, list) else []:
-        for node in configuration.get("nodes", []) if isinstance(configuration, dict) else []:
-            for match in node.get("cpeMatch", []) if isinstance(node, dict) else []:
-                if isinstance(match, dict) and isinstance(match.get("criteria"), str):
-                    cpes.append(match["criteria"])
+    def collect(value):
+        if isinstance(value, list):
+            for item in value:
+                collect(item)
+        elif isinstance(value, dict):
+            if isinstance(value.get("criteria"), str):
+                cpes.append(value["criteria"])
+            for key in ("nodes", "children", "cpeMatch"):
+                if key in value:
+                    collect(value[key])
+    collect(configurations)
     references = [item.get("url") for item in cve.get("references", []) if isinstance(item, dict) and item.get("url")]
     return {
         "id": identifier,
         "description": descriptions[0] if descriptions else None,
         "cvss": metrics,
         "cpe": sorted(set(cpes))[:100],
+        # Required for offline applicability. The display-only CPE list above
+        # cannot recover version bounds, AND/OR, negation or environment leaves.
+        "configurations": copy.deepcopy(configurations) if isinstance(configurations, list) else [],
+        "applicabilityFormat": "nvd-2.0-configurations-v1",
+        "vulnStatus": cve.get("vulnStatus"),
+        "weaknesses": copy.deepcopy(cve.get("weaknesses", [])),
         "references": sorted(set(references))[:100],
         "published": cve.get("published"),
         "lastModified": cve.get("lastModified"),

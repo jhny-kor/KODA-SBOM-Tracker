@@ -32,7 +32,6 @@ from sqlalchemy.orm import Session, selectinload
 from .config import get_settings, session_cookie_name
 from .comparison import compare_components, compare_records
 from .db import Base, SessionLocal, engine, ensure_component_search_support, ensure_environment_active_column, ensure_ldap_subject_attribute_column, ensure_native_policy_columns, ensure_postgres_manager_enum, ensure_sbom_source_metadata_column, ensure_user_approval_state_column, ensure_user_identity_columns, get_db
-from .dtrack import DependencyTrackClient
 from .models import (
     AnalysisRevision,
     ApiToken,
@@ -72,19 +71,20 @@ from .security import (
 )
 from .services import audit, create_components, enqueue
 from .policies import PolicyDocument, get_policy_document, validate_policy_expressions, validate_expression, preview_expression, policy_context_for_run, components_with_dependency_graph
-from . import package_metadata_models, migration_models, vulnerability_intelligence_models
+from . import package_metadata_models, vulnerability_intelligence_models
 from .vulnerability_intelligence_api import router as vulnerability_intelligence_router
 from .private_vulnerability_api import router as private_vulnerability_router
 from . import private_vulnerability_models
 from .project_catalog_api import router as project_catalog_router
 from .project_catalog_models import NativeReanalysisPending
 from .package_metadata_api import router as package_metadata_router
-from .migration_api import router as migration_router
 from .package_metadata import enrich_components
 from . import workflow_models
 from .reanalysis import ReanalysisSchedule, get_schedule
 from .reanalysis_api import router as reanalysis_router
 from .workflow_api import router as workflow_router
+from .ssvc_api import router as ssvc_router
+from .offline_intelligence_api import router as offline_intelligence_router
 from .quality_api import router as quality_router
 from .ci_gate import router as ci_gate_router
 from .vulnerability import active_bundle, cvss_score, project_cve_findings, scan_bundle_releases
@@ -117,9 +117,13 @@ class RequestBodyLimitMiddleware:
         method = scope.get("method", "GET")
         if method == "POST" and path == "/api/v1/sbom-runs":
             return settings.max_upload_bytes + (2 * 1024 * 1024)
+        if method == "POST" and path == "/api/v1/offline-intelligence/import":
+            return 192 * 1024 * 1024
+        if method == "POST" and path == "/api/v1/vulnerability-intelligence/import-csv":
+            return (64 * 1024 * 1024) + (2 * 1024 * 1024)
         if method == "POST" and path == "/api/v1/vulnerability-data-bundles/upload":
             return (2 * 1024 * 1024 * 1024) + (2 * 1024 * 1024)
-        if method == "POST" and path in {"/api/v1/legacy-migrations/stage", "/api/v1/package-metadata/import", "/api/v1/vulnerability-intelligence/import"}:
+        if method == "POST" and path in {"/api/v1/package-metadata/import", "/api/v1/vulnerability-intelligence/import"}:
             return 64 * 1024 * 1024 + 1024
         if method == "PUT" and path == "/api/v1/sbom-policies":
             return 1024 * 1024
@@ -327,6 +331,8 @@ async def lifespan(_: FastAPI):
         not settings.secure_cookies or not settings.public_origin.startswith("https://")
     ):
         raise RuntimeError("production Tracker requires HTTPS public_origin and secure cookies")
+    from .db import remove_retired_connector_schema
+    remove_retired_connector_schema(engine)
     ensure_postgres_manager_enum(engine)
     Base.metadata.create_all(engine)
     ensure_user_approval_state_column(engine)
@@ -344,6 +350,9 @@ async def lifespan(_: FastAPI):
             connection.execute(text("ALTER TABLE analysis_revisions ADD COLUMN data_sources JSON"))
     _prune_scheduled_runs()
     with SessionLocal() as db:
+        first_ssvc = db.get(FeatureUpgrade, "ssvc-deployer-v1") is None
+        if first_ssvc:
+            db.add(FeatureUpgrade(name="ssvc-deployer-v1"))
         first_extensions = db.get(FeatureUpgrade, "metadata-migration-v1") is None
         if first_extensions:
             db.add(FeatureUpgrade(name="metadata-migration-v1"))
@@ -389,7 +398,7 @@ async def lifespan(_: FastAPI):
                 if "runs.view" in granted:
                     granted.add("metadata.view")
                 if "roles.manage" in granted:
-                    granted.update({"metadata.view", "metadata.manage", "migrations.manage"})
+                    granted.update({"metadata.view", "metadata.manage"})
             if first_workflows:
                 if "runs.view" in granted:
                     granted.update({"vex.view", "notifications.view", "reanalysis.view"})
@@ -400,6 +409,11 @@ async def lifespan(_: FastAPI):
                     granted.add("policies.view")
                 if "roles.manage" in granted:
                     granted.update({"policies.view", "policies.manage"})
+            if first_ssvc:
+                if "vex.view" in granted or "runs.view" in granted:
+                    granted.add("ssvc.view")
+                if "vex.manage" in granted or "roles.manage" in granted:
+                    granted.update({"ssvc.view", "ssvc.manage"})
             if role == Role.ADMIN:
                 granted.add("sbom.delete")
             else:
@@ -417,8 +431,9 @@ async def lifespan(_: FastAPI):
 app = FastAPI(title="KODA SBOM Tracker API", version="0.1.0", lifespan=lifespan)
 app.include_router(reanalysis_router)
 app.include_router(workflow_router)
+app.include_router(ssvc_router)
+app.include_router(offline_intelligence_router)
 app.include_router(package_metadata_router)
-app.include_router(migration_router)
 app.include_router(vulnerability_intelligence_router)
 app.include_router(project_catalog_router)
 app.include_router(private_vulnerability_router)
@@ -879,14 +894,6 @@ def health() -> dict:
     return {"status": "ok"}
 
 
-@app.get("/api/v1/dependency-track/status")
-async def dependency_track_status(
-    _=Depends(require_permission("dtrack.settings")),
-) -> dict:
-    if not get_settings().dependency_track_enabled:
-        return {"enabled": False, "configured": False, "reachable": False, "authenticated": False,
-                "version": None, "team": None, "permissions": [], "missingPermissions": []}
-    return {**await DependencyTrackClient().status(), "enabled": True}
 
 
 @app.get("/api/v1/settings/ldap")
@@ -2099,9 +2106,9 @@ def _run_payload(
         "sourceMetadata": item.source_metadata or {},
         "analysisState": (JobState.RUNNING if item.analysis_state == JobState.RUNNING else JobState.QUEUED) if native_reanalysis_pending else item.analysis_state,
         "nativeReanalysisPending": native_reanalysis_pending,
+        "analysisAvailable": bool(latest and latest.state == JobState.COMPLETED and item.analysis_state == JobState.COMPLETED and not native_reanalysis_pending),
+        "analysisUnavailableReason": ((latest.error or "현재 분석이 완료되지 않았습니다") if latest else "분석 결과가 없습니다") if not latest or latest.state != JobState.COMPLETED or item.analysis_state != JobState.COMPLETED or native_reanalysis_pending else None,
         **_native_policy_result(latest),
-        "dependencyTrackEnabled": get_settings().dependency_track_enabled,
-        "dependencyTrackState": item.dtrack_state,
         "sha256": item.sha256,
         "sizeBytes": item.size_bytes,
         "specVersion": item.spec_version,
@@ -2117,14 +2124,6 @@ def _run_payload(
         "cveDataAsOf": _cve_data_as_of(latest),
         "analysisDataSources": (latest.data_sources or {}) if latest else {},
         "createdAt": item.created_at.isoformat(),
-        "dependencyTrackUrl": (
-            f"{get_settings().dependency_track_ui_url}projects/{item.dtrack_project_uuid}"
-            if item.dtrack_project_uuid
-            else None
-        ),
-        "dependencyTrackError": item.dtrack_error,
-        "dependencyTrackMetrics": item.dtrack_metrics,
-        "dependencyTrackPolicies": item.dtrack_policies,
     }
 
 
@@ -2412,24 +2411,6 @@ def download_artifact(
     return FileResponse(item.artifact_path, media_type=item.media_type, filename=item.original_filename)
 
 
-@app.post("/api/v1/sbom-runs/{run_id}/retry-dependency-track", status_code=202)
-def retry_dependency_track(
-    run_id: str,
-    db: Session = Depends(get_db),
-    principal=Depends(require_permission("dtrack.retry")),
-    _csrf=Depends(require_csrf),
-) -> dict:
-    if not get_settings().dependency_track_enabled:
-        raise HTTPException(409, "선택 연동 Dependency-Track이 비활성화돼 있습니다")
-    run = _load_run(db, run_id, for_update=True)
-    if run.archived_at is not None or run.state == ProcessingState.ARCHIVED:
-        raise HTTPException(409, "보관된 회차는 다시 처리할 수 없습니다")
-    run.dtrack_state = JobState.QUEUED
-    run.dtrack_error = None
-    job = enqueue(db, "sync_dependency_track", run.id)
-    audit(db, _principal_actor(principal), "dtrack.retry", "sbom_run", run.id)
-    db.commit()
-    return {"jobId": job.id, "runId": run.id}
 
 
 @app.post("/api/v1/sbom-runs/{run_id}/analyses", status_code=202)
@@ -2439,6 +2420,9 @@ def create_analysis(
     principal=Depends(require_permission("analysis.create")),
     _csrf=Depends(require_csrf),
 ) -> dict:
+    from .data_updates import reference_import_allowed
+    try: reference_import_allowed(get_settings())
+    except ValueError as exc: raise HTTPException(409, str(exc)) from exc
     run = _load_run(db, run_id, for_update=True)
     if run.archived_at is not None or run.state == ProcessingState.ARCHIVED:
         raise HTTPException(409, "보관된 회차는 다시 분석할 수 없습니다")
@@ -2512,7 +2496,6 @@ def delete_run(
     receipt = {
         "runId": run.id,
         "deleted": True,
-        "dependencyTrackProjectUuid": run.dtrack_project_uuid,
     }
     try:
         db.execute(delete(RunComponent).where(RunComponent.run_id == run.id))
@@ -2520,7 +2503,7 @@ def delete_run(
         db.execute(delete(Job).where(Job.run_id == run.id))
         db.delete(run)
         db.flush()
-        audit(db, principal.username, "sbom.delete", "sbom_run", run_id, {"dependencyTrackProjectUuid": run.dtrack_project_uuid})
+        audit(db, principal.username, "sbom.delete", "sbom_run", run_id, {})
         db.commit()
     except Exception:
         db.rollback()
@@ -2584,6 +2567,10 @@ def compare_runs(
 
     base_analysis = analysis(base, base_analysis_id)
     target_analysis = analysis(target, target_analysis_id)
+    if any(value is None or value.state != JobState.COMPLETED for value in (base_analysis, target_analysis)):
+        raise HTTPException(409, "완료된 분석 리비전만 비교할 수 있습니다. 보존된 완료 리비전을 선택하십시오")
+    if any(((value.data_sources or {}).get("vulnerabilityDataStatus") or {}).get("status") == "unavailable" for value in (base_analysis, target_analysis)):
+        raise HTTPException(409, "취약점 데이터가 없어 실패한 분석은 취약점 제거로 비교할 수 없습니다. 보존된 완료 리비전을 선택하십시오")
     component_changes = compare_components(base.components, target.components)
     finding_changes = compare_records(
         project_cve_findings(base_analysis.findings if base_analysis else []),
@@ -2596,8 +2583,8 @@ def compare_runs(
         keys=("policyId", "rule", "name", "component", "componentVersion", "vulnerabilityId"),
     )
     return {
-        "base": {"runId": base.id, "sha256": base.sha256, "dataAsOf": base_analysis.data_as_of if base_analysis else None, "cveDataAsOf": _cve_data_as_of(base_analysis), "policyState": base_analysis.policy_state if base_analysis else "not_evaluated", "policyVersion": base_analysis.policy_version if base_analysis else None, "dependencyTrackEnabled": get_settings().dependency_track_enabled, "artifactUrl": f"/api/v1/sbom-runs/{base.id}/artifact"},
-        "target": {"runId": target.id, "sha256": target.sha256, "dataAsOf": target_analysis.data_as_of if target_analysis else None, "cveDataAsOf": _cve_data_as_of(target_analysis), "policyState": target_analysis.policy_state if target_analysis else "not_evaluated", "policyVersion": target_analysis.policy_version if target_analysis else None, "dependencyTrackEnabled": get_settings().dependency_track_enabled, "artifactUrl": f"/api/v1/sbom-runs/{target.id}/artifact"},
+        "base": {"runId": base.id, "sha256": base.sha256, "dataAsOf": base_analysis.data_as_of if base_analysis else None, "cveDataAsOf": _cve_data_as_of(base_analysis), "policyState": base_analysis.policy_state if base_analysis else "not_evaluated", "policyVersion": base_analysis.policy_version if base_analysis else None, "artifactUrl": f"/api/v1/sbom-runs/{base.id}/artifact"},
+        "target": {"runId": target.id, "sha256": target.sha256, "dataAsOf": target_analysis.data_as_of if target_analysis else None, "cveDataAsOf": _cve_data_as_of(target_analysis), "policyState": target_analysis.policy_state if target_analysis else "not_evaluated", "policyVersion": target_analysis.policy_version if target_analysis else None, "artifactUrl": f"/api/v1/sbom-runs/{target.id}/artifact"},
         "summary": {
             "componentsAdded": sum(item["change"] == "added" for item in component_changes),
             "componentsRemoved": sum(item["change"] == "removed" for item in component_changes),
@@ -2706,8 +2693,8 @@ _DATA_UPDATE_MAX_BYTES = 2 * 1024 * 1024 * 1024
 
 
 async def _stage_data_update_request(request: Request, *, kind: str) -> tuple[Path, str, int]:
-    if kind not in {"grype-db", "vuln-data"}:
-        raise HTTPException(422, "데이터 종류는 grype-db 또는 vuln-data여야 합니다")
+    if kind not in {"grype-db", "vuln-data", "unified"}:
+        raise HTTPException(422, "데이터 종류는 unified, grype-db 또는 vuln-data여야 합니다")
     spool = get_settings().data_update_spool_dir
     spool.mkdir(parents=True, exist_ok=True)
     path = spool / f"upload-{uuid.uuid4().hex}.tar.gz"
@@ -2757,6 +2744,54 @@ def _current_update_version() -> str | None:
         return None
 
 
+def _running_data_readers(db):
+    return bool(db.scalar(select(Job.id).where(Job.kind.in_(["analyze", "process_run"]), Job.state == JobState.RUNNING).limit(1)))
+
+
+@app.get("/api/v1/vulnerability-data-bundles/unified/status")
+def unified_vulnerability_status(db: Session = Depends(get_db), _admin=Depends(require_admin), _permission=Depends(require_permission("vulnerability.manage"))):
+    from .data_updates import DataUpdateEngine, managed_state, assert_approved_release, release_busy, release_read_lease
+    from .offline_intelligence_store import active_reference_document, reference_manifest
+    settings = get_settings(); engine = DataUpdateEngine(settings, read_only=True); marker = managed_state(settings)
+    current = engine.current(); error = None
+    available = False
+    sources = []; metadata = {}
+    try:
+        with release_read_lease(settings):
+            current = engine.current()
+            if current is not None:
+                assert_approved_release(settings, current.path)
+                available = marker is not None and marker.get("state") == "active"
+            if available:
+                sources = reference_manifest(active_reference_document(db))["sources"]
+                from .data_updates import _metadata as update_metadata
+                metadata = update_metadata(current.path / "metadata.env")
+    except (ValueError, OSError) as exc: error = str(exc)
+    pending = list(db.scalars(select(Job).where(Job.kind.in_(["data_update","vulnerability_data_update"]),Job.state.in_([JobState.QUEUED,JobState.RUNNING])).order_by(Job.created_at)))
+    state = (marker or {}).get("state", "empty")
+    if not available and state == "active": state = "unavailable"
+    dates = {"grype-db":metadata.get("GRYPE_DATASET_DATE",metadata.get("DATASET_DATE")), "nvd":metadata.get("NVD_DATASET_DATE"),"kev":metadata.get("KEV_DATASET_DATE"),"epss":metadata.get("EPSS_DATASET_DATE")}
+    busy = _running_data_readers(db) or bool(pending) or release_busy(settings)
+    return {"state":state,"available":available,"currentVersion":current.version if available else None,"expectedBaseVersion":current.version if current else None,"managed":marker is not None,"signatureRequired":True,"referenceSources":sources,"datasets":[{"kind":kind,"dataDate":value,"status":"available" if value and available else "missing"} for kind,value in dates.items()],"pendingJobs":[_data_job_payload(job) for job in pending],"canPurge":not busy,"blockedReason":("분석 또는 데이터 작업이 진행 중입니다. 완료 후 재시도하십시오" if busy else error)}
+
+
+class PurgeVulnerabilityBody(BaseModel):
+    confirm: str
+    expectedBaseVersion: str | None = None
+
+
+@app.post("/api/v1/vulnerability-data-bundles/unified/purge", status_code=202)
+def purge_unified_vulnerability_data(body: PurgeVulnerabilityBody, db: Session = Depends(get_db), principal=Depends(require_admin), _permission=Depends(require_permission("vulnerability.manage")), _csrf=Depends(require_csrf)):
+    from .data_updates import DataUpdateEngine, release_busy
+    if body.confirm != "DELETE VULNERABILITY DATA": raise HTTPException(422,"확인 문구가 일치하지 않습니다")
+    if body.expectedBaseVersion is not None and body.expectedBaseVersion != _current_update_version(): raise HTTPException(409,"현재 데이터가 변경되었습니다. 상태를 새로 조회하십시오")
+    if _running_data_readers(db) or release_busy(get_settings()) or db.scalar(select(Job.id).where(Job.kind.in_(["data_update","vulnerability_data_update"]), Job.state.in_([JobState.QUEUED,JobState.RUNNING])).limit(1)):
+        raise HTTPException(409,"분석 또는 데이터 작업이 진행 중입니다. 완료 후 삭제를 다시 요청하십시오")
+    job = Job(kind="vulnerability_data_update", payload={"action":"purge","kind":"unified","expectedBaseVersion":body.expectedBaseVersion})
+    db.add(job); db.flush(); audit(db,principal.username,"vuln_data.purge.request","vulnerability_data_job",job.id,{"preserved":["users","projects","sbom","results","ssvc","responses","vex","private_vulnerabilities"]});db.commit()
+    return _data_job_payload(job)
+
+
 @app.post("/api/v1/vulnerability-data-bundles/upload", status_code=202)
 async def upload_vulnerability_data_bundle(
     request: Request,
@@ -2804,8 +2839,8 @@ def apply_vulnerability_data_job(job_id: str, db: Session = Depends(get_db), pri
 
 @app.post("/api/v1/vulnerability-data-bundles/{kind}/rollback", status_code=202)
 def rollback_vulnerability_data_bundle(kind: str, version: str | None = Query(default=None), db: Session = Depends(get_db), principal=Depends(require_admin), _permission=Depends(require_permission("vulnerability.manage")), _csrf=Depends(require_csrf)) -> dict:
-    if kind not in {"grype-db", "vuln-data"}:
-        raise HTTPException(422, "데이터 종류는 grype-db 또는 vuln-data여야 합니다")
+    if kind not in {"grype-db", "vuln-data", "unified"}:
+        raise HTTPException(422, "데이터 종류는 unified, grype-db 또는 vuln-data여야 합니다")
     job = Job(kind="vulnerability_data_update", run_id=None, payload={"action": "rollback", "kind": kind, "version": version})
     db.add(job)
     db.flush()

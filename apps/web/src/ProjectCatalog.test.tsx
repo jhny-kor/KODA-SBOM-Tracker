@@ -4,12 +4,11 @@ import { afterEach,beforeEach,expect,it,vi } from "vitest";
 import * as api from "./api";
 import { ProjectCatalogPanel } from "./ProjectCatalog";
 import { SbomPoliciesPanel } from "./SbomPolicies";
-import type { NativeProject,ProjectSyncSource } from "./api";
+import type { NativeProject } from "./api";
 
 vi.mock("./api",async original=>({...await original<typeof import("./api")>(),previewMode:false,fetchProjectCatalog:vi.fn(),fetchProjectSyncSources:vi.fn(),updateNativeProject:vi.fn(),createProjectSyncSource:vi.fn(),fetchCollectionMetrics:vi.fn(),runProjectSync:vi.fn(),fetchSbomPolicies:vi.fn(),updateSbomPolicies:vi.fn()}));
 const project:NativeProject={id:"native-id",sourceId:"native",sourceProjectId:"app-v1",serviceId:"s",environmentId:"e",name:"sample",version:"1",parentProjectId:null,tags:["prod"],isLatest:true,active:true,revision:7};
-const source:ProjectSyncSource={id:"source-id",name:"원본",baseUrl:"http://source.test",enabled:true,intervalMinutes:10,state:"retrying",attempts:2,version:4};
-beforeEach(()=>{vi.resetAllMocks();vi.mocked(api.fetchProjectCatalog).mockResolvedValue({items:[project],total:1,page:1,size:20});vi.mocked(api.fetchProjectSyncSources).mockResolvedValue({items:[source],total:1,page:1,size:20});});
+beforeEach(()=>{vi.resetAllMocks();vi.mocked(api.fetchProjectCatalog).mockResolvedValue({items:[project],total:1,page:1,size:20});});
 afterEach(cleanup);
 
 it("saves dynamic tags and parent against the observed project revision",async()=>{
@@ -18,17 +17,9 @@ it("saves dynamic tags and parent against the observed project revision",async()
   fireEvent.click(screen.getByRole("button",{name:"프로젝트 범위 저장"}));await waitFor(()=>expect(api.updateNativeProject).toHaveBeenCalledWith(project,{tags:["prod","critical"],parentProjectId:"root-project",isLatest:true,active:true,collectionLogic:"NONE",collectionTag:null}));
 });
 
-it("shows durable retry state and enqueues a source retry without credentials",async()=>{
-  vi.mocked(api.runProjectSync).mockResolvedValue({...source,state:"idle"});render(<ProjectCatalogPanel canManage/>);
-  expect(await screen.findByText(/재시도 대기/)).toBeInTheDocument();fireEvent.click(screen.getByRole("button",{name:"지금 동기화·재시도"}));await waitFor(()=>expect(api.runProjectSync).toHaveBeenCalledWith(source.id));
-});
 
-it("clears source API key after a failed registration",async()=>{
-  vi.mocked(api.createProjectSyncSource).mockRejectedValue(new Error("원본 연결 실패"));render(<ProjectCatalogPanel canManage/>);await screen.findByLabelText("native-id 태그");
-  fireEvent.click(screen.getByText("자동 동기화 원본 등록",{selector:"summary"}));const form=screen.getByRole("group",{name:"읽기 전용 원본 연결"});
-  const {within}=await import("@testing-library/react");fireEvent.change(within(form).getByLabelText("연결 이름"),{target:{value:"test"}});fireEvent.change(within(form).getByLabelText("원본 주소"),{target:{value:"http://source.test"}});const key=within(form).getByLabelText("원본 API 키");fireEvent.change(key,{target:{value:"private-test-key"}});fireEvent.submit(form.closest("form")!);
-  await screen.findByText("원본 연결 실패");expect(key).toHaveValue("");expect(api.createProjectSyncSource).toHaveBeenCalledWith(expect.objectContaining({allowedOrigins:["http://source.test"],apiKey:"private-test-key",enabled:false}));
-});
+
+
 
 it("keeps nonadmin catalog controls read-only",async()=>{
   render(<ProjectCatalogPanel canManage={false}/>);expect(await screen.findByLabelText("native-id 태그")).toBeDisabled();expect(screen.queryByRole("button",{name:"지금 동기화·재시도"})).not.toBeInTheDocument();expect(screen.queryByText("자동 동기화 원본 등록",{selector:"summary"})).not.toBeInTheDocument();

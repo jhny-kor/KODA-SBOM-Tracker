@@ -18,7 +18,13 @@ RUN npm run build \
 COPY LICENSE NOTICE THIRD_PARTY_NOTICES.md /app/dist/legal/
 
 FROM ${NGINX_IMAGE}
-LABEL org.opencontainers.image.licenses="Apache-2.0"
+ARG KODA_IMAGE_CREATED=unknown
+ARG KODA_IMAGE_REVISION=unknown
+ARG KODA_IMAGE_VERSION=dev
+LABEL org.opencontainers.image.licenses="Apache-2.0" \
+      org.opencontainers.image.created="$KODA_IMAGE_CREATED" \
+      org.opencontainers.image.revision="$KODA_IMAGE_REVISION" \
+      org.opencontainers.image.version="$KODA_IMAGE_VERSION"
 USER root
 # Compose may provide the standard nginx image as well as nginx-unprivileged.
 # Keep runtime non-root in either case, including cache creation and PID writes.

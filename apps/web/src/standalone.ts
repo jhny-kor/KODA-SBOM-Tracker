@@ -231,7 +231,6 @@ export async function parseStandaloneSbom(raw: string, filename: string, release
     policyViolationCount: 0,
     policyState: "not_evaluated",
     policyStatus: "not_evaluated",
-    dependencyTrackEnabled: false,
     dataAsOf,
     cveDataAsOf: dataAsOf,
     createdAt,
