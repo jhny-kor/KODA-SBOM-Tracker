@@ -4,7 +4,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field
+from pydantic import Field, field_validator
 
 
 class Settings(BaseSettings):
@@ -57,7 +57,15 @@ class Settings(BaseSettings):
     data_update_koda_grype_binary: str = ""
     data_update_verify_key: Path | None = None
     data_update_spool_dir: Path = Path("./data/vuln-data/staging")
+    # Analysis workers can keep disposable indexes on their existing artifact
+    # mount without acquiring write access to the data updater's staging area.
+    nvd_cache_dir: Path | None = None
     koda_provisioning_token_file: Path | None = None
+
+    @field_validator("nvd_cache_dir", mode="before")
+    @classmethod
+    def empty_nvd_cache_dir(cls, value):
+        return None if isinstance(value, str) and not value.strip() else value
 
 
 @lru_cache

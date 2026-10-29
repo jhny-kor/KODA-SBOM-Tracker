@@ -227,13 +227,21 @@ ensure_dir() {
 alpine_tar() {
   local volume_name="$1"
   local target_path="$2"
+  local tar_options="-czf"
+  if [[ "${3:-}" == "--exclude-nvd-cache" ]]; then
+    # The leading ./ limits this exclusion to our reserved volume-root cache.
+    tar_options="--exclude=./.nvd-cache -czf"
+  elif [[ $# -gt 2 ]]; then
+    echo "unsupported volume backup option" >&2
+    return 1
+  fi
   local target_dir
   target_dir="$(cd "$(dirname "$target_path")" && pwd)"
   docker run --rm \
     -v "${volume_name}:/from:ro" \
     -v "${target_dir}:/backup" \
     "${ALPINE_BASE_IMAGE}" \
-    sh -c "cd /from && tar -czf /backup/$(basename "$target_path") ."
+    sh -c "cd /from && tar ${tar_options} /backup/$(basename "$target_path") ."
 }
 
 alpine_untar() {

@@ -23,6 +23,11 @@ _CACHE_FILES = {_LEASE_NAME, "records.sqlite3", "records.sqlite3-journal"}
 _DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 
 
+def cache_directory(settings):
+    """Resolve a writable index parent; retain the legacy spool default."""
+    return Path(getattr(settings, "nvd_cache_dir", None) or settings.data_update_spool_dir).resolve()
+
+
 def _stat_identity(value):
     return (value.st_dev, value.st_ino, value.st_uid, value.st_mode,
             value.st_nlink, value.st_size, value.st_mtime_ns, value.st_ctime_ns)

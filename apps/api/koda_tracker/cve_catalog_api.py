@@ -21,7 +21,7 @@ from .data_updates import DataUpdateError, assert_approved_release, release_read
 from .db import get_db
 from .models import AnalysisRevision, Environment, Release, RolePolicy, SbomRun, Service
 from .offline_cpe import _compare, _fields, evaluate
-from .nvd_record_index import cached_nvd_records, nvd_description as _description
+from .nvd_record_index import cache_directory, cached_nvd_records, nvd_description as _description
 from .security import DEFAULT_ROLE_PERMISSIONS, require_permission
 from .vulnerability import _nvd_details, _safe_bundle_file, active_bundle, cvss_score
 
@@ -183,7 +183,7 @@ def _search_index(path_name, file_identity, manifest_hash):
     # and expanded summaries. The release identity and approval are rechecked
     # for every request under the existing release read lease.
     settings = get_settings()
-    return cached_nvd_records(path_name, file_identity, manifest_hash, str(settings.data_update_spool_dir), _nvd_details)
+    return cached_nvd_records(path_name, file_identity, manifest_hash, str(cache_directory(settings)), _nvd_details)
 
 
 @contextmanager

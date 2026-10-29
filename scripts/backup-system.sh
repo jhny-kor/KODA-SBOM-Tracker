@@ -21,7 +21,7 @@ mkdir "$backup_dir"
 compose up -d postgres
 compose exec -T postgres pg_dump -Fc -U "${POSTGRES_SUPERUSER}" "${TRACKER_DB_NAME}" > "${backup_dir}/${TRACKER_DB_NAME}.dump"
 
-alpine_tar "${TRACKER_ARTIFACTS_VOLUME_NAME}" "${backup_dir}/tracker-artifacts.tar.gz"
+alpine_tar "${TRACKER_ARTIFACTS_VOLUME_NAME}" "${backup_dir}/tracker-artifacts.tar.gz" --exclude-nvd-cache
 alpine_tar "${VULN_DATA_VOLUME_NAME}" "${backup_dir}/vuln-data.tar.gz"
 
 cp "$ROOT_DIR/compose.yaml" "${backup_dir}/compose.yaml"
