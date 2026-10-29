@@ -4,6 +4,9 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV_FILE="${ENV_FILE:-${ROOT_DIR}/.env}"
 EXAMPLE_ENV_FILE="${ROOT_DIR}/.env.example"
+if [[ ! -f "$EXAMPLE_ENV_FILE" && -f "${ROOT_DIR}/config/.env.example" ]]; then
+  EXAMPLE_ENV_FILE="${ROOT_DIR}/config/.env.example"
+fi
 
 load_env() {
   local candidate="${1:-$ENV_FILE}"

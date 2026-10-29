@@ -1,0 +1,59 @@
+.scrolling-text { display: block; width: 100%; min-width: 0; max-width: 100%; overflow: hidden; white-space: nowrap; vertical-align: bottom; }
+.scrolling-text-content { display: inline-block; width: max-content; max-width: none; white-space: pre; vertical-align: bottom; }
+.scrolling-text[data-overflow="true"] > .scrolling-text-content { animation: text-travel var(--text-duration) linear 1.8s infinite alternate; }
+.scrolling-text:hover > .scrolling-text-content, .scrolling-text:focus > .scrolling-text-content,
+button:hover .scrolling-text-content, button:focus-visible .scrolling-text-content,
+a:hover .scrolling-text-content, a:focus-visible .scrolling-text-content,
+.flow-select:hover .scrolling-text-content, .flow-select:focus-within .scrolling-text-content { animation-play-state: paused; }
+.scrolling-text:focus-visible { outline: 2px solid var(--accent, #16836c); outline-offset: -2px; border-radius: 3px; }
+@keyframes text-travel { 0%, 8% { transform: translateX(0); } 92%, 100% { transform: translateX(var(--text-travel)); } }
+.flow-select { position: relative; display: block; width: 100%; min-width: 0; max-width: 100%; height: var(--select-height, 40px); }
+.flow-select > select { display: block; width: 100%; min-width: 0; max-width: 100%; height: 100%; appearance: none; padding-right: 32px; }
+.flow-select[data-ready="true"] > select { color: transparent; }
+.flow-select > select option, .flow-select > select optgroup { color: var(--text, #172b35); background: var(--surface, #fff); }
+.flow-select-viewport { position: absolute; inset: 1px 32px 1px 12px; display: flex; align-items: center; min-width: 0; overflow: hidden; pointer-events: none; color: var(--text, #172b35); }
+.flow-select:has(> select:disabled) .flow-select-viewport { opacity: .55; }
+.flow-select-chevron { position: absolute; top: 50%; right: 10px; width: 16px; height: 16px; transform: translateY(-50%); pointer-events: none; color: var(--muted, #687b85); }
+@media (prefers-reduced-motion: reduce) {
+  .scrolling-text[data-overflow="true"] > .scrolling-text-content { animation: none; }
+  .scrolling-text[data-overflow="true"] { overflow-x: auto; scrollbar-width: thin; }
+}
+
+.preview-flow-values, .preview-flow-values > div, .preview-flow-values header > div { min-width: 0; }
+.preview-flow-values header > div { flex: 1; }
+.preview-flow-values.preview-upload-summary dl { grid-template-columns: 90px minmax(0, 1fr); }
+.preview-flow-values.preview-upload-summary dd { min-width: 0; }
+
+.catalog-grid .table-scroll > .service-catalog-flow-table,
+.catalog-grid .table-scroll > .environment-catalog-flow-table,
+.table-scroll > .gitlab-service-flow-table,
+.table-scroll > .settings-users-flow-table,
+.table-scroll > .settings-tokens-flow-table,
+.workflow-panel .table-scroll > .package-metadata-flow-table { table-layout: fixed; width: 100%; }
+.catalog-grid .table-scroll > .service-catalog-flow-table { min-width: 620px; }
+.service-catalog-flow-table th:nth-child(1), .service-catalog-flow-table th:nth-child(2) { width: calc(50% - 110px); }
+.service-catalog-flow-table th:nth-child(3) { width: 220px; }
+.catalog-grid .table-scroll > .environment-catalog-flow-table { min-width: 640px; }
+.environment-catalog-flow-table th:nth-child(1), .environment-catalog-flow-table th:nth-child(2) { width: calc(50% - 150px); }
+.environment-catalog-flow-table th:nth-child(3) { width: 64px; }
+.environment-catalog-flow-table th:nth-child(4) { width: 236px; }
+.table-scroll > .gitlab-service-flow-table { min-width: 640px; }
+.gitlab-service-flow-table th:nth-child(1) { width: 55%; }
+.gitlab-service-flow-table th:nth-child(2) { width: 30%; }
+.gitlab-service-flow-table th:nth-child(3) { width: 15%; }
+.table-scroll > .settings-users-flow-table { min-width: 600px; }
+.settings-users-flow-table th:nth-child(1) { width: calc(100% - 420px); }
+.settings-users-flow-table th:nth-child(2) { width: 110px; }
+.settings-users-flow-table th:nth-child(3) { width: 100px; }
+.settings-users-flow-table th:nth-child(4) { width: 210px; }
+.settings-users-flow-table td select { width: 100%; min-width: 0; max-width: 100%; }
+.table-scroll > .settings-tokens-flow-table { min-width: 650px; }
+.settings-tokens-flow-table th:nth-child(1), .settings-tokens-flow-table th:nth-child(2) { width: calc(50% - 147px); }
+.settings-tokens-flow-table th:nth-child(3) { width: 170px; }
+.settings-tokens-flow-table th:nth-child(4) { width: 60px; }
+.settings-tokens-flow-table th:nth-child(5) { width: 64px; }
+.workflow-panel .table-scroll > .package-metadata-flow-table { min-width: 1400px; }
+.package-metadata-flow-table th:nth-child(1), .package-metadata-flow-table th:nth-child(7) { width: 20%; }
+.package-metadata-flow-table th:nth-child(2) { width: 10%; }
+.package-metadata-flow-table th:nth-child(3), .package-metadata-flow-table th:nth-child(4), .package-metadata-flow-table th:nth-child(5) { width: 12%; }
+.package-metadata-flow-table th:nth-child(6) { width: 14%; }

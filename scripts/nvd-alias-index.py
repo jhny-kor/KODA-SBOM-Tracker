@@ -98,6 +98,10 @@ def _cve_record(record: dict[str, Any]) -> dict[str, Any] | None:
         # Required for offline applicability. The display-only CPE list above
         # cannot recover version bounds, AND/OR, negation or environment leaves.
         "configurations": copy.deepcopy(configurations) if isinstance(configurations, list) else [],
+        # Keep the issuing CNA's products/statuses and version-comparison scheme
+        # separate from NVD's CPE applicability conditions.
+        "affected": copy.deepcopy(cve.get("affected", [])),
+        "sourceIdentifier": cve.get("sourceIdentifier"),
         "applicabilityFormat": "nvd-2.0-configurations-v1",
         "vulnStatus": cve.get("vulnStatus"),
         "weaknesses": copy.deepcopy(cve.get("weaknesses", [])),

@@ -143,7 +143,7 @@ HTTPS `TRACKER_PUBLIC_ORIGIN`과 `TRACKER_SECURE_COOKIES=true`가 아니면 기�
 | `/data/docker_data/volumes/nginx/ssl` | `/etc/nginx/ssl` | 인증서·개인키 |
 
 KODA vhost는 현재 main config의 `http {}` 안에 직접 두며, `server_name`은
-`koda.example.internal`, backend는 `http://10.0.0.10:8088`로 지정합니다. 인증서와
+`koda.ssis.or.kr`, backend는 `http://10.95.58.147:8088`로 지정합니다. 인증서와
 개인키 원문은 문서·로그에 남기지 않습니다. `conf.d` 방식을 사용할 때는 main
 config의 `http {}` 안에만 다음 include를 한 번 넣고, 같은 vhost를 main config와
 중복해서 두지 않습니다.
@@ -155,15 +155,15 @@ include /etc/nginx/conf.d/*.conf;
 Suite 환경 파일(`~/koda-suite/tracker/.env`)에는 외부 origin을 맞춥니다.
 
 ```dotenv
-GATEWAY_SERVER_NAME=koda.example.internal
+GATEWAY_SERVER_NAME=koda.ssis.or.kr
 GATEWAY_PUBLIC_SCHEME=https
-TRACKER_PUBLIC_ORIGIN=https://koda.example.internal
+TRACKER_PUBLIC_ORIGIN=https://koda.ssis.or.kr
 TRACKER_SECURE_COOKIES=true
-KODA_SSBOM_TRACKER_URL=https://koda.example.internal/
+KODA_SSBOM_TRACKER_URL=https://koda.ssis.or.kr/
 ```
 
 내부 gateway는 HTTP `:8080`에서 동작하므로 인증되지 않은 `/koda/` 요청의
-`Location`을 `http://koda.example.internal:8080/koda/login`으로 만들 수 있습니다. 외부
+`Location`을 `http://koda.ssis.or.kr:8080/koda/login`으로 만들 수 있습니다. 외부
 TLS vhost에서 `/koda`의 슬래시와 이 redirect를 보정합니다.
 
 ```nginx
@@ -172,8 +172,8 @@ location = /koda {
 }
 
 location / {
-    proxy_pass http://10.0.0.10:8088;
-    proxy_redirect http://koda.example.internal:8080/ https://koda.example.internal/;
+    proxy_pass http://10.95.58.147:8088;
+    proxy_redirect http://koda.ssis.or.kr:8080/ https://koda.ssis.or.kr/;
     proxy_set_header Host $host;
     proxy_set_header X-Forwarded-Proto https;
     proxy_set_header X-Forwarded-Host $host;
@@ -192,10 +192,10 @@ Tracker의 CSRF 토큰은 브라우저가 `X-CSRF-Token` 요청 헤더로 전송
 
 ```bash
 docker exec nginx nginx -t && docker exec nginx nginx -s reload
-curl --resolve koda.example.internal:443:10.0.0.10 -sSI \
-  https://koda.example.internal/koda/
-curl --resolve koda.example.internal:443:10.0.0.10 -fsS \
-  https://koda.example.internal/koda/live
+curl --resolve koda.ssis.or.kr:443:10.95.58.147 -sSI \
+  https://koda.ssis.or.kr/koda/
+curl --resolve koda.ssis.or.kr:443:10.95.58.147 -fsS \
+  https://koda.ssis.or.kr/koda/live
 ```
 
 변경·컨테이너 교체 전후에는 마운트와 active config를 먼저 확인합니다. 상위
@@ -208,13 +208,13 @@ cd ~/koda-suite
 
 docker inspect -f '{{range .Mounts}}{{println .Type .Source "->" .Destination "rw=" .RW}}{{end}}' nginx
 docker exec nginx nginx -T 2>&1 | \
-  grep -nE 'server_name koda\.example\.internal|configuration file /etc/nginx/conf\.d/koda\.conf'
+  grep -nE 'server_name koda\.ssis\.or\.kr|configuration file /etc/nginx/conf\.d/koda\.conf'
 docker exec nginx nginx -t
 docker exec nginx nginx -s reload
 
 curl -fsS http://127.0.0.1:8088/healthz
-curl --resolve koda.example.internal:443:10.0.0.10 \
-  -fsS https://koda.example.internal/healthz
+curl --resolve koda.ssis.or.kr:443:10.95.58.147 \
+  -fsS https://koda.ssis.or.kr/healthz
 ```
 
 개별 파일을 `vi`로 저장하면 단일 파일 bind mount의 inode가 교체되어 컨테이너가

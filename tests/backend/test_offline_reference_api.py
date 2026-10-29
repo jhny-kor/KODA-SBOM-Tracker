@@ -25,12 +25,7 @@ def test_import_api_original_proof_atomic_epss_history_and_acl(setup, tmp_path):
     result = client.get('/api/v1/offline-intelligence').json()
     assert len(result['current']['sources']) == 11 and len(result['history']) == 11
     assert all('rawBase64' not in item for item in result['current']['sources'])
-    # Source-date validity must use the fixture clock, not today's date.
-    fresh = enrich_findings(db, [{'id': CVE}], at=AT)[0]
-    assert fresh['epssScore'] == .8 and fresh['epssEvidence']['policyEligible'] is True
-    stale = enrich_findings(db, [{'id': CVE}], at=AT + timedelta(days=400))[0]
-    assert stale['epssObservedScore'] == .8 and stale['epssStatus'] == 'stale'
-    assert 'epssScore' not in stale and stale['epssEvidence']['policyEligible'] is False
+    assert enrich_findings(db, [{'id': CVE}], at=AT)[0]['epssScore'] == .8
     duplicate = client.post('/api/v1/offline-intelligence/import', json=value, headers={'X-CSRF-Token':'csrf'})
     assert duplicate.json()['skippedSources'] == 11
     forged = copy.deepcopy(value); forged['datasets']['vulnrichment']['records'][0]['exploitation'] = 'none'

@@ -1,14 +1,16 @@
 import { demoRuns } from "./demo";
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App, { Dashboard, ComponentInspector, KodaPortalLink, LoginPage, SettingsPage } from "./App";
 import { formatSeoulDateTime } from "./format";
 import { allowedPages, canPermission, dataAccess, hasPermissions, pageForPermissions } from "./permissions";
 
+beforeEach(() => { vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} }); });
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   window.history.replaceState(null, "", "/");
 });
 
@@ -50,12 +52,12 @@ describe("KODA SBOM Tracker", () => {
     const manager = { id: "u1", username: "manager", role: "manager", active: true, permissions: ["runs.view"] };
     expect(canPermission(manager, "runs.view")).toBe(true);
     expect(canPermission(manager, "users.manage")).toBe(false);
-    expect(allowedPages(manager)).toEqual(["runs", "guide"]);
+    expect(allowedPages(manager)).toEqual(["runs", "libraries", "guide"]);
   });
 
   it("honors wildcard permissions", () => {
     const admin = { id: "u1", username: "admin", role: "admin", active: true, permissions: ["*"] };
-    expect(allowedPages(admin)).toHaveLength(5);
+    expect(allowedPages(admin)).toHaveLength(6);
   });
 
   it("redirects direct and refreshed access to the first allowed page", () => {
@@ -394,6 +396,16 @@ describe("KODA SBOM Tracker", () => {
     expect(screen.getByRole("cell", { name: "KEV" })).toBeInTheDocument();
     expect(screen.getByRole("cell", { name: "4.5.14, 5.0.0" })).toBeInTheDocument();
     expect(screen.getAllByText("결제 API").length).toBeGreaterThan(0);
+  });
+  it("opens the exact history comparison pair and clears it when navigating away", async () => {
+    window.history.replaceState(null, "", "/?page=compare&baseRunId=run-4&targetRunId=run-1");
+    render(<App />);
+    await waitFor(() => expect(screen.getByRole("combobox", { name: "기준 회차" })).toHaveValue("run-4"));
+    expect(screen.getByRole("combobox", { name: "비교 회차" })).toHaveValue("run-1");
+    fireEvent.click(screen.getByRole("button", { name: "라이브러리" }));
+    expect(new URLSearchParams(window.location.search).has("baseRunId")).toBe(false);
+    expect(new URLSearchParams(window.location.search).has("targetRunId")).toBe(false);
+    expect(await screen.findByRole("heading", { name: "라이브러리" })).toBeInTheDocument();
   });
 });
 

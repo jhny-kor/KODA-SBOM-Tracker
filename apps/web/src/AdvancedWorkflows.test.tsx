@@ -13,6 +13,7 @@ const schedule:ReanalysisSchedule={version:2,enabled:false,intervalMinutes:60,on
 const review:VexReview={id:"review-1",component:"pkg:pypi/demo@1",vulnerabilityId:"CVE-2026-1",state:"not_affected",justification:"code_not_reachable",detail:"도달 경로를 검토함",response:[],status:"submitted",author:"author",createdAt:"2026-10-18T00:00:00Z"};
 const finding={component:"pkg:pypi/demo@1",canonicalId:"CVE-2026-1"};
 const catalogs=[{id:"service-a",name:"서비스 A",slug:"a"}];
+const longFinding = { component: `pkg:maven/example/${"very-long-library-coordinate-".repeat(12)}@1.0.0`, canonicalId: "CVE-2026-20001" };
 beforeEach(()=>{
  vi.mocked(api.fetchReanalysisSchedule).mockResolvedValue(structuredClone(schedule));
  vi.mocked(api.fetchReanalysisCycles).mockResolvedValue({items:[],total:0,page:1,size:10});
@@ -25,6 +26,17 @@ beforeEach(()=>{
 });
 afterEach(()=>{cleanup();vi.resetAllMocks();});
 describe("native advanced workflows",()=>{
+ it("preserves the selected long finding and native form fields when submitting VEX",async()=>{
+  vi.mocked(api.submitVexReview).mockResolvedValue(review);
+  render(<VexReviewsPanel runId="run" findings={[finding,longFinding]} username="author" canManage canApprove={false}/>);
+  const target=await screen.findByLabelText("VEX 대상 취약점") as HTMLSelectElement;
+  expect(target.options[1].textContent).toContain(longFinding.component);
+  fireEvent.change(target,{target:{value:"1"}});
+  fireEvent.change(screen.getByLabelText("VEX 상태"),{target:{value:"exploitable"}});
+  fireEvent.change(screen.getByLabelText("VEX 증거"),{target:{value:"긴 좌표의 실제 선택값 검증"}});
+  fireEvent.click(screen.getByRole("button",{name:"검토 요청 제출"}));
+  await waitFor(()=>expect(api.submitVexReview).toHaveBeenCalledWith("run",expect.objectContaining({component:longFinding.component,vulnerabilityId:longFinding.canonicalId,state:"exploitable"})));
+ });
  it("allows notification and schedule readers to access settings",()=>{for(const permission of ["notifications.view","reanalysis.view"])expect(canPage({id:"u",username:"u",role:"analyst",active:true,permissions:[permission]},"settings")).toBe(true);});
  it("saves all-round schedule and scopes with loaded version",async()=>{
   vi.mocked(api.updateReanalysisSchedule).mockResolvedValue({...schedule,version:3});render(<ReanalysisSchedulePanel canManage services={catalogs}/>);fireEvent.click(await screen.findByLabelText("자동 재분석 사용"));const select=screen.getByLabelText("재분석 서비스 범위")as HTMLSelectElement;select.options[0].selected=true;fireEvent.change(select);fireEvent.click(screen.getByRole("button",{name:"재분석 일정 저장"}));await waitFor(()=>expect(api.updateReanalysisSchedule).toHaveBeenCalledWith(expect.objectContaining({version:2,enabled:true,latestOnly:false,serviceIds:["service-a"]})));

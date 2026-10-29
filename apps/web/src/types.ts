@@ -73,6 +73,7 @@ export interface SbomRun extends NativePolicyFields {
   analysisDataSources?: Record<string, unknown>;
   source?: "manual" | "api" | "scheduled" | string;
   sourceMetadata?: Record<string, unknown>;
+  note?: string;
 }
 
 export interface CpeApplicabilitySummary {

@@ -1,3 +1,4 @@
+import { FlowSelect } from "./ScrollingSelect";
 import { useEffect, useState, type FormEvent } from "react";
 import { previewMode } from "./api";
 import { formatSeoulDateTime } from "./format";
@@ -88,8 +89,8 @@ export function SsvcAssessmentsPanel({ runId, findings, canManage }: { runId: st
     {message && <p className="form-message" role="status">{message}</p>}
     {canManage && !previewMode && <form onSubmit={event => void submit(event)}><fieldset className="workflow-form" disabled={!editable || busy || !choices.length}>
       <legend>현재 페이지의 취약점 평가</legend>
-      <label>대상 취약점<select name="finding" aria-label="SSVC 대상 취약점">{choices.map((finding, index) => <option key={index} value={index}>{String(finding.canonicalId || finding.id)} · {String(finding.component)}</option>)}</select></label>
-      {inputDefinitions.map(definition => <label key={definition.name}>{definition.label}<select name={definition.name} aria-label={`SSVC ${definition.label}`} defaultValue=""><option value="">미확인 · 미평가로 저장</option>{definition.options.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>)}
+      <label>대상 취약점<FlowSelect name="finding" aria-label="SSVC 대상 취약점">{choices.map((finding, index) => <option key={index} value={index}>{String(finding.canonicalId || finding.id)} · {String(finding.component)}</option>)}</FlowSelect></label>
+      {inputDefinitions.map(definition => <label key={definition.name}>{definition.label}<FlowSelect name={definition.name} aria-label={`SSVC ${definition.label}`} defaultValue=""><option value="">미확인 · 미평가로 저장</option>{definition.options.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</FlowSelect></label>)}
       <label>판단 근거·가정 또는 미평가 사유<textarea name="rationale" aria-label="SSVC 판단 근거" required maxLength={10000} rows={3} /></label>
       <label>근거 참조 (줄마다 문서 ID·경로·URL)<textarea name="references" aria-label="SSVC 근거 참조" rows={2} maxLength={20000} /></label>
       <label>재평가 기한 (현재 시간대, 선택)<input name="reviewAt" aria-label="SSVC 재평가 기한" type="datetime-local" /></label>

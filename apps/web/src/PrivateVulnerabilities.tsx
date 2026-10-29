@@ -1,3 +1,4 @@
+import { FlowSelect } from "./ScrollingSelect";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { createPrivateAdvisory, fetchPrivateAdvisories, fetchPrivateAdvisoryHistory, previewMode, updatePrivateAdvisory } from "./api";
 import type { PrivateAdvisory, PrivateAdvisoryInput, PrivateAffected } from "./api";
@@ -28,19 +29,19 @@ function AdvisoryForm({record,disabled,onSave,onCancel}:{record:PrivateAdvisory|
     <label>자체 등록 취약점 식별자<input required disabled={Boolean(record)} maxLength={128} value={draft.advisoryId} onChange={e=>set("advisoryId",e.target.value)} placeholder="KODA-2026-001 또는 CVE ID"/></label>
     <label>제목<input required maxLength={500} value={draft.title} onChange={e=>set("title",e.target.value)}/></label>
     <label>설명<textarea rows={3} value={draft.description} onChange={e=>set("description",e.target.value)}/></label>
-    <label>심각도<select value={draft.severity} onChange={e=>set("severity",e.target.value as PrivateAdvisoryInput["severity"])}>{["Critical","High","Medium","Low","Unknown"].map(value=><option key={value}>{value}</option>)}</select></label>
+    <label>심각도<FlowSelect value={draft.severity} onChange={e=>set("severity",e.target.value as PrivateAdvisoryInput["severity"])}>{["Critical","High","Medium","Low","Unknown"].map(value=><option key={value}>{value}</option>)}</FlowSelect></label>
     <label>CVSS 점수 (선택)<input type="number" min={0} max={10} step={0.1} value={draft.cvssScore ?? ""} onChange={e=>set("cvssScore",e.target.value==="" ? null : Number(e.target.value))}/></label>
     <ListInput label="CWE 번호 (쉼표 구분)" values={draft.cwes} onChange={values=>set("cwes",values.map(value=>Number(value.replace(/^CWE-/i,""))))}/>
     <ListInput label="별칭 (쉼표 구분)" values={draft.aliases} onChange={values=>set("aliases",values)}/>
     <ListInput label="참고 URL (한 줄에 하나)" values={draft.references} onChange={values=>set("references",values)} multiline/>
-    <label>게시 상태<select value={draft.state} onChange={e=>set("state",e.target.value as PrivateAdvisoryInput["state"])}>{Object.entries(stateLabels).map(([value,label])=><option key={value} value={value}>{label}</option>)}</select></label>
+    <label>게시 상태<FlowSelect value={draft.state} onChange={e=>set("state",e.target.value as PrivateAdvisoryInput["state"])}>{Object.entries(stateLabels).map(([value,label])=><option key={value} value={value}>{label}</option>)}</FlowSelect></label>
     <p>초안은 분석에 적용되지 않습니다. 게시·게시 내용 변경·철회 시 해당 패키지를 포함하는 회차의 재분석을 접수합니다. 과거 분석 리비전은 보존됩니다.</p>
     <h4>영향 패키지</h4><p>버전을 제외한 PURL과 정확한 버전 목록 또는 범위를 입력하세요. 범위의 시작은 포함, 수정 버전은 제외, 마지막 영향 버전은 포함합니다. SemVer 범위는 x.y.z 정식 버전 형식입니다.</p>
     {draft.affected.map((item,index)=><fieldset key={rowKeys[index]}><legend>영향 패키지 {index+1}</legend>
       <label>PURL {index+1}<input required value={item.purl} onChange={e=>affected(index,{purl:e.target.value})} placeholder="pkg:maven/org.example/library"/></label>
       <ListInput label={`정확한 영향 버전 ${index+1}`} values={item.versions} onChange={values=>affected(index,{versions:values})}/>
       <label>범위 사용 {index+1}<input type="checkbox" checked={item.ranges.length>0} onChange={e=>affected(index,{ranges:e.target.checked ? [{scheme:"semver",introduced:null,fixed:null,lastAffected:null}] : []})}/></label>
-      {item.ranges.length>0 && <><label>버전 비교 방식 {index+1}<select value={item.ranges[0].scheme} onChange={e=>range(index,{scheme:e.target.value as "maven"|"semver"})}><option value="semver">SemVer</option><option value="maven">Maven</option></select></label><label>영향 시작 버전 {index+1}<input value={item.ranges[0].introduced || ""} onChange={e=>range(index,{introduced:e.target.value || null})}/></label><label>범위 수정 버전 {index+1}<input value={item.ranges[0].fixed || ""} onChange={e=>range(index,{fixed:e.target.value || null})}/></label><label>마지막 영향 버전 {index+1}<input value={item.ranges[0].lastAffected || ""} onChange={e=>range(index,{lastAffected:e.target.value || null})}/></label>{item.ranges.length>1 && <p>추가 범위 {item.ranges.length-1}개는 저장 시 보존됩니다.</p>}</>}
+      {item.ranges.length>0 && <><label>버전 비교 방식 {index+1}<FlowSelect value={item.ranges[0].scheme} onChange={e=>range(index,{scheme:e.target.value as "maven"|"semver"})}><option value="semver">SemVer</option><option value="maven">Maven</option></FlowSelect></label><label>영향 시작 버전 {index+1}<input value={item.ranges[0].introduced || ""} onChange={e=>range(index,{introduced:e.target.value || null})}/></label><label>범위 수정 버전 {index+1}<input value={item.ranges[0].fixed || ""} onChange={e=>range(index,{fixed:e.target.value || null})}/></label><label>마지막 영향 버전 {index+1}<input value={item.ranges[0].lastAffected || ""} onChange={e=>range(index,{lastAffected:e.target.value || null})}/></label>{item.ranges.length>1 && <p>추가 범위 {item.ranges.length-1}개는 저장 시 보존됩니다.</p>}</>}
       <ListInput label={`수정 권장 버전 ${index+1}`} values={item.fixedVersions} onChange={values=>affected(index,{fixedVersions:values})}/>
       {draft.affected.length>1 && <button type="button" className="secondary" onClick={()=>{set("affected",draft.affected.filter((_,i)=>i!==index));setRowKeys(keys=>keys.filter((_,i)=>i!==index));}}>패키지 {index+1} 제거</button>}
     </fieldset>)}

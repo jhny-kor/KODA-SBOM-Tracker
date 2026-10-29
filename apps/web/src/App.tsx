@@ -3,6 +3,8 @@ import { demoMode, previewMode, standaloneMode, activateVulnerabilityBundle, app
 import { demoChanges, demoLdapSettings, demoRolePolicyCatalog, demoRuns } from "./demo";
 import { formatSeoulDateTime } from "./format";
 import { Icon } from "./icons";
+import { FlowSelect, ScrollingSelect } from "./ScrollingSelect";
+import { ScrollingText } from "./ScrollingText";
 import { ReanalysisSchedulePanel } from "./ReanalysisSchedule";
 import { PackageMetadataPanel } from "./OperationsData";
 import { UnifiedVulnerabilityDataPanel } from "./UnifiedVulnerabilityData";
@@ -19,6 +21,10 @@ import { SbomQualityPanel } from "./SbomQuality";
 import { SbomPoliciesPanel } from "./SbomPolicies";
 import { AnalysisPolicyHistory, NativePolicyResult } from "./NativePolicyResult";
 import { policyCountLabel } from "./policy";
+import LibrariesPage from "./Libraries";
+import CveSearchPanel from "./CveSearch";
+import EnvironmentAdministrators from "./EnvironmentAdministrators";
+import RunMetadataEditor from "./RunMetadataEditor";
 import { analysisAvailable, analysisUnavailableReason } from "./analysisAvailability";
 import { canPage, dataAccess, hasPermissions, pageForPermissions, permissionSet, type Page } from "./permissions";
 import type { AnalysisRevisionSummary, AuditEvent, AuthUser, CatalogItem, Comparison, ComponentChange, ComponentSnapshot, LdapSettings, RecordChange, RolePolicy, SbomRun, SbomRunDetail, UserSummary, VulnerabilityBundle } from "./types";
@@ -26,11 +32,12 @@ import type { AnalysisRevisionSummary, AuditEvent, AuthUser, CatalogItem, Compar
 const nav: { id: Page; label: string; icon: string }[] = [
   { id: "dashboard", label: "대시보드", icon: "dashboard" },
   { id: "runs", label: "SBOM 회차", icon: "runs" },
+  { id: "libraries", label: "라이브러리", icon: "service" },
   { id: "compare", label: "회차 비교", icon: "compare" },
   { id: "settings", label: "설정", icon: "settings" }];
 const guideNav = { id: "guide" as Page, label: "사용 가이드", icon: "guide" };
 
-type SettingsTab = "private-vulnerabilities" | "metadata" | "projects" | "reanalysis" | "notifications" | "sbom-policies" | "users" | "roles" | "vulnerability" | "audit" | "integration" | "ldap" | "services";
+type SettingsTab = "private-vulnerabilities" | "metadata" | "cve-search" | "environment-admins" | "projects" | "reanalysis" | "notifications" | "sbom-policies" | "users" | "roles" | "vulnerability" | "audit" | "integration" | "ldap" | "services";
 
 const ROLE_LABELS: Record<string, string> = {
   admin: "관리자",
@@ -92,6 +99,7 @@ function readPortalLink() {
 function replacePortalLink(updates: { page?: Page; runId?: string | null }) {
   const url = new URL(window.location.href);
   if (updates.page) url.searchParams.set("page", updates.page);
+  if (updates.page && updates.page !== "compare") { url.searchParams.delete("baseRunId"); url.searchParams.delete("targetRunId"); }
   if (updates.runId === null) url.searchParams.delete("runId");
   if (updates.runId) url.searchParams.set("runId", updates.runId);
   window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);}
@@ -277,10 +285,10 @@ function Sidebar({ page, collapsed, onNavigate, onExpand,
 function SelectFilter({ label, value, values, onChange, formatValue }: { label: string; value: string; values: string[]; onChange: (value: string) => void; formatValue?: (value: string) => string;}) {
   return (
     <label className="select-filter"><span>{label}</span>
-      <select value={value} onChange={(event) => onChange(event.target.value)}>
+      <FlowSelect value={value} onChange={(event) => onChange(event.target.value)}>
         <option value="">전체</option>
         {values.map((item) => (<option key={item} value={item}>{formatValue ? formatValue(item) : item}</option>))}
-      </select>
+      </FlowSelect>
     </label>
   );}
 
@@ -310,8 +318,8 @@ function Sparkline({ values, color, label, pointLabels = [] }: { values: number[
   </svg><ImmediateChartTooltip tooltip={tooltip} /></div>);}
 
 function PreviewMetric({ label, value, description, values, color, pointLabels }: { label: string; value: string; description: string; values: number[]; color: string; pointLabels?: string[];}) {
-  return (<article className="preview-metric-card">
-    <div><span className="preview-metric-label">{label}</span><strong>{value}</strong><small>{description}</small></div>
+  return (<article className="preview-metric-card preview-flow-values">
+    <div><span className="preview-metric-label">{label}</span><strong>{value}</strong><small><ScrollingText>{description}</ScrollingText></small></div>
     <Sparkline values={values} color={color} label={label} pointLabels={pointLabels} />
   </article>);}
 
@@ -391,7 +399,7 @@ export function Dashboard({ runs, onUpload,
           {chartRuns.map((run, index) => (<text key={run.id} x={chartRuns.length === 1 ? 390 : 36 + (index / (chartRuns.length - 1)) * 708} y="238" textAnchor="middle" className="preview-axis-label">#{uploadedRuns.length - chartRuns.length + index + 1}</text>))}
         </svg><ImmediateChartTooltip tooltip={trendTooltip} /></div></div>
       </article>
-      <article className="preview-chart-card"><header><div><h2>최신 SBOM 심각도</h2><p>{latest?.filename || "업로드 파일"}</p></div><span className="preview-chart-total">{analysisAvailable(latest) ? `${latest?.vulnerabilityCount || 0}건` : "미평가"}</span></header>
+      <article className="preview-chart-card preview-flow-values"><header><div><h2>최신 SBOM 심각도</h2><p><ScrollingText>{latest?.filename || "업로드 파일"}</ScrollingText></p></div><span className="preview-chart-total">{analysisAvailable(latest) ? `${latest?.vulnerabilityCount || 0}건` : "미평가"}</span></header>
         {analysisAvailable(latest) ? <PreviewBars items={severityItems} emptyLabel="최신 분석에 취약점 레코드가 없습니다." /> : <p role="alert">{analysisUnavailableReason(latest)}</p>}
         <div className="preview-chart-footnote">CVE 기준일 {cveBaseline(latest)} · KEV {analysisAvailable(latest) ? `${kevCount}건` : "미평가"}
           </div>
@@ -400,7 +408,7 @@ export function Dashboard({ runs, onUpload,
     <div className="preview-lower-grid">
       <article className="preview-chart-card"><header><div><h2>구성요소 유형</h2><p>최신 업로드 기준</p></div><span className="preview-chart-total">{latest?.componentCount || 0}개
             </span></header><PreviewBars items={componentTypes} emptyLabel="구성요소 상세를 불러오는 중입니다." /></article>
-      <article className="preview-upload-summary"><span className="preview-eyebrow">LATEST UPLOAD</span><h2>{latest?.filename || "SBOM 파일"}</h2><dl><dt>릴리스</dt><dd>{latest?.releaseVersion}</dd><dt>CVE 기준일</dt><dd>{cveBaseline(latest)}</dd><dt>업로드 시각</dt><dd>{latest ? formatSeoulDateTime(latest.createdAt) : "-"}</dd></dl></article>
+      <article className="preview-upload-summary preview-flow-values"><span className="preview-eyebrow">LATEST UPLOAD</span><h2><ScrollingText>{latest?.filename || "SBOM 파일"}</ScrollingText></h2><dl><dt>릴리스</dt><dd><ScrollingText>{latest?.releaseVersion || ""}</ScrollingText></dd><dt>CVE 기준일</dt><dd>{cveBaseline(latest)}</dd><dt>업로드 시각</dt><dd>{latest ? formatSeoulDateTime(latest.createdAt) : "-"}</dd></dl></article>
     </div>
   </section>);}
 
@@ -469,7 +477,7 @@ function RunsPage({ runs, services, environments, search, onUpload, onSelect,
             <tbody>
               {visible.map((run) => (
                 <tr key={run.id} onClick={() => onSelect(run)} tabIndex={0}>
-                  <td className="sticky-name">{run.service.name}</td><td>{run.environment.name}</td><td>{run.releaseVersion}</td>
+                  <td className="sticky-name"><ScrollingText>{run.service.name}</ScrollingText></td><td><ScrollingText>{run.environment.name}</ScrollingText></td><td><ScrollingText>{run.releaseVersion}</ScrollingText></td>
                   <td>{run.roundNumber}차</td><td>{cveBaseline(run)}</td><td>{run.componentCount.toLocaleString()}</td>
                   <td title={analysisAvailable(run) ? undefined : analysisUnavailableReason(run)}>{analysisAvailable(run) ? run.vulnerabilityCount : <>미평가<small className="workflow-id">{analysisUnavailableReason(run)}</small></>}</td><td>{policyCountLabel(run)}</td>
                   <td><span className={`state ${run.state}`}>{stateLabel(run.state)}</span></td>
@@ -517,8 +525,9 @@ function ComparePage({ runs, can }: { runs: SbomRun[]; can: (permission: string)
       run.state === "completed" &&
       run.service.id === defaultTarget?.service.id &&
       run.environment.id === defaultTarget?.environment.id) || runs.find((run) => run.id !== defaultTarget?.id && run.state === "completed") || runs[1];
-  const [baseId, setBaseId] = useState(defaultBase?.id ?? "");
-  const [targetId, setTargetId] = useState(defaultTarget?.id ?? "");
+  const [baseId, setBaseId] = useState(() => new URLSearchParams(window.location.search).get("baseRunId") || defaultBase?.id || "");
+  const [targetId, setTargetId] = useState(() => new URLSearchParams(window.location.search).get("targetRunId") || defaultTarget?.id || "");
+  const [linkedRuns, setLinkedRuns] = useState<SbomRun[]>([]);
   const [baseAnalyses, setBaseAnalyses] = useState<AnalysisRevisionSummary[]>([]);
   const [targetAnalyses, setTargetAnalyses] = useState<AnalysisRevisionSummary[]>([]);
   const [baseAnalysisId, setBaseAnalysisId] = useState("");
@@ -527,7 +536,7 @@ function ComparePage({ runs, can }: { runs: SbomRun[]; can: (permission: string)
   const [selected, setSelected] = useState<ComponentChange | null>(demoChanges[2]);
   const [comparison, setComparison] = useState<Comparison | null>(null);
   const [message, setMessage] = useState("");
-  const options = runs.slice(0, 10);
+  const options = [...new Map([...runs, ...linkedRuns].map(run => [run.id, run])).values()];
   const baseRun = options.find((run) => run.id === baseId);
   const targetRun = options.find((run) => run.id === targetId);
   const label = (run: SbomRun) => `${run.service.name} / ${run.environment.name} / ${run.releaseVersion} / ${run.roundNumber}차`;
@@ -553,6 +562,7 @@ function ComparePage({ runs, can }: { runs: SbomRun[]; can: (permission: string)
       try {
         const [baseDetail, targetDetail] = await Promise.all([fetchRun(baseId), fetchRun(targetId)]);
         if (cancelled) return;
+        setLinkedRuns([baseDetail, targetDetail]);
         setBaseAnalyses(baseDetail.analyses || []);
         setTargetAnalyses(targetDetail.analyses || []);
         setBaseAnalysisId((current) => current && baseDetail.analyses.some((item) => item.id === current) ? current : baseDetail.analyses[0]?.id || "");
@@ -575,13 +585,13 @@ function ComparePage({ runs, can }: { runs: SbomRun[]; can: (permission: string)
     <section className="page compare-page">
       <h1>회차 비교</h1>
       <div className="compare-pickers">
-        <label><span>기준 회차</span><select value={baseId} title={baseRun ? label(baseRun) : undefined} onChange={(event) => { setBaseId(event.target.value); setComparison(null);}}>{options.map((run) => (<option value={run.id} key={run.id}>{label(run)}</option>))}</select></label>
+        <label><span>기준 회차</span><ScrollingSelect value={baseId} text={baseRun ? label(baseRun) : ""} label="기준 회차" onChange={(value) => { setBaseId(value); setComparison(null);}}>{options.map((run) => (<option value={run.id} key={run.id}>{label(run)}</option>))}</ScrollingSelect></label>
         <span className="swap" aria-hidden="true"><Icon name="swap" /></span>
-        <label><span>비교 회차</span><select value={targetId} title={targetRun ? label(targetRun) : undefined} onChange={(event) => { setTargetId(event.target.value); setComparison(null);}}>{options.map((run) => (<option value={run.id} key={run.id}>{label(run)}</option>))}</select></label>
+        <label><span>비교 회차</span><ScrollingSelect value={targetId} text={targetRun ? label(targetRun) : ""} label="비교 회차" onChange={(value) => { setTargetId(value); setComparison(null);}}>{options.map((run) => (<option value={run.id} key={run.id}>{label(run)}</option>))}</ScrollingSelect></label>
         <button className="primary compare-action" onClick={() => void compare()}>비교
         </button>
       </div>
-      <div className="analysis-pickers"><label><span>기준 분석 리비전</span><select value={baseAnalysisId} onChange={(event) => { setBaseAnalysisId(event.target.value); setComparison(null);}}><option value="">최신 리비전</option>{baseAnalyses.map((item) => (<option key={item.id} value={item.id}>r{item.sequence} · {dataBaselineLabel(preferredCveDate(item.cveDataAsOf, item.dataAsOf), "CVE 기준일 확인 필요")}</option>))}</select></label><label><span>비교 분석 리비전</span><select value={targetAnalysisId} onChange={(event) => { setTargetAnalysisId(event.target.value); setComparison(null);}}><option value="">최신 리비전</option>{targetAnalyses.map((item) => (<option key={item.id} value={item.id}>r{item.sequence} · {dataBaselineLabel(preferredCveDate(item.cveDataAsOf, item.dataAsOf), "CVE 기준일 확인 필요")}</option>))}</select></label></div>
+      <div className="analysis-pickers"><label><span>기준 분석 리비전</span><ScrollingSelect value={baseAnalysisId} text={(() => { const item = baseAnalyses.find((item) => item.id === baseAnalysisId); return item ? `r${item.sequence} · ${dataBaselineLabel(preferredCveDate(item.cveDataAsOf, item.dataAsOf), "CVE 기준일 확인 필요")}` : "최신 리비전"; })()} label="기준 분석 리비전" onChange={(value) => { setBaseAnalysisId(value); setComparison(null);}}><option value="">최신 리비전</option>{baseAnalyses.map((item) => (<option key={item.id} value={item.id}>r{item.sequence} · {dataBaselineLabel(preferredCveDate(item.cveDataAsOf, item.dataAsOf), "CVE 기준일 확인 필요")}</option>))}</ScrollingSelect></label><label><span>비교 분석 리비전</span><ScrollingSelect value={targetAnalysisId} text={(() => { const item = targetAnalyses.find((item) => item.id === targetAnalysisId); return item ? `r${item.sequence} · ${dataBaselineLabel(preferredCveDate(item.cveDataAsOf, item.dataAsOf), "CVE 기준일 확인 필요")}` : "최신 리비전"; })()} label="비교 분석 리비전" onChange={(value) => { setTargetAnalysisId(value); setComparison(null);}}><option value="">최신 리비전</option>{targetAnalyses.map((item) => (<option key={item.id} value={item.id}>r{item.sequence} · {dataBaselineLabel(preferredCveDate(item.cveDataAsOf, item.dataAsOf), "CVE 기준일 확인 필요")}</option>))}</ScrollingSelect></label></div>
       {message && (<p className="form-message" role="status">{message}</p>)}
       {!securityAvailable && <p role="alert">취약점·정책 비교 미평가: {analysisUnavailableReason(!analysisAvailable(baseRevision || baseRun) ? baseRevision || baseRun : targetRevision || targetRun)}</p>}
       <div className="diff-summary">
@@ -709,9 +719,9 @@ function UploadModal({
       {standaloneMode ? (<p className="preview-note">로그인·서버 없이 브라우저에서 CycloneDX 구조와 파일에 포함된
               취약점 레코드만 분석합니다.
             </p> ): (<label>서비스
-              <select name="serviceId" required>{services.filter((service) => service.active !== false).map((service) => (<option key={service.id} value={service.id}>{service.name}</option>))}</select></label>)}
+              <FlowSelect name="serviceId" required>{services.filter((service) => service.active !== false).map((service) => (<option key={service.id} value={service.id}>{service.name}</option>))}</FlowSelect></label>)}
       <div className="form-row">{!standaloneMode && (<label>환경
-                <select name="environmentId" required>{environments.filter((environment) => environment.active !== false).map((environment) => (<option key={environment.id} value={environment.id}>{environment.name}</option>))}</select></label>)}<label>{standaloneMode ? "릴리스 (선택)" : "릴리스"}<input name="releaseVersion" placeholder="예: 1.4.2" defaultValue={standaloneMode ? "preview" : undefined} required={!standaloneMode} /></label></div>
+                <FlowSelect name="environmentId" required>{environments.filter((environment) => environment.active !== false).map((environment) => (<option key={environment.id} value={environment.id}>{environment.name}</option>))}</FlowSelect></label>)}<label>{standaloneMode ? "릴리스 (선택)" : "릴리스"}<input name="releaseVersion" placeholder="예: 1.4.2" defaultValue={standaloneMode ? "preview" : undefined} required={!standaloneMode} /></label></div>
       <label>SBOM 파일
             <input name="sbom" type="file" aria-label="SBOM 파일" accept={standaloneMode ? ".json,.xml,application/json,application/xml" : ".json,.xml,application/json,application/xml,application/spdx+json,application/vnd.cyclonedx+json,application/vnd.cyclonedx+xml"} aria-describedby="sbom-supported-formats sbom-upload-limit" required /><small id="sbom-supported-formats">{standaloneMode ? "로컬 미리보기: CycloneDX JSON/XML" : "지원 형식: CycloneDX 1.4, 1.5, 1.6, 1.7 (JSON/XML) · SPDX 2.3 (JSON)"}</small><small id="sbom-upload-limit">최대 {standaloneMode ? "100 MiB" : "500 MiB"}</small></label>
       <label>메모
@@ -727,8 +737,9 @@ function DetailPagination({ total, page, pageSize, onPage, onPageSize, label = "
   return (<div className="detail-pagination"><span>전체 {total.toLocaleString()}건 · {page}/{pageCount}페이지</span><div><select aria-label={label} value={pageSize} onChange={(event) => onPageSize(Number(event.target.value))}><option value={10}>10개씩 보기</option><option value={25}>25개씩 보기</option><option value={50}>50개씩 보기</option><option value={100}>100개씩 보기</option></select><button type="button" aria-label="상세 이전 페이지" disabled={page <= 1} onClick={() => onPage(page - 1)}>‹</button><button type="button" aria-label="상세 다음 페이지" disabled={page >= pageCount} onClick={() => onPage(page + 1)}>›</button></div></div>);
 }
 
-function RunDetail({ run, onClose, onChanged, username,
+function RunDetail({ run, onClose, onChanged, username, onOpenLibrary,
   can}: { run: SbomRun; onClose: () => void; onChanged: () => void;
+  onOpenLibrary?: (query: string) => void;
   can: (permission: string) => boolean; username?: string;}) {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
@@ -782,23 +793,24 @@ function RunDetail({ run, onClose, onChanged, username,
   const currentComponentPage = Math.min(componentPage, componentPageCount);
   const findingPageCount = Math.max(1, Math.ceil(findingResult.total / findingPageSize));
   const currentFindingPage = Math.min(findingPage, findingPageCount);
-  return (<div className="drawer-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><section className="detail-modal" role="dialog" aria-modal="true" aria-labelledby="run-detail-title"><header><div><span>{current.service.name}</span><h2 id="run-detail-title">{current.releaseVersion} · {current.roundNumber}차
-            </h2></div><button type="button" className="icon-button" aria-label="회차 상세 닫기" onClick={onClose}><Icon name="close" /></button></header>
-    <div className="detail-status"><span className={`state ${current.state}`}>{stateLabel(current.state)}</span><span>{scheduled ? "스케줄 점검" : "수동/API 점검"}</span><span>{current.environment.name}</span><span>CycloneDX {current.specVersion}</span></div>
-    <dl><dt>원본 파일</dt><dd>{current.filename || "-"}</dd>{scheduled && (<><dt>대상 서버</dt><dd>{String(sourceMetadata.server || sourceMetadata.remoteServer || "-")}</dd><dt>대상 디렉토리</dt><dd className="mono wrap">{String(sourceMetadata.directory || sourceMetadata.remoteDirectory || "-")}</dd><dt>점검 방식</dt><dd>{String(sourceMetadata.mode || "-")}</dd><dt>예약 실행 ID</dt><dd className="mono wrap">{String(sourceMetadata.scheduleRunId || "-")}</dd><dt>규칙 버전</dt><dd>{String(sourceMetadata.rulePolicyVersion ?? "-")}</dd></>)}<dt>CVE 기준일</dt><dd>{cveBaseline(current)}</dd><dt>오프라인 분석</dt><dd>{jobStateLabel(current.analysisState)}</dd><dt>구성요소</dt><dd>{current.componentCount.toLocaleString()}개</dd><dt>취약점</dt><dd>{analysisAvailable(current) ? `${current.vulnerabilityCount}건` : "미평가"}</dd><dt>정책 위반·경고·정보</dt><dd>{policyCountLabel(current)}{current.policyState === "completed" ? "건" : ""}</dd></dl>
+  return (<div className="drawer-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><section className="detail-modal" role="dialog" aria-modal="true" aria-labelledby="run-detail-title"><header><div><ScrollingText>{current.service.name}</ScrollingText><h2 id="run-detail-title"><ScrollingText>{`${current.releaseVersion} · ${current.roundNumber}차`}</ScrollingText></h2></div><button type="button" className="icon-button" aria-label="회차 상세 닫기" onClick={onClose}><Icon name="close" /></button></header>
+    <div className="detail-status"><span className={`state ${current.state}`}>{stateLabel(current.state)}</span><span>{scheduled ? "스케줄 점검" : "수동/API 점검"}</span><span className="detail-environment"><ScrollingText>{current.environment.name}</ScrollingText></span><span>CycloneDX {current.specVersion}</span></div>
+    <dl><dt>원본 파일</dt><dd><ScrollingText>{current.filename || "-"}</ScrollingText></dd>{scheduled && (<><dt>대상 서버</dt><dd>{String(sourceMetadata.server || sourceMetadata.remoteServer || "-")}</dd><dt>대상 디렉토리</dt><dd className="mono wrap">{String(sourceMetadata.directory || sourceMetadata.remoteDirectory || "-")}</dd><dt>점검 방식</dt><dd>{String(sourceMetadata.mode || "-")}</dd><dt>예약 실행 ID</dt><dd className="mono wrap">{String(sourceMetadata.scheduleRunId || "-")}</dd><dt>규칙 버전</dt><dd>{String(sourceMetadata.rulePolicyVersion ?? "-")}</dd></>)}<dt>CVE 기준일</dt><dd>{cveBaseline(current)}</dd><dt>오프라인 분석</dt><dd>{jobStateLabel(current.analysisState)}</dd><dt>구성요소</dt><dd>{current.componentCount.toLocaleString()}개</dd><dt>취약점</dt><dd>{analysisAvailable(current) ? `${current.vulnerabilityCount}건` : "미평가"}</dd><dt>정책 위반·경고·정보</dt><dd>{policyCountLabel(current)}{current.policyState === "completed" ? "건" : ""}</dd></dl>
     {!analysisAvailable(current) && <p role="alert" className="drawer-error">{analysisUnavailableReason(current)}</p>}
+    {current.note && <p className="preview-note">메모: {current.note}</p>}
+    <RunMetadataEditor key={`metadata-${current.id}`} runId={current.id} onSaved={async () => { const refreshed = await fetchRun(current.id); setDetail(refreshed); onChanged(); }} />
     <NativePolicyResult result={current} runId={current.id} />
     <SbomQualityPanel runId={current.id} analysisId={latestAnalysisId} canRerun={can("analysis.create")} canViewProfiles={can("policies.view") || can("policies.manage")} canManage={can("policies.manage")} archived={current.state === "archived"} />
     <CpeCoverage analysis={latestAnalysis} loading={!detail} />
     <h3>분석 리비전</h3><ul className="paths">{detail?.analyses?.length ? (detail.analyses.map((analysis) => (<li key={analysis.id}>r{analysis.sequence} · {jobStateLabel(analysis.state)} ·{" "}
                 {dataBaselineLabel(preferredCveDate(analysis.cveDataAsOf, analysis.dataAsOf), "CVE 기준일 확인 필요")}{analysis.error ? ` · ${analysis.error}` : ""} · 정책 {analysis.policyVersion ? `v${analysis.policyVersion}` : "-"} · {analysis.policyState === "completed" ? "평가 완료" : analysis.policyState === "failed" ? "평가 실패" : "미평가"}{analysis.policyError ? ` · ${analysis.policyError}` : ""}<AnalysisPolicyHistory analysis={analysis} runId={current.id} /></li>) )
           ): (<li>상세를 불러오는 중이거나 분석 리비전이 없습니다.</li>)}</ul>
-    <div className="detail-table-heading"><h3>구성요소 검사기 ({componentResult.total.toLocaleString()})</h3><label className="detail-search"><Icon name="search" /><input aria-label="구성요소 검색" value={componentQuery} onChange={(event) => { setComponentQuery(event.target.value); setComponentPage(1); }} placeholder="이름, 버전, PURL 검색" /></label></div><div className="table-scroll"><table><thead><tr><th>이름</th><th>버전</th><th>PURL</th><th>라이선스</th></tr></thead><tbody>{components.map((component) => (<tr key={component.identityKey}><td>{component.name}</td><td>{component.version || "-"}</td><td className="mono">{component.purl || component.bomRef || "-"}</td><td>{component.licenses?.length ? component.licenses.map((license) => typeof license === "string" ? license : String((license as { license?: { id?: string; name?: string };}).license?.id || (license as { license?: { id?: string; name?: string;};}).license?.name || "식별 불가")).join(", ") : "-"}</td></tr>))}{!components.length && (<tr><td colSpan={4}>{deferredComponentQuery ? "검색 조건에 맞는 구성요소가 없습니다." : "구성요소 상세가 없습니다."}</td></tr>)}</tbody></table></div><DetailPagination total={componentResult.total} page={currentComponentPage} pageSize={componentPageSize} onPage={setComponentPage} onPageSize={(size) => { setComponentPageSize(size); setComponentPage(1); }} />
-    <h3>취약점 검사기 ({analysisAvailable(current) ? findingResult.total.toLocaleString() : "미평가"})</h3><div className="table-scroll"><table><thead><tr><th>취약점 ID</th><th>심각도</th><th>구성요소</th><th>CVSS</th><th>KEV</th><th>CWE / EPSS</th><th>제안 버전</th><th>VEX 검토</th></tr></thead><tbody>{findings.map((finding, index) => { const severity = String(finding.severity || "unknown"); return (<tr key={`${String(finding.canonicalId || finding.id || "finding")}-${(currentFindingPage - 1) * findingPageSize + index}`}><td className="mono">{String(finding.canonicalId || finding.id || "식별자 없음")}{finding.sourceKind === "private_vulnerability" && <small className="workflow-id">사내 취약점 · {String(finding.title || "")}<br/>{String(finding.description || "")}</small>}</td><td><span className={`severity-pill ${severityClass(severity)}`}>{severityLabel(severity)}</span></td><td className="mono">{String(finding.component || "-")}</td><td>{cvssScore(finding)}</td><td>{finding.kev ? "KEV" : "-"}</td><td>{Array.isArray(finding.cwes) && finding.cwes.length ? finding.cwes.map(value=>`CWE-${value}`).join(", ") : "CWE 확인 안 됨"}<br/><EpssEvidence finding={finding} /></td><td>{fixedInLabel(finding)}</td><td>{finding.vex && typeof finding.vex === "object" ? <span title={String((finding.vex as Record<string, unknown>).detail || "")}>{(finding.vex as Record<string, unknown>).suppressed ? "승인된 영향 없음·오탐 (원시 발견 보존)" : `승인된 ${String((finding.vex as Record<string, unknown>).state || "검토")}`}</span> : "미검토"}</td></tr>);})}{!findings.length && (<tr><td colSpan={8}>{analysisAvailable(current) ? "취약점 결과가 없습니다." : analysisUnavailableReason(current)}</td></tr>)}</tbody></table></div><DetailPagination total={findingResult.total} page={currentFindingPage} pageSize={findingPageSize} onPage={setFindingPage} onPageSize={(size) => { setFindingPageSize(size); setFindingPage(1); }} />
+    <div className="detail-table-heading"><h3>구성요소 검사기 ({componentResult.total.toLocaleString()})</h3><label className="detail-search"><Icon name="search" /><input aria-label="구성요소 검색" value={componentQuery} onChange={(event) => { setComponentQuery(event.target.value); setComponentPage(1); }} placeholder="이름, 버전, PURL 검색" /></label></div><div className="table-scroll"><table className="component-inspector-table"><thead><tr><th>이름</th><th>버전</th><th>PURL</th><th>라이선스</th></tr></thead><tbody>{components.map((component) => (<tr key={component.identityKey}><td>{onOpenLibrary ? <button className="environment-row-button" onClick={() => onOpenLibrary(component.name)}><ScrollingText focusable={false}>{component.name}</ScrollingText></button> : <ScrollingText>{component.name}</ScrollingText>}</td><td><ScrollingText>{component.version || "-"}</ScrollingText></td><td className="mono"><ScrollingText>{component.purl || component.bomRef || "-"}</ScrollingText></td><td>{component.licenses?.length ? component.licenses.map((license) => typeof license === "string" ? license : String((license as { license?: { id?: string; name?: string };}).license?.id || (license as { license?: { id?: string; name?: string;};}).license?.name || "식별 불가")).join(", ") : "-"}</td></tr>))}{!components.length && (<tr><td colSpan={4}>{deferredComponentQuery ? "검색 조건에 맞는 구성요소가 없습니다." : "구성요소 상세가 없습니다."}</td></tr>)}</tbody></table></div><DetailPagination total={componentResult.total} page={currentComponentPage} pageSize={componentPageSize} onPage={setComponentPage} onPageSize={(size) => { setComponentPageSize(size); setComponentPage(1); }} />
+    <h3>취약점 검사기 ({analysisAvailable(current) ? findingResult.total.toLocaleString() : "미평가"})</h3><div className="table-scroll"><table className="finding-inspector-table"><thead><tr><th>취약점 ID</th><th>심각도</th><th>구성요소</th><th>CVSS</th><th>KEV</th><th>CWE / EPSS</th><th>제안 버전</th><th>VEX 검토</th></tr></thead><tbody>{findings.map((finding, index) => { const severity = String(finding.severity || "unknown"); return (<tr key={`${String(finding.canonicalId || finding.id || "finding")}-${(currentFindingPage - 1) * findingPageSize + index}`}><td className="mono">{String(finding.canonicalId || finding.id || "식별자 없음")}{finding.sourceKind === "private_vulnerability" && <small className="workflow-id">사내 취약점 · {String(finding.title || "")}<br/>{String(finding.description || "")}</small>}</td><td><span className={`severity-pill ${severityClass(severity)}`}>{severityLabel(severity)}</span></td><td className="mono"><ScrollingText>{String(finding.component || "-")}</ScrollingText></td><td>{cvssScore(finding)}</td><td>{finding.kev ? "KEV" : "-"}</td><td>{Array.isArray(finding.cwes) && finding.cwes.length ? finding.cwes.map(value=>`CWE-${value}`).join(", ") : "CWE 확인 안 됨"}<br/><EpssEvidence finding={finding} /></td><td><ScrollingText>{fixedInLabel(finding)}</ScrollingText></td><td>{finding.vex && typeof finding.vex === "object" ? <span title={String((finding.vex as Record<string, unknown>).detail || "")}>{(finding.vex as Record<string, unknown>).suppressed ? "승인된 영향 없음·오탐 (원시 발견 보존)" : `승인된 ${String((finding.vex as Record<string, unknown>).state || "검토")}`}</span> : "미검토"}</td></tr>);})}{!findings.length && (<tr><td colSpan={8}>{analysisAvailable(current) ? "취약점 결과가 없습니다." : analysisUnavailableReason(current)}</td></tr>)}</tbody></table></div><DetailPagination total={findingResult.total} page={currentFindingPage} pageSize={findingPageSize} onPage={setFindingPage} onPageSize={(size) => { setFindingPageSize(size); setFindingPage(1); }} />
               {(can("metadata.view") || can("metadata.manage")) && <PackageMetadataPanel runId={current.id} canManage={can("metadata.manage")} />}
     {can("metadata.view") && <OfflineRunEvidence key={`offline-${current.id}`} runId={current.id} canRespond={can("vex.manage")} canViewResponses={can("vex.view")} />}
-    {(can("ssvc.view") || can("ssvc.manage")) && <SsvcAssessmentsPanel key={current.id} runId={current.id} findings={findings} canManage={can("ssvc.manage")} />}
-    {(can("vex.view") || can("vex.manage") || can("vex.approve")) && <VexReviewsPanel runId={current.id} findings={findings} username={username} canManage={can("vex.manage")} canApprove={can("vex.approve")} />}
+    {(can("ssvc.view") || can("ssvc.manage")) && <SsvcAssessmentsPanel key={`ssvc-${current.id}`} runId={current.id} findings={findings} canManage={can("ssvc.manage")} />}
+    {(can("vex.view") || can("vex.manage") || can("vex.approve")) && <VexReviewsPanel key={`vex-${current.id}`} runId={current.id} findings={findings} username={username} canManage={can("vex.manage")} canApprove={can("vex.approve")} />}
     <div className="drawer-actions">{message && (<p className="form-message" role="status">{message}</p>)}{standaloneMode ? (<p className="preview-note">미리보기 모드에서는 원본 파일을 저장하거나
               Grype 분석·KODA 정책 평가를 실행하지 않습니다.
             </p> ): (<><div className="drawer-action-row">
@@ -895,14 +907,14 @@ function ServicesPage({
             </button></div>)}
       </div>
     {message && (<p className="form-message" role="status">{message}</p>)}
-    <div className="settings-grid catalog-grid"><div className="table-frame"><h2 className="table-title">서비스 {activeServices.length}개</h2><div className="table-scroll" role="region" aria-label="서비스 목록 가로 스크롤" tabIndex={0}><table><thead><tr><th>서비스</th><th>식별자</th><th>작업</th></tr></thead><tbody>{activeServices.length ? (visibleServices.map((item) => (<tr key={item.id}><td>{item.name}</td><td className="mono">{item.slug}</td><td><button type="button" className="secondary compact" title={item.id} onClick={() => void copyOrShow("서비스 연동 ID", item.id)}>연동 ID 복사</button>{canManage && (
+    <div className="settings-grid catalog-grid"><div className="table-frame"><h2 className="table-title">서비스 {activeServices.length}개</h2><div className="table-scroll" role="region" aria-label="서비스 목록 가로 스크롤" tabIndex={0}><table className="service-catalog-flow-table"><thead><tr><th>서비스</th><th>식별자</th><th>작업</th></tr></thead><tbody>{activeServices.length ? (visibleServices.map((item) => (<tr key={item.id}><td><ScrollingText>{item.name}</ScrollingText></td><td className="mono"><ScrollingText>{item.slug}</ScrollingText></td><td><button type="button" className="secondary compact" title={item.id} onClick={() => void copyOrShow("서비스 연동 ID", item.id)}>연동 ID 복사</button>{canManage && (
                         <>
                           {" "}
                           <button className="secondary compact" disabled={busy} onClick={() => void editService(item)}>이름 변경
                           </button> {" "}<button className="danger compact" disabled={busy} onClick={() => void removeService(item)}>삭제</button></>
                       )}
     </td></tr>) )
-              ): (<tr><td colSpan={3}>등록된 서비스가 없습니다.</td></tr>)}</tbody></table></div><DetailPagination total={activeServices.length} page={currentServicePage} pageSize={catalogPageSize} label="서비스 페이지당 행 수" onPage={setServicePage} onPageSize={(size) => { setCatalogPageSize(size); setServicePage(1); setEnvironmentPage(1); }} /></div><div className="table-frame"><h2 className="table-title">환경 {activeEnvironments.length}개</h2><div className="table-scroll" role="region" aria-label="환경 목록 가로 스크롤" tabIndex={0}><table><thead><tr><th>환경</th><th>식별자</th><th>정렬</th><th>작업</th></tr></thead><tbody>{activeEnvironments.length ? (visibleEnvironments.map((item) => (<tr key={item.id}><td>{item.name}</td><td className="mono">{item.slug}</td><td>{item.sortOrder ?? "-"}</td><td><button type="button" className="secondary compact" title={item.id} onClick={() => void copyOrShow("환경 연동 ID", item.id)}>연동 ID 복사</button>{canManage && (<>{" "}<button className="secondary compact" disabled={busy} onClick={() => setEditingEnvironment(item)}>변경
+              ): (<tr><td colSpan={3}>등록된 서비스가 없습니다.</td></tr>)}</tbody></table></div><DetailPagination total={activeServices.length} page={currentServicePage} pageSize={catalogPageSize} label="서비스 페이지당 행 수" onPage={setServicePage} onPageSize={(size) => { setCatalogPageSize(size); setServicePage(1); setEnvironmentPage(1); }} /></div><div className="table-frame"><h2 className="table-title">환경 {activeEnvironments.length}개</h2><div className="table-scroll" role="region" aria-label="환경 목록 가로 스크롤" tabIndex={0}><table className="environment-catalog-flow-table"><thead><tr><th>환경</th><th>식별자</th><th>정렬</th><th>작업</th></tr></thead><tbody>{activeEnvironments.length ? (visibleEnvironments.map((item) => (<tr key={item.id}><td><ScrollingText>{item.name}</ScrollingText></td><td className="mono"><ScrollingText>{item.slug}</ScrollingText></td><td>{item.sortOrder ?? "-"}</td><td><button type="button" className="secondary compact" title={item.id} onClick={() => void copyOrShow("환경 연동 ID", item.id)}>연동 ID 복사</button>{canManage && (<>{" "}<button className="secondary compact" disabled={busy} onClick={() => setEditingEnvironment(item)}>변경
                         </button> <button className="danger compact" disabled={busy} onClick={() => void removeEnvironment(item)}>삭제</button></>)}</td></tr>) )
               ): (<tr><td colSpan={4}>등록된 환경이 없습니다.</td></tr>)}</tbody></table></div><DetailPagination total={activeEnvironments.length} page={currentEnvironmentPage} pageSize={catalogPageSize} label="환경 페이지당 행 수" onPage={setEnvironmentPage} onPageSize={(size) => { setCatalogPageSize(size); setServicePage(1); setEnvironmentPage(1); }} /></div></div>
     {mode && (<div className="modal-backdrop" role="presentation"><section className="modal" role="dialog" aria-modal="true"><header><h2>{mode === "service" ? "서비스 추가" : "환경 추가"}</h2><button type="button" className="icon-button" aria-label="추가 창 닫기" onClick={() => setMode(null)}><Icon name="close" /></button></header><form onSubmit={submit}><label>이름
@@ -1009,7 +1021,7 @@ function LdapSettingsPanel({ settings, onChanged }: { settings: LdapSettings | n
         <label className="login-checkbox"><input type="checkbox" checked={form.enabled} onChange={(event) => setForm((current) => current ? { ...current, enabled: event.target.checked, verifyCertificate: true } : current)} /> LDAP 로그인 사용</label>
         <h3>연결</h3>
         <div className="form-row"><label>LDAP 서버<input value={form.host} onChange={(event) => change("host", event.target.value)} placeholder="ldap.example.or.kr" required={form.enabled} /></label><label>포트<input type="number" min={1} max={65535} value={form.port} onChange={(event) => change("port", Number(event.target.value))} /></label><label>TLS 방식<select value={form.tlsMode} onChange={(event) => change("tlsMode", event.target.value as LdapForm["tlsMode"])}><option value="starttls">StartTLS (389)</option><option value="ldaps">LDAPS (636)</option><option value="plain">LDAP 평문 (389, 현재 AI 호환)</option></select></label></div>
-        <div className="form-row"><label>Bind DN / UPN<input value={form.bindDn} onChange={(event) => change("bindDn", event.target.value)} placeholder="admin@example.or.kr" required={form.enabled} /></label><label>Bind 비밀번호<input type="password" value={form.bindPassword} onChange={(event) => change("bindPassword", event.target.value)} placeholder={form.hasBindPassword ? "기존 값 유지" : "입력 필요"} autoComplete="new-password" required={form.enabled && !form.hasBindPassword} /></label></div>
+        <div className="form-row"><label>Bind DN / UPN<input value={form.bindDn} onChange={(event) => change("bindDn", event.target.value)} placeholder="ssisadm@ssis-g.or.kr" required={form.enabled} /></label><label>Bind 비밀번호<input type="password" value={form.bindPassword} onChange={(event) => change("bindPassword", event.target.value)} placeholder={form.hasBindPassword ? "기존 값 유지" : "입력 필요"} autoComplete="new-password" required={form.enabled && !form.hasBindPassword} /></label></div>
         <h3>사용자 식별</h3>
         <div className="form-row"><label>검색 기준 DN<input value={form.baseDn} onChange={(event) => change("baseDn", event.target.value)} placeholder="DC=example,DC=or,DC=kr" required={form.enabled} /></label><label>CA 인증서 경로<input value={form.caCertPath} onChange={(event) => change("caCertPath", event.target.value)} placeholder="/run/secrets/ldap-ca.crt" /></label></div>
         <div className="form-row"><label>로그인 속성<input value={form.loginAttribute} onChange={(event) => change("loginAttribute", event.target.value)} /></label><label>Tracker 사용자 ID 속성<input value={form.usernameAttribute} onChange={(event) => change("usernameAttribute", event.target.value)} /></label><label>고유 식별자 속성<input value={form.subjectAttribute} onChange={(event) => change("subjectAttribute", event.target.value)} /><small>AD는 objectGUID, OpenLDAP은 entryUUID를 사용합니다.</small></label><label>그룹 속성<input value={form.groupAttribute} onChange={(event) => change("groupAttribute", event.target.value)} /></label></div>
@@ -1062,13 +1074,14 @@ export function SettingsPage({ users, services, environments = [], tokens, ldapS
   onChanged: () => void;
 }) {
   const [mode, setMode] = useState<"user" | "token" | null>(null);
-  const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab === "private-vulnerabilities" || initialTab === "metadata" ? "vulnerability" : initialTab || "users");
-  const [vulnerabilityDataTab, setVulnerabilityDataTab] = useState<"external" | "private" | "metadata">(initialTab === "private-vulnerabilities" ? "private" : initialTab === "metadata" ? "metadata" : "external");
+  const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab === "private-vulnerabilities" || initialTab === "metadata" || initialTab === "cve-search" ? "vulnerability" : initialTab || "users");
+  const [vulnerabilityDataTab, setVulnerabilityDataTab] = useState<"external" | "private" | "metadata" | "cve">(initialTab === "private-vulnerabilities" ? "private" : initialTab === "metadata" ? "metadata" : initialTab === "cve-search" ? "cve" : "external");
   const canExternalData = isAdmin && canVulnerability;
   const canPrivateData = isAdmin && (canMetadata || canMetadataManage);
   const canMetadataData = canMetadata || canMetadataManage;
-  const canSelectedVulnerabilityData = vulnerabilityDataTab === "external" ? canExternalData : vulnerabilityDataTab === "private" ? canPrivateData : canMetadataData;
-  const activeVulnerabilityDataTab = canSelectedVulnerabilityData ? vulnerabilityDataTab : canExternalData ? "external" : canPrivateData ? "private" : "metadata";
+  const canCveData = canVulnerability || canMetadata;
+  const canSelectedVulnerabilityData = vulnerabilityDataTab === "cve" ? canCveData : vulnerabilityDataTab === "external" ? canExternalData : vulnerabilityDataTab === "private" ? canPrivateData : canMetadataData;
+  const activeVulnerabilityDataTab = canSelectedVulnerabilityData ? vulnerabilityDataTab : canExternalData ? "external" : canPrivateData ? "private" : canMetadataData ? "metadata" : "cve";
   const [message, setMessage] = useState("");
   const [issuedToken, setIssuedToken] = useState<{ name: string; token: string; serviceId: string } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -1090,12 +1103,13 @@ export function SettingsPage({ users, services, environments = [], tokens, ldapS
     if (canServices) tabs.push({ id: "services", label: "서비스·환경", icon: "service" });
     if (canUsers || canTokens) tabs.push({ id: "users", label: "사용자 관리", icon: "user" });
     if (canRoles || canPolicyEdit) tabs.push({ id: "roles", label: "권한 관리", icon: "settings" });
-    if (canExternalData || canPrivateData || canMetadataData) tabs.push({ id: "vulnerability", label: "취약점 데이터", icon: "vulnerability" });
+    if (isAdmin) tabs.push({ id: "environment-admins", label: "환경별 관리자", icon: "user" });
+    if (canExternalData || canPrivateData || canMetadataData || canCveData) tabs.push({ id: "vulnerability", label: "취약점 데이터", icon: "vulnerability" });
     if (isAdmin && canAudit) tabs.push({ id: "audit", label: "감사 로그", icon: "audit" });
     if (canServices && canTokens) tabs.push({ id: "integration", label: "연동 설정", icon: "integration" });
     if (isAdmin) tabs.push({ id: "ldap", label: "LDAP 로그인", icon: "lock" });
     return tabs;
-  }, [canExternalData, canPrivateData, canMetadataData, canProjects, canReanalysis, canReanalysisManage, canNotifications, canNotificationManage, canSbomPolicies, canSbomPolicyManage, canAudit, canPolicyEdit, canRoles, canServices, canTokens, canUsers, isAdmin]);
+  }, [canExternalData, canPrivateData, canMetadataData, canCveData, canProjects, canReanalysis, canReanalysisManage, canNotifications, canNotificationManage, canSbomPolicies, canSbomPolicyManage, canAudit, canPolicyEdit, canRoles, canServices, canTokens, canUsers, isAdmin]);
   useEffect(
     () =>
       setPolicyDraft(
@@ -1162,24 +1176,27 @@ export function SettingsPage({ users, services, environments = [], tokens, ldapS
     {activeTab === "integration" && (canServices && canTokens) && (<div className="settings-panel integration-settings-panel" id="settings-panel-integration" role="tabpanel" aria-labelledby="settings-tab-integration">
       {canServices && canTokens && (<>
         <div className="table-frame integration-status"><div className="settings-panel-heading"><div><h2 className="table-title">KODA GitLab 자동 연동</h2><p>GitLab 연결과 저장소 선택은 KODA에서만 설정합니다. Tracker는 KODA 요청을 받아 저장소별 서비스·환경·전송 토큰을 자동 생성하거나 재사용합니다.</p></div><span className={`user-status ${gitlabServices.length ? "active" : "inactive"}`}>{gitlabServices.length ? "저장소 연결됨" : "연결 대기"}</span></div><div className="integration-status-body"><p>GitLab 저장소 → KODA 점검·CycloneDX 생성 → Tracker 회차 수신·분석 → KODA가 GitLab 결과 MR·취약점 이슈 저장</p><p>{gitlabEnvironment ? "gitlab-source 환경이 자동 준비되었습니다." : "첫 저장소 연결 시 gitlab-source 환경이 자동 준비됩니다."}</p><div className="button-row"><button type="button" className="secondary" onClick={() => setActiveTab("services")}>자동 생성 항목 보기</button></div></div></div>
-        <div className="table-frame"><h2 className="table-title">자동 생성된 저장소 서비스</h2><div className="table-scroll" role="region" aria-label="저장소 서비스 목록 가로 스크롤" tabIndex={0}><table><thead><tr><th>GitLab 저장소</th><th>Tracker 식별자</th><th>전송 토큰</th></tr></thead><tbody>{gitlabServices.length ? visibleGitlabServices.map((item) => { const tokenCount = tokens.filter((token) => token.active && token.serviceId === item.id).length; return (<tr key={item.id}><td>{item.name}</td><td className="mono">{item.slug}</td><td>{tokenCount ? "활성" : "확인 필요"}</td></tr>);}) : (<tr><td colSpan={3}>KODA에서 연결한 GitLab 저장소가 없습니다.</td></tr>)}</tbody></table></div><DetailPagination total={gitlabServices.length} page={currentGitlabServicePage} pageSize={gitlabPageSize} label="GitLab 서비스 페이지당 행 수" onPage={setGitlabServicePage} onPageSize={(size) => { setGitlabPageSize(size); setGitlabServicePage(1); }} /></div>
+        <div className="table-frame"><h2 className="table-title">자동 생성된 저장소 서비스</h2><div className="table-scroll" role="region" aria-label="저장소 서비스 목록 가로 스크롤" tabIndex={0}><table className="gitlab-service-flow-table"><thead><tr><th>GitLab 저장소</th><th>Tracker 식별자</th><th>전송 토큰</th></tr></thead><tbody>{gitlabServices.length ? visibleGitlabServices.map((item) => { const tokenCount = tokens.filter((token) => token.active && token.serviceId === item.id).length; return (<tr key={item.id}><td><ScrollingText>{item.name}</ScrollingText></td><td className="mono"><ScrollingText>{item.slug}</ScrollingText></td><td>{tokenCount ? "활성" : "확인 필요"}</td></tr>);}) : (<tr><td colSpan={3}>KODA에서 연결한 GitLab 저장소가 없습니다.</td></tr>)}</tbody></table></div><DetailPagination total={gitlabServices.length} page={currentGitlabServicePage} pageSize={gitlabPageSize} label="GitLab 서비스 페이지당 행 수" onPage={setGitlabServicePage} onPageSize={(size) => { setGitlabPageSize(size); setGitlabServicePage(1); }} /></div>
       </>)}
     </div>)}
     {activeTab === "reanalysis" && (canReanalysis || canReanalysisManage) && <ReanalysisSchedulePanel canManage={canReanalysisManage} services={services} environments={environments} />}
     {activeTab === "notifications" && (canNotifications || canNotificationManage) && <NotificationsPanel canManage={canNotificationManage} />}
     {activeTab === "sbom-policies" && (canSbomPolicies || canSbomPolicyManage) && <SbomPoliciesPanel canManage={canSbomPolicyManage} services={services} environments={environments} />}
     {activeTab === "services" && canServices && (<div id="settings-panel-services" role="tabpanel" aria-labelledby="settings-tab-services"><ServicesPage services={services} environments={environments} canManage={canCatalogManage} onChanged={onChanged} /></div>)}
+    {activeTab === "environment-admins" && isAdmin && <div id="settings-panel-environment-admins" role="tabpanel" aria-labelledby="settings-tab-environment-admins"><EnvironmentAdministrators /></div>}
     {activeTab === "ldap" && isAdmin && (<LdapSettingsPanel settings={ldapSettings} onChanged={onLdapChanged} />)}
-    {activeTab === "users" && (canUsers || canTokens) && (<div className="settings-panel" id="settings-panel-users" role="tabpanel" aria-labelledby="settings-tab-users"><div className="settings-grid">{canUsers && (<div className="table-frame"><h2 className="table-title">사용자 {users.length}명</h2><div className="table-scroll" role="region" aria-label="사용자 목록 가로 스크롤" tabIndex={0}><table><thead><tr><th>사용자</th><th>역할</th><th>상태</th><th>작업</th></tr></thead><tbody>{users.length ? visibleUsers.map((item) => (<tr key={item.id || item.username} className={item.status === "pending" ? "pending-user" : ""}><td>{item.username}</td><td><select aria-label={`${item.username} 역할`} value={item.role} disabled={busy || item.status === "deleted"} onChange={(event) => void updateUser(item, "role", event.target.value)}>{canRoles && (<><option value="admin">관리자</option><option value="manager">매니저</option></>)}<option value="analyst">분석자</option><option value="uploader">업로더</option><option value="viewer">조회자</option></select></td><td><span className={`user-status ${item.status || (item.active ? "active" : "inactive")}`}>{userStatusLabel(item)}</span></td><td>{item.id && (item.status === "pending" ? (<button type="button" className="primary compact" disabled={busy} onClick={() => void approve(item)}>승인</button>) : item.status === "deleted" ? (<span>삭제됨</span>) : (<><button type="button" className="secondary compact" disabled={busy} onClick={() => void updateUser(item, "active", !item.active)}>{item.active ? "비활성화" : "활성화"}</button>{<button type="button" className="danger compact" disabled={busy} onClick={() => void removeUser(item)}>삭제</button>}</>))}</td></tr>)) : (<tr><td colSpan={4}>등록된 사용자가 없습니다.</td></tr>)}</tbody></table></div><DetailPagination total={users.length} page={currentUserPage} pageSize={accountPageSize} label="사용자 페이지당 행 수" onPage={setUserPage} onPageSize={(size) => { setAccountPageSize(size); setUserPage(1); setTokenPage(1); }} /></div>)}{canTokens && (<div className="table-frame"><h2 className="table-title">API 토큰 {tokens.length}개</h2><div className="table-scroll" role="region" aria-label="API 토큰 목록 가로 스크롤" tabIndex={0}><table><thead><tr><th>이름</th><th>서비스</th><th>생성 시각</th><th>상태</th><th /></tr></thead><tbody>{tokens.length ? visibleTokens.map((item) => (<tr key={item.id}><td>{item.name}</td><td>{services.find((service) => service.id === item.serviceId)?.name || item.serviceId || "-"}</td><td>{formatSeoulDateTime(item.createdAt)}</td><td>{item.active ? "활성" : "폐기"}</td><td>{item.active && (<button type="button" className="secondary compact" onClick={() => void revoke(item.id)} disabled={busy}>폐기</button>)}</td></tr>)) : (<tr><td colSpan={5}>발급된 토큰이 없습니다.</td></tr>)}</tbody></table></div><DetailPagination total={tokens.length} page={currentTokenPage} pageSize={accountPageSize} label="토큰 페이지당 행 수" onPage={setTokenPage} onPageSize={(size) => { setAccountPageSize(size); setUserPage(1); setTokenPage(1); }} /></div>)}</div></div>)}
+    {activeTab === "users" && (canUsers || canTokens) && (<div className="settings-panel" id="settings-panel-users" role="tabpanel" aria-labelledby="settings-tab-users"><div className="settings-grid">{canUsers && (<div className="table-frame"><h2 className="table-title">사용자 {users.length}명</h2><div className="table-scroll" role="region" aria-label="사용자 목록 가로 스크롤" tabIndex={0}><table className="settings-users-flow-table"><thead><tr><th>사용자</th><th>역할</th><th>상태</th><th>작업</th></tr></thead><tbody>{users.length ? visibleUsers.map((item) => (<tr key={item.id || item.username} className={item.status === "pending" ? "pending-user" : ""}><td><ScrollingText>{item.username}</ScrollingText></td><td><select aria-label={`${item.username} 역할`} value={item.role} disabled={busy || item.status === "deleted"} onChange={(event) => void updateUser(item, "role", event.target.value)}>{canRoles && (<><option value="admin">관리자</option><option value="manager">매니저</option></>)}<option value="analyst">분석자</option><option value="uploader">업로더</option><option value="viewer">조회자</option></select></td><td><span className={`user-status ${item.status || (item.active ? "active" : "inactive")}`}>{userStatusLabel(item)}</span></td><td>{item.id && (item.status === "pending" ? (<button type="button" className="primary compact" disabled={busy} onClick={() => void approve(item)}>승인</button>) : item.status === "deleted" ? (<span>삭제됨</span>) : (<><button type="button" className="secondary compact" disabled={busy} onClick={() => void updateUser(item, "active", !item.active)}>{item.active ? "비활성화" : "활성화"}</button>{<button type="button" className="danger compact" disabled={busy} onClick={() => void removeUser(item)}>삭제</button>}</>))}</td></tr>)) : (<tr><td colSpan={4}>등록된 사용자가 없습니다.</td></tr>)}</tbody></table></div><DetailPagination total={users.length} page={currentUserPage} pageSize={accountPageSize} label="사용자 페이지당 행 수" onPage={setUserPage} onPageSize={(size) => { setAccountPageSize(size); setUserPage(1); setTokenPage(1); }} /></div>)}{canTokens && (<div className="table-frame"><h2 className="table-title">API 토큰 {tokens.length}개</h2><div className="table-scroll" role="region" aria-label="API 토큰 목록 가로 스크롤" tabIndex={0}><table className="settings-tokens-flow-table"><thead><tr><th>이름</th><th>서비스</th><th>생성 시각</th><th>상태</th><th /></tr></thead><tbody>{tokens.length ? visibleTokens.map((item) => (<tr key={item.id}><td><ScrollingText>{item.name}</ScrollingText></td><td><ScrollingText>{services.find((service) => service.id === item.serviceId)?.name || item.serviceId || "-"}</ScrollingText></td><td>{formatSeoulDateTime(item.createdAt)}</td><td>{item.active ? "활성" : "폐기"}</td><td>{item.active && (<button type="button" className="secondary compact" onClick={() => void revoke(item.id)} disabled={busy}>폐기</button>)}</td></tr>)) : (<tr><td colSpan={5}>발급된 토큰이 없습니다.</td></tr>)}</tbody></table></div><DetailPagination total={tokens.length} page={currentTokenPage} pageSize={accountPageSize} label="토큰 페이지당 행 수" onPage={setTokenPage} onPageSize={(size) => { setAccountPageSize(size); setUserPage(1); setTokenPage(1); }} /></div>)}</div></div>)}
     {activeTab === "roles" && canPolicyEdit && policies.length > 0 && (<div className="settings-panel" id="settings-panel-roles" role="tabpanel" aria-labelledby="settings-tab-roles"><div className="table-frame"><h2 className="table-title">권한 정책</h2>{POLICY_SECTIONS.map((section) => (<section className="role-policy-section" key={section.label}><div className="role-policy-section-heading"><h3>{section.label}</h3><p>{section.description}</p></div><div className="role-policy-grid">{roles.map((role) => (<fieldset key={role} aria-label={`${roleLabel(role)} ${section.label}`}><legend>{roleLabel(role)}</legend>{section.groups.map((group) => { const entries = group.permissions.filter((permission) => permissionNames.includes(permission)); return entries.length ? (<div className="permission-group" key={group.label}>{section.label === "기능 제어" && <h4>{group.label}</h4>}{entries.map((permission) => (<label key={permission}><input type="checkbox" checked={policyDraft[role]?.has(permission) || false} disabled={!canPolicyEdit || busy || (permission === "sbom.delete" && role !== "admin")} onChange={() => setPolicyDraft((current) => { const next = new Set(current[role] || []); if (next.has(permission)) next.delete(permission); else next.add(permission); return { ...current, [role]: next }; })} />{section.label === "화면 접근 권한" ? permissionLabel(permission).replace(/ 조회$/, "") : permissionLabel(permission)}</label>))}</div>) : null; })}</fieldset>))}</div></section>))}{canPolicyEdit && (<div className="role-policy-actions"><button type="button" className="primary" onClick={async () => { setBusy(true); setMessage(""); try { const changed = roles.filter((role) => { const before = policies.find((item) => item.role === role)?.permissions || []; const after = [...(policyDraft[role] || [])]; return before.length !== after.length || before.some((item) => !policyDraft[role]?.has(item)); }); if (!changed.length) { setMessage("변경된 역할 정책이 없습니다."); return; } const updated = await updateRolePolicies(changed.map((role) => ({ role, permissions: [...(policyDraft[role] || [])] }))); const next = policies.map((item) => updated.find((changedPolicy) => changedPolicy.role === item.role) || item); await onPolicyChanged(next); setMessage("역할 정책을 저장했습니다."); } catch (error) { setMessage(error instanceof Error ? error.message : "역할 정책 저장에 실패했습니다."); } finally { setBusy(false); } }}>권한 정책 저장</button></div>)}</div></div>)}
-    {activeTab === "vulnerability" && (canExternalData || canPrivateData || canMetadataData) && (<div id="settings-panel-vulnerability" role="tabpanel" aria-labelledby="settings-tab-vulnerability">
+    {activeTab === "vulnerability" && (canExternalData || canPrivateData || canMetadataData || canCveData) && (<div id="settings-panel-vulnerability" role="tabpanel" aria-labelledby="settings-tab-vulnerability">
       <div className="page-heading vulnerability-data-heading"><h1>취약점 데이터</h1>
         <div className="settings-tabs vulnerability-data-tabs" role="tablist" aria-label="취약점 데이터 종류">
+          {canCveData && <button type="button" role="tab" id="vulnerability-data-tab-cve" aria-controls="vulnerability-data-panel-cve" aria-selected={activeVulnerabilityDataTab === "cve"} className={activeVulnerabilityDataTab === "cve" ? "active" : ""} onClick={() => setVulnerabilityDataTab("cve")}>CVE 검색</button>}
           {canExternalData && <button type="button" role="tab" id="vulnerability-data-tab-external" aria-controls="vulnerability-data-panel-external" aria-selected={activeVulnerabilityDataTab === "external"} className={activeVulnerabilityDataTab === "external" ? "active" : ""} onClick={() => setVulnerabilityDataTab("external")}>공개 참조 자료</button>}
           {canPrivateData && <button type="button" role="tab" id="vulnerability-data-tab-private" aria-controls="vulnerability-data-panel-private" aria-selected={activeVulnerabilityDataTab === "private"} className={activeVulnerabilityDataTab === "private" ? "active" : ""} onClick={() => setVulnerabilityDataTab("private")}>자체 등록 취약점</button>}
           {canMetadataData && <button type="button" role="tab" id="vulnerability-data-tab-metadata" aria-controls="vulnerability-data-panel-metadata" aria-selected={activeVulnerabilityDataTab === "metadata"} className={activeVulnerabilityDataTab === "metadata" ? "active" : ""} onClick={() => setVulnerabilityDataTab("metadata")}>자료 현황·영향</button>}
         </div>
       </div>
+      {activeVulnerabilityDataTab === "cve" && canCveData && <div id="vulnerability-data-panel-cve" role="tabpanel" aria-labelledby="vulnerability-data-tab-cve"><CveSearchPanel onOpenRun={canProjectRuns ? runId => { void fetchRun(runId).then(run => onOpenRun?.(run)).catch(cause => setMessage(cause instanceof Error ? cause.message : "연결된 회차를 열지 못했습니다.")); } : undefined} /></div>}
       {activeVulnerabilityDataTab === "external" && canExternalData && <div id="vulnerability-data-panel-external" role="tabpanel" aria-labelledby="vulnerability-data-tab-external"><VulnerabilityPage embedded bundles={bundles} canManage={canVulnerabilityManage} onSync={onSync} onActivate={onActivate} /></div>}
       {activeVulnerabilityDataTab === "private" && canPrivateData && <div id="vulnerability-data-panel-private" role="tabpanel" aria-labelledby="vulnerability-data-tab-private"><PrivateVulnerabilitiesPanel canManage={canMetadataManage}/></div>}
       {activeVulnerabilityDataTab === "metadata" && canMetadataData && <div id="vulnerability-data-panel-metadata" role="tabpanel" aria-labelledby="vulnerability-data-tab-metadata">
@@ -1189,7 +1206,7 @@ export function SettingsPage({ users, services, environments = [], tokens, ldapS
     </div>)}
     {activeTab === "audit" && isAdmin && canAudit && (<div id="settings-panel-audit" role="tabpanel" aria-labelledby="settings-tab-audit"><AuditPage embedded events={auditEvents} /></div>)}
     {!settingsTabs.length && (<div className="empty-state"><Icon name="settings" /><h2>관리 가능한 설정이 없습니다.</h2><p>현재 계정에 허용된 설정 권한이 없습니다.</p></div>)}
-    {mode && (<div className="modal-backdrop" role="presentation"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="settings-modal-title"><header><h2 id="settings-modal-title">{mode === "user" ? "사용자 추가" : "API 토큰 발급"}</h2><button type="button" className="icon-button" aria-label="설정 창 닫기" onClick={() => setMode(null)}><Icon name="close" /></button></header><form onSubmit={submit}>{mode === "user" ? (<><label>사용자 이름<input name="username" required autoFocus /></label><label>임시 비밀번호<input name="password" type="password" minLength={12} required /></label><label>역할<select name="role" defaultValue="viewer">{canRoles && (<><option value="admin">관리자</option><option value="manager">매니저</option></>)}<option value="analyst">분석자</option><option value="uploader">업로더</option><option value="viewer">조회자</option></select></label></>) : (<><label>토큰 이름<input name="name" required autoFocus /></label><label>허용 서비스<select name="serviceId" required><option value="" disabled>서비스를 선택하세요</option>{services.map((item) => (<option key={item.id} value={item.id}>{item.name}</option>))}</select></label><small>서비스 범위 토큰입니다. 토큰 원문은 지금만 표시되며 서버에는 해시만 저장됩니다.</small></>)}{message && <p className="form-message">{message}</p>}<footer><button type="button" className="secondary" onClick={() => setMode(null)}>닫기</button><button className="primary" disabled={busy}>{busy ? "처리 중…" : "확인"}</button></footer></form></section></div>)}
+    {mode && (<div className="modal-backdrop" role="presentation"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="settings-modal-title"><header><h2 id="settings-modal-title">{mode === "user" ? "사용자 추가" : "API 토큰 발급"}</h2><button type="button" className="icon-button" aria-label="설정 창 닫기" onClick={() => setMode(null)}><Icon name="close" /></button></header><form onSubmit={submit}>{mode === "user" ? (<><label>사용자 이름<input name="username" required autoFocus /></label><label>임시 비밀번호<input name="password" type="password" minLength={12} required /></label><label>역할<select name="role" defaultValue="viewer">{canRoles && (<><option value="admin">관리자</option><option value="manager">매니저</option></>)}<option value="analyst">분석자</option><option value="uploader">업로더</option><option value="viewer">조회자</option></select></label></>) : (<><label>토큰 이름<input name="name" required autoFocus /></label><label>허용 서비스<FlowSelect name="serviceId" required><option value="" disabled>서비스를 선택하세요</option>{services.map((item) => (<option key={item.id} value={item.id}>{item.name}</option>))}</FlowSelect></label><small>서비스 범위 토큰입니다. 토큰 원문은 지금만 표시되며 서버에는 해시만 저장됩니다.</small></>)}{message && <p className="form-message">{message}</p>}<footer><button type="button" className="secondary" onClick={() => setMode(null)}>닫기</button><button className="primary" disabled={busy}>{busy ? "처리 중…" : "확인"}</button></footer></form></section></div>)}
   </section>);
 }
 
@@ -1315,6 +1332,7 @@ export default function App() {
   const [tokens, setTokens] = useState<ApiTokenSummary[]>([]);
   const [ldapSettings, setLdapSettings] = useState<LdapSettings | null>(demoMode ? demoLdapSettings : null);
   const [loadError, setLoadError] = useState("");
+  const [libraryQuery, setLibraryQuery] = useState("");
   const [uploadOpen, setUploadOpen] = useState(false);
   const [selectedRun, setSelectedRun] = useState<SbomRun | null>(() =>
     initialLink.runId ? demoRuns.find((run) => run.id === initialLink.runId) || null : null);
@@ -1329,6 +1347,9 @@ export default function App() {
     setPage(nextPage);
     if (nextPage !== "runs") setSelectedRun(null);
     replacePortalLink(nextPage === "runs" ? { page: nextPage } : { page: nextPage, runId: null });}, []);
+  const openRunById = useCallback((runId: string) => {
+    void fetchRun(runId).then(openRun).catch(cause => setLoadError(cause instanceof Error ? cause.message : "연결된 회차를 열지 못했습니다."));
+  }, [openRun]);
   const permissions = useMemo(() => permissionSet(authUser), [authUser]);
   const can = useCallback(
     (permission: string) => permissions.has("*") || permissions.has(permission),
@@ -1437,6 +1458,7 @@ export default function App() {
           standalone={standaloneMode}/>);
     if (page === "runs") return (<RunsPage runs={runs} services={services} environments={environments} search={globalSearch}
           canUpload={canUpload} onUpload={() => setUploadOpen(true)} onSelect={openRun} />);
+    if (page === "libraries") return <LibrariesPage initialQuery={libraryQuery} onOpenRun={openRunById} />;
     if (page === "compare") return <ComparePage runs={runs} can={can} />;
     if (page === "guide") return <GuidePage />;
     const settingsContent = (initialTab?: SettingsTab) => (<SettingsPage users={users} services={services} environments={environments} tokens={tokens} ldapSettings={ldapSettings} policies={rolePolicies}
@@ -1474,7 +1496,7 @@ export default function App() {
           onLdapChanged={setLdapSettings}
           onChanged={() => void loadData(authUser)} />);
     if (page === "settings") return settingsContent(initialLink.settingsTab || undefined);
-    return <GenericPage rows={genericRows.dashboard || []} />;}, [auditEvents, bundles, can, environments, genericRows, globalSearch, initialLink.settingsTab, ldapSettings, loadData, openRun, page, runs, services, tokens, users,
+    return <GenericPage rows={genericRows.dashboard || []} />;}, [auditEvents, bundles, can, environments, genericRows, globalSearch, initialLink.settingsTab, ldapSettings, loadData, openRun, openRunById, libraryQuery, page, runs, services, tokens, users,
     rolePolicyCatalog,
     rolePolicies, authUser, navigate, canUpload]);
   useEffect(() => {
@@ -1502,5 +1524,6 @@ export default function App() {
             </span></div>)}{content}</main>
     {uploadOpen && canUpload && (<UploadModal services={services} environments={environments} onClose={() => setUploadOpen(false)} onUploaded={(runId) => { setUploadOpen(false); void loadData(authUser).then((nextRuns) => { const uploaded = nextRuns.find((run) => run.id === runId); if (uploaded) openRun(uploaded);});}} />)}
     {selectedRun && (<RunDetail run={selectedRun} username={authUser?.username}
+          onOpenLibrary={query => { setLibraryQuery(query); closeRun(); navigate("libraries"); }}
           can={canRunAction} onClose={closeRun} onChanged={() => void loadData(authUser)} />)}
   </div>);}

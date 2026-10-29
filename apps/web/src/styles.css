@@ -96,7 +96,7 @@ h2, h3 { letter-spacing: -.35px; }
 .status-summary i { width: 1px; height: 25px; background: var(--border); }
 .filters { min-height: 60px; border: 1px solid var(--border); padding: 11px 12px; display: flex; align-items: center; gap: 16px; margin-bottom: 13px; border-radius: 4px; }
 .select-filter { display: flex; align-items: center; min-width: 188px; height: 36px; border: 1px solid var(--border); border-radius: 4px; }
-.select-filter span { padding: 0 10px; font-size: 13px; font-weight: 600; }
+.select-filter > span:first-child { padding: 0 10px; font-size: 13px; font-weight: 600; }
 .select-filter select { border: 0; flex: 1; height: 100%; background: transparent; padding: 0 24px 0 6px; outline: 0; font-size: 13px; }
 .reset { min-height: 36px; padding: 0 14px; margin-left: 2px; }
 .table-frame { border: 1px solid var(--border-dark); border-radius: 3px; overflow: hidden; background: #fff; }
@@ -325,7 +325,7 @@ button.danger.compact { min-height: 30px; padding: 0 10px; font-size: 12px; }
 .drawer-backdrop { place-items: center; padding: 24px; overflow-y: auto; }
 .detail-modal { width: min(1180px, calc(100vw - 48px)); max-height: calc(100vh - 48px); background: white; border-radius: 6px; box-shadow: 0 20px 60px rgba(0,0,0,.23); position: relative; overflow-y: auto; }
 .detail-modal > header { position: sticky; top: 0; z-index: 3; background: white; }
-.detail-modal header span { font-size: 12px; color: var(--muted); }
+.detail-modal > header > div > span { font-size: 12px; color: var(--muted); }
 .detail-modal h2 { margin: 3px 0 0; font-size: 20px; }
 .detail-status { display: flex; gap: 9px; padding: 16px 20px; border-bottom: 1px solid var(--border); font-size: 12px; }
 .detail-status > span { padding-right: 9px; border-right: 1px solid var(--border); }
@@ -617,3 +617,55 @@ button.danger.compact { min-height: 30px; padding: 0 10px; font-size: 12px; }
   .cpe-coverage.tracker-view .table-scroll > .cpe-coverage-table { table-layout: auto; width: max-content; min-width: 100%; }
   .cpe-coverage.tracker-view .cpe-coverage-table th, .cpe-coverage.tracker-view .cpe-coverage-table td { width: auto; white-space: nowrap; }
 }
+
+/* Settings lists share the full card width with their pagination footer. */
+.catalog-grid .table-scroll > table { min-width: 100%; }
+#settings-panel-users td button.compact {
+  min-height: 26px;
+  padding: 0 7px;
+  font-size: 12px;
+  line-height: 1.2;
+}
+#settings-panel-users td button.compact + button.compact { margin-left: 4px; }
+
+/* Desktop comparison controls must not grow with their option text. */
+.compare-pickers, .analysis-pickers { grid-template-columns: minmax(0, 1fr) 60px minmax(0, 1fr) 142px; }
+.analysis-pickers label { min-width: 0; }
+
+/* Allocate finite text viewports before measuring overflow. */
+select, input, textarea, .form-row > label, .workflow-form > label, .workflow-form > div, .data-sample-picker { min-width: 0; max-width: 100%; }
+.select-filter { flex: 0 1 260px; width: 260px; min-width: 0; max-width: 100%; }
+.select-filter > span:first-child { flex: none; }
+.select-filter > .flow-select { flex: 1; --select-height: 34px; }
+.select-filter .flow-select-viewport { left: 6px; font-size: 13px; }
+.filters { flex-wrap: wrap; }
+.flow-select.flow-select > select { min-width: 0; width: 100%; max-width: 100%; height: 100%; padding-right: 32px; }
+.flow-select[data-ready="true"] > select { color: transparent; }
+.flow-select > select option, .flow-select > select optgroup { color: var(--text); background: white; }
+.runs-page .runs-table { table-layout: fixed; width: 100%; min-width: 1120px; }
+.runs-table th:nth-child(1) { width: 190px; }
+.runs-table th:nth-child(2) { width: 110px; }
+.runs-table th:nth-child(3) { width: 140px; }
+.runs-table th:nth-child(4) { width: 60px; }
+.runs-table th:nth-child(5) { width: 120px; }
+.runs-table th:nth-child(6), .runs-table th:nth-child(7), .runs-table th:nth-child(8) { width: 80px; }
+.runs-table th:nth-child(9) { width: 100px; }
+.runs-table th:nth-child(10) { width: 160px; }
+.detail-modal > header > div { min-width: 0; flex: 1; margin-right: 14px; }
+.detail-modal > header > button { flex: none; }
+.detail-modal .detail-environment { min-width: 0; max-width: 45%; }
+.detail-modal dd { min-width: 0; }
+.detail-modal .component-inspector-table, .detail-modal .finding-inspector-table { table-layout: fixed; width: 100%; }
+.component-inspector-table { min-width: 640px; }
+.component-inspector-table th:nth-child(1) { width: 25%; }
+.component-inspector-table th:nth-child(2) { width: 15%; }
+.component-inspector-table th:nth-child(3) { width: 40%; }
+.component-inspector-table th:nth-child(4) { width: 20%; }
+.finding-inspector-table { min-width: 1060px; }
+.finding-inspector-table th:nth-child(1) { width: 150px; }
+.finding-inspector-table th:nth-child(2) { width: 80px; }
+.finding-inspector-table th:nth-child(3) { width: 190px; }
+.finding-inspector-table th:nth-child(4), .finding-inspector-table th:nth-child(5) { width: 60px; }
+.finding-inspector-table th:nth-child(6) { width: 200px; }
+.finding-inspector-table th:nth-child(7) { width: 130px; }
+.finding-inspector-table th:nth-child(8) { width: 190px; }

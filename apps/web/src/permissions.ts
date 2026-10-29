@@ -1,10 +1,11 @@
 import type { AuthUser } from "./types";
 
-export type Page = "dashboard" | "runs" | "compare" | "settings" | "guide";
+export type Page = "dashboard" | "runs" | "libraries" | "compare" | "settings" | "guide";
 
 export const PAGE_PERMISSIONS: Record<Exclude<Page, "guide">, string> = {
   dashboard: "dashboard.view",
   runs: "runs.view",
+  libraries: "runs.view",
   compare: "compare.view",
   settings: "settings.view",
 };
@@ -21,7 +22,7 @@ export function canPermission(user: AuthUser | null, permission: string) {
 export function canPage(user: AuthUser | null, page: Page) {
   if (page === "guide") return Boolean(user?.active);
   return page === "settings"
-    ? canPermission(user, "catalog.manage") || canPermission(user, "metadata.view") || canPermission(user, "metadata.manage") || canPermission(user, "settings.view") || canPermission(user, "services.view") || canPermission(user, "policies.view") || canPermission(user, "policies.manage") || canPermission(user, "reanalysis.view") || canPermission(user, "reanalysis.manage") || canPermission(user, "notifications.view") || canPermission(user, "notifications.manage")
+    ? canPermission(user, "catalog.manage") || canPermission(user, "vulnerability.view") || canPermission(user, "metadata.view") || canPermission(user, "metadata.manage") || canPermission(user, "settings.view") || canPermission(user, "services.view") || canPermission(user, "policies.view") || canPermission(user, "policies.manage") || canPermission(user, "reanalysis.view") || canPermission(user, "reanalysis.manage") || canPermission(user, "notifications.view") || canPermission(user, "notifications.manage")
     : canPermission(user, PAGE_PERMISSIONS[page]);
 }
 

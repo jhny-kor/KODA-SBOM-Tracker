@@ -87,6 +87,9 @@ from .ssvc_api import router as ssvc_router
 from .offline_intelligence_api import router as offline_intelligence_router
 from .quality_api import router as quality_router
 from .ci_gate import router as ci_gate_router
+from .environment_admin_api import router as environment_admin_router
+from .library_api import router as library_router
+from .cve_catalog_api import router as cve_catalog_router
 from .vulnerability import active_bundle, cvss_score, project_cve_findings, scan_bundle_releases
 from .ldap_auth import LdapConfig, LdapConfigurationError, LdapInvalidCredentials, LdapUnavailable, authenticate_user
 
@@ -439,6 +442,9 @@ app.include_router(project_catalog_router)
 app.include_router(private_vulnerability_router)
 app.include_router(quality_router)
 app.include_router(ci_gate_router)
+app.include_router(environment_admin_router)
+app.include_router(library_router)
+app.include_router(cve_catalog_router)
 app.add_middleware(RequestBodyLimitMiddleware)
 _upload_persist_lock = asyncio.Lock()
 
@@ -2113,6 +2119,7 @@ def _run_payload(
         "sizeBytes": item.size_bytes,
         "specVersion": item.spec_version,
         "filename": item.original_filename,
+        "note": item.note,
         "componentCount": component_count if component_count is not None else len(item.components),
         "componentTypeCounts": component_type_counts or {},
         "vulnerabilityCount": len(findings),
