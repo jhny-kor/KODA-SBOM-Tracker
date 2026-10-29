@@ -40,7 +40,7 @@ def context(tmp_path, monkeypatch):
     (root / "current").symlink_to(release, target_is_directory=True)
     data = release / "nvd.json"
     data.write_text(json.dumps({"vulnerabilities": {CVE: record()}}))
-    monkeypatch.setattr(catalog, "get_settings", lambda: SimpleNamespace(grype_db_dir=root / "current" / "grype-db", offline_mode=False))
+    monkeypatch.setattr(catalog, "get_settings", lambda: SimpleNamespace(grype_db_dir=root / "current" / "grype-db", offline_mode=False, data_update_spool_dir=tmp_path / "index-spool"))
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     Base.metadata.create_all(engine)
     with Session(engine) as db:
@@ -218,3 +218,60 @@ def test_official_nvd_affected_data_envelopes_keep_contributor_attribution(conte
     assert products[1]["ranges"][0]["status"] == "unaffected"
     detail = context.client.get(f"/api/v1/cve-catalog/{CVE}").json()
     assert detail["affected"] == affected
+
+
+def test_large_page_window_keeps_sorted_deduplicated_ids_and_exact_total(context):
+    values = [record(id=f"CVE-2020-{10000+n}") for n in reversed(range(70))]
+    values += [record(id="CVE-2020-10004", description="last duplicate")]
+    context.data.write_text(json.dumps({"vulnerabilities": values}))
+    result = context.client.get("/api/v1/cve-catalog?page=3&size=7").json()
+    assert result["total"] == 70
+    assert [r["id"] for r in result["items"]] == [f"CVE-2020-{10000+n}" for n in range(14, 21)]
+    assert context.client.get("/api/v1/cve-catalog?page=1000000000&size=100").json()["items"] == []
+    detail = context.client.get("/api/v1/cve-catalog/CVE-2020-10004").json()
+    assert detail["description"] == "last duplicate"
+
+
+def test_tampered_disposable_index_fails_closed_then_rebuilds_signed_source(context):
+    assert context.client.get("/api/v1/cve-catalog").status_code == 200
+    stat = context.data.stat()
+    identity = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+    from koda_tracker.vulnerability import active_bundle
+    bundle = active_bundle(catalog.get_settings())
+    index = catalog._search_index(str(context.data), identity, bundle.manifest_sha256)
+    index.path.chmod(0o600)
+    import sqlite3
+    with sqlite3.connect(index.path) as db:
+        db.execute("DELETE FROM records")
+    index.path.chmod(0o400)
+    assert context.client.get("/api/v1/cve-catalog").status_code == 503
+    rebuilt = context.client.get("/api/v1/cve-catalog")
+    assert rebuilt.status_code == 200 and rebuilt.json()["total"] == 1
+
+
+def test_source_change_while_index_is_built_never_returns_unapproved_rows(context, monkeypatch):
+    original = catalog._search_index
+
+    def mutate(*args):
+        context.data.write_text(json.dumps({"vulnerabilities": {CVE: record(description="unapproved replacement")}}))
+        return original(*args)
+
+    monkeypatch.setattr(catalog, "_search_index", mutate)
+    mutate.cache_clear = original.cache_clear
+    response = context.client.get("/api/v1/cve-catalog")
+    assert response.status_code == 503
+    assert "변경" in response.json()["detail"]
+
+
+def test_approval_is_checked_again_before_returning_cached_results(context, monkeypatch):
+    calls = []
+
+    def approval(*args):
+        calls.append(1)
+        if len(calls) == 2:
+            raise DataUpdateError("approval changed during lookup")
+
+    monkeypatch.setattr(catalog, "assert_approved_release", approval)
+    response = context.client.get("/api/v1/cve-catalog")
+    assert response.status_code == 503
+    assert "approval changed" in response.json()["detail"]

@@ -28,6 +28,7 @@ from fastapi import Depends
 from .security import require_permission
 from .config import Settings
 from .offline_intelligence import load_intelligence, normalize_source
+from .streaming_nvd import NvdShapeError, read_nvd
 
 DataType = Literal["grype-db", "vuln-data", "unified"]
 VULN_FILES = ("nvd.json", "nvd-data.json", "kev.json", "cisa-kev.json", "alias-index.json", "aliases.json", "epss.csv", "epss.csv.gz", "intelligence.json", "intelligence-sources")
@@ -338,13 +339,13 @@ def _validate_tree(root: Path, kind: DataType, *, allow_legacy: bool = False) ->
         if nvd is None:
             raise DataUpdateError("vuln-data requires nvd.json")
         try:
-            nvd_payload = json.loads(nvd.read_text(encoding="utf-8"))
-            if not isinstance(nvd_payload, dict) or not isinstance(nvd_payload.get("vulnerabilities"), (list, dict)):
-                raise DataUpdateError("NVD data must contain vulnerabilities")
+            read_nvd(nvd)
             kev = root / metadata.get("KEV_CATALOG", "kev.json")
             if kev.parent != root or not kev.is_file():
                 raise DataUpdateError("vuln-data requires kev.json")
             payload = json.loads(kev.read_text(encoding="utf-8"))
+        except NvdShapeError as exc:
+            raise DataUpdateError("NVD data must contain vulnerabilities") from exc
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise DataUpdateError("invalid vulnerability JSON") from exc
         if not isinstance(payload, dict) or not isinstance(payload.get("vulnerabilities"), list):
@@ -818,12 +819,12 @@ class DataUpdateEngine:
         if nvd is None or kev.parent != root or not kev.is_file():
             raise DataUpdateError("composite vulnerability data is incomplete")
         try:
-            nvd_payload = json.loads(nvd.read_text(encoding="utf-8"))
+            read_nvd(nvd)
             payload = json.loads(kev.read_text(encoding="utf-8"))
+        except NvdShapeError as exc:
+            raise DataUpdateError("composite NVD data is invalid") from exc
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise DataUpdateError("composite vulnerability JSON is invalid") from exc
-        if not isinstance(nvd_payload, dict) or not isinstance(nvd_payload.get("vulnerabilities"), (list, dict)):
-            raise DataUpdateError("composite NVD data is invalid")
         if not isinstance(payload, dict) or not isinstance(payload.get("vulnerabilities"), list):
             raise DataUpdateError("composite KEV catalog is invalid")
         _validate_intelligence(root, metadata)

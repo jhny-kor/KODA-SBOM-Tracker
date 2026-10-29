@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import re
+import sqlite3
 from contextlib import contextmanager
 from functools import lru_cache
 from pathlib import Path
@@ -20,6 +21,7 @@ from .data_updates import DataUpdateError, assert_approved_release, release_read
 from .db import get_db
 from .models import AnalysisRevision, Environment, Release, RolePolicy, SbomRun, Service
 from .offline_cpe import _compare, _fields, evaluate
+from .nvd_record_index import cached_nvd_records, nvd_description as _description
 from .security import DEFAULT_ROLE_PERMISSIONS, require_permission
 from .vulnerability import _nvd_details, _safe_bundle_file, active_bundle, cvss_score
 
@@ -37,12 +39,6 @@ def _http_url(value):
     except ValueError:
         return None
 
-
-def _description(record):
-    if isinstance(record.get("description"), str):
-        return record["description"]
-    values = record.get("descriptions") or []
-    return next((item.get("value", "") for item in values if isinstance(item, dict) and item.get("lang") == "en"), next((item.get("value", "") for item in values if isinstance(item, dict)), ""))
 
 
 def _cna_products(record):
@@ -183,13 +179,11 @@ def _summary(identifier, record):
 
 @lru_cache(maxsize=2)
 def _search_index(path_name, file_identity, manifest_hash):
-    # identity includes inode/ctime, so replacement and mutation do not reuse data.
-    with Path(path_name).open(encoding="utf-8") as handle:
-        payload = json.load(handle)
-    if not isinstance(payload, (dict, list)) or (isinstance(payload, dict) and not isinstance(payload.get("vulnerabilities"), (dict, list))):
-        raise ValueError("NVD 데이터 형식이 올바르지 않습니다")
-    records = _nvd_details(payload)
-    return records, [_summary(key, value) for key, value in sorted(records.items()) if _identifier.fullmatch(key)]
+    # Keep only a private disk index in the cache, never the complete raw JSON
+    # and expanded summaries. The release identity and approval are rechecked
+    # for every request under the existing release read lease.
+    settings = get_settings()
+    return cached_nvd_records(path_name, file_identity, manifest_hash, str(settings.data_update_spool_dir), _nvd_details)
 
 
 @contextmanager
@@ -200,18 +194,29 @@ def catalog_release():
             bundle = active_bundle(settings)
             if bundle is None:
                 _search_index.cache_clear()
+                cached_nvd_records.cache_clear()
                 raise DataUpdateError("활성 취약점 자료가 없습니다. 승인된 통합 자료를 반입·적용하세요")
             assert_approved_release(settings, bundle.path)
             path = _safe_bundle_file(bundle.path, bundle.metadata.get("NVD_INDEX"), ("nvd.json", "nvd-data.json"))
             if path is None:
                 _search_index.cache_clear()
+                cached_nvd_records.cache_clear()
                 raise DataUpdateError("활성 자료에 NVD 상세 정보가 없습니다")
             stat = path.stat()
             identity = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
-            records, index = _search_index(str(path), identity, bundle.manifest_sha256)
-            yield records, index, {"state": "ready", "bundleVersion": bundle.version, "dataAsOf": bundle.metadata.get("NVD_DATASET_DATE", bundle.data_as_of), "source": "승인된 활성 NVD 반입 자료"}
-    except (DataUpdateError, OSError, ValueError, TypeError) as exc:
+            records = _search_index(str(path), identity, bundle.manifest_sha256)
+            with records.checked():
+                yield records, records, {"state": "ready", "bundleVersion": bundle.version, "dataAsOf": bundle.metadata.get("NVD_DATASET_DATE", bundle.data_as_of), "source": "승인된 활성 NVD 반입 자료"}
+                after = path.stat()
+                if (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns) != identity:
+                    raise DataUpdateError("조회 중 NVD 원본이 변경되었습니다")
+                current = active_bundle(settings)
+                if current is None or (current.path, current.version, current.manifest_sha256) != (bundle.path, bundle.version, bundle.manifest_sha256):
+                    raise DataUpdateError("조회 중 활성 취약점 자료가 변경되었습니다")
+                assert_approved_release(settings, bundle.path)
+    except (DataUpdateError, OSError, ValueError, TypeError, sqlite3.Error) as exc:
         _search_index.cache_clear()
+        cached_nvd_records.cache_clear()
         raise HTTPException(503, f"CVE 자료 조회 불가: {exc}") from exc
 
 
@@ -219,21 +224,29 @@ def catalog_release():
 def search_cves(q: str = Query("", max_length=256), vendor: str = Query("", max_length=256), product: str = Query("", max_length=256), version: str = Query("", max_length=128), page: int = Query(1, ge=1), size: int = Query(20, ge=1, le=100), principal=Depends(_reader)):
     with catalog_release() as (records, index, metadata):
         rows = []
-        for row in index:
-            if q.strip().casefold() not in f"{row['id']} {row['description']}".casefold():
+        total = 0
+        start = (page - 1) * size
+        for identifier, record in index.items(q.strip().casefold()):
+            if not _identifier.fullmatch(identifier):
                 continue
+            if q.strip().casefold() not in f"{identifier} {_description(record)}".casefold():
+                continue
+            row = _summary(identifier, record)
             matches = [p for p in row["products"] if (p["source"] == "cna" or p["raw"].get("vulnerable") is True) and vendor.strip().casefold() in p["vendor"].casefold() and product.strip().casefold() in p["product"].casefold()]
             if (vendor.strip() or product.strip()) and not matches:
                 continue
-            status = version_match(records[row["id"]], matches, version.strip())
+            status = version_match(record, matches, version.strip())
             if status == "outside":
+                continue
+            total += 1
+            if not start < total <= start + size:
                 continue
             # Keep the search-matched product paired with its own range; another
             # product from the same CVE must not supply the displayed boundary.
-            matched = [p for p in matches if version_match(records[row["id"]], [p], version.strip()) != "outside"]
+            matched = [p for p in matches if version_match(record, [p], version.strip()) != "outside"]
             public_product = lambda p: {key: value for key, value in p.items() if key != "raw"}
             rows.append({**row, "products": [public_product(p) for p in row["products"]], "matchedProducts": [public_product(p) for p in matched], "versionMatch": status})
-        return {**metadata, "items": rows[(page - 1) * size:page * size], "total": len(rows), "page": page, "size": size, "versionSearchNote": "지원하지 않는 버전 체계·환경 조건은 확인 필요로 포함합니다. 실제 영향 판정은 SBOM 분석 근거를 확인하세요."}
+        return {**metadata, "items": rows, "total": total, "page": page, "size": size, "versionSearchNote": "지원하지 않는 버전 체계·환경 조건은 확인 필요로 포함합니다. 실제 영향 판정은 SBOM 분석 근거를 확인하세요."}
 
 
 def _observations(db, principal, identifier):
