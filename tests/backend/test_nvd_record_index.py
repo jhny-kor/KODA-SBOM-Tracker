@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 import json
+import gc
+import os
 from pathlib import Path
+import select
 import sqlite3
+import subprocess
+import sys
 import tracemalloc
 
 import pytest
@@ -134,3 +139,111 @@ def test_optional_description_shape_never_breaks_existing_analysis_records(tmp_p
     index = build(tmp_path, json.dumps(payload))
     assert dict(index.items()) == expected
     assert [identifier for identifier, _record in index.items("CVE-2020-11111")] == ["CVE-2020-11111"]
+
+
+_CHILD_CACHE = """
+import os, sys
+from pathlib import Path
+from koda_tracker.nvd_record_index import NvdRecordIndex
+from koda_tracker.vulnerability import _nvd_details
+index = NvdRecordIndex(Path(sys.argv[1]), Path(sys.argv[2]), _nvd_details)
+print(index.path.parent, flush=True)
+if sys.argv[3] == 'live':
+    sys.stdin.buffer.read(1)
+os._exit(0)
+"""
+
+
+def test_abrupt_process_exit_is_reclaimed_and_normal_gc_closes_lease(tmp_path):
+    source = tmp_path / "nvd.json"
+    source.write_text('{"vulnerabilities":[{"id":"CVE-2020-11111"}]}')
+    spool = tmp_path / "spool"
+    child = subprocess.run([sys.executable, "-c", _CHILD_CACHE, str(source), str(spool), "exit"], capture_output=True, text=True, timeout=10)
+    assert child.returncode == 0, child.stderr
+    orphan = Path(child.stdout.strip())
+    assert orphan.parent == spool and (orphan / "records.sqlite3").is_file()
+    # An interrupted build can leave writable DB/journal files, before the
+    # completed cache's chmod. They are still recognizable, private cache data.
+    (orphan / "records.sqlite3").chmod(0o644)
+    with (orphan / "records.sqlite3").open("r+b") as stream:
+        stream.truncate(2_500_000_000)  # Sparse: no multi-GB test payload or read.
+    (orphan / "records.sqlite3-journal").write_bytes(b"partial SQLite journal")
+    index = NvdRecordIndex(source, spool, _nvd_details)
+    assert not orphan.exists()
+    assert index.path.parent.stat().st_mode & 0o777 == 0o700
+    assert (index.path.parent / ".lease").stat().st_mode & 0o777 == 0o400
+    directory, descriptor = index.path.parent, index._lease_fd
+    del index
+    gc.collect()
+    assert not directory.exists()
+    with pytest.raises(OSError):
+        os.fstat(descriptor)
+
+
+def test_other_live_instances_and_processes_keep_their_cache(tmp_path):
+    source = tmp_path / "nvd.json"
+    source.write_text('{"vulnerabilities":[{"id":"CVE-2020-11111"}]}')
+    spool = tmp_path / "spool"
+    existing = NvdRecordIndex(source, spool, _nvd_details)
+    child = subprocess.Popen([sys.executable, "-c", _CHILD_CACHE, str(source), str(spool), "live"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        assert select.select([child.stdout], [], [], 10)[0], "child did not create a cache"
+        line = child.stdout.readline()
+        assert line, child.stderr.read()
+        live = Path(line.strip())
+        assert live.parent == spool
+        other = NvdRecordIndex(source, spool, _nvd_details)
+        assert existing.path.is_file() and (live / "records.sqlite3").is_file()
+        assert existing["CVE-2020-11111"]["id"] == "CVE-2020-11111"
+        child.communicate("x", timeout=10)
+        assert child.returncode == 0
+        after_exit = NvdRecordIndex(source, spool, _nvd_details)
+        assert not live.exists()
+        assert existing.path.is_file() and other.path.is_file() and after_exit.path.is_file()
+    finally:
+        if child.poll() is None:
+            child.kill()
+        child.communicate(timeout=10)
+
+
+def test_unknown_foreign_and_symlink_entries_are_preserved(tmp_path, monkeypatch):
+    from koda_tracker import nvd_record_index as module
+    spool = tmp_path / "spool"
+    spool.mkdir()
+
+    def marked(name, magic=module._LEASE_MAGIC):
+        directory = spool / name
+        directory.mkdir(mode=0o700)
+        (directory / ".lease").write_bytes(magic)
+        (directory / ".lease").chmod(0o400)
+        (directory / "records.sqlite3").write_bytes(b"cache")
+        return directory
+
+    unrelated = marked("releases")
+    unknown_magic = marked("cve-records-unknown", b"unrecognized lease\n")
+    unknown_child = marked("cve-records-extra")
+    (unknown_child / "original-sbom.json").write_text("preserve original")
+    nonprivate = marked("cve-records-public")
+    nonprivate.chmod(0o755)
+    missing_lease = spool / "cve-records-no-lease"
+    missing_lease.mkdir(mode=0o700)
+    symlink_dir = spool / "cve-records-symlink"
+    symlink_dir.symlink_to(unrelated, target_is_directory=True)
+    symlink_lease = marked("cve-records-linked-lease")
+    (symlink_lease / ".lease").unlink()
+    (symlink_lease / ".lease").symlink_to(unrelated / ".lease")
+    foreign = marked("cve-records-foreign")
+    # Exercise the owner boundary without requiring chown/root on the test host.
+    uid = os.geteuid()
+    with monkeypatch.context() as patch:
+        patch.setattr(module.os, "geteuid", lambda: uid + 1)
+        module._reclaim_orphaned_caches(spool)
+    assert (foreign / "records.sqlite3").read_bytes() == b"cache"
+    # Recheck the same entry as its actual owner: it is then an eligible orphan.
+    module._reclaim_orphaned_caches(spool)
+    assert not foreign.exists()
+    for directory in (unrelated, unknown_magic, unknown_child, nonprivate, missing_lease, symlink_dir, symlink_lease):
+        assert directory.is_dir()
+    assert symlink_dir.is_symlink() and (symlink_lease / ".lease").is_symlink()
+    assert (unknown_child / "original-sbom.json").read_text() == "preserve original"
+    assert (unrelated / "records.sqlite3").read_bytes() == b"cache"

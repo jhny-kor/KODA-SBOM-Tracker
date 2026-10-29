@@ -4,14 +4,120 @@ from __future__ import annotations
 from collections.abc import Mapping
 from contextlib import contextmanager
 from functools import lru_cache
+import fcntl
 import json
 import os
 from pathlib import Path
 import sqlite3
+import stat
 import tempfile
 import threading
+import weakref
 
 from .streaming_nvd import read_nvd
+
+_CACHE_PREFIX = "cve-records-"
+_LEASE_NAME = ".lease"
+_LEASE_MAGIC = b"KODA Tracker disposable NVD SQLite cache lease v1\n"
+_CACHE_FILES = {_LEASE_NAME, "records.sqlite3", "records.sqlite3-journal"}
+_DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+
+
+def _stat_identity(value):
+    return (value.st_dev, value.st_ino, value.st_uid, value.st_mode,
+            value.st_nlink, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
+
+
+def _reclaim_cache(parent_fd, name, uid):
+    """Remove only an unlocked, recognizable, flat cache owned by this user."""
+    if not name.startswith(_CACHE_PREFIX):
+        return
+    directory_fd = lease_fd = None
+    try:
+        before = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        if not stat.S_ISDIR(before.st_mode) or before.st_uid != uid or stat.S_IMODE(before.st_mode) != 0o700:
+            return
+        directory_fd = os.open(name, _DIRECTORY_FLAGS, dir_fd=parent_fd)
+        if _stat_identity(os.fstat(directory_fd)) != _stat_identity(before):
+            return
+        lease_fd = os.open(_LEASE_NAME, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=directory_fd)
+        lease = os.fstat(lease_fd)
+        if (not stat.S_ISREG(lease.st_mode) or lease.st_uid != uid or
+                stat.S_IMODE(lease.st_mode) != 0o400 or lease.st_nlink != 1 or
+                lease.st_size != len(_LEASE_MAGIC)):
+            return
+        fcntl.flock(lease_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if os.read(lease_fd, len(_LEASE_MAGIC) + 1) != _LEASE_MAGIC:
+            return
+        children = {}
+        with os.scandir(directory_fd) as entries:
+            for entry in entries:
+                info = entry.stat(follow_symlinks=False)
+                if (entry.name not in _CACHE_FILES or not stat.S_ISREG(info.st_mode) or
+                        info.st_uid != uid or info.st_nlink != 1):
+                    return
+                children[entry.name] = _stat_identity(info)
+        if children.get(_LEASE_NAME) != _stat_identity(lease):
+            return
+        if (_stat_identity(os.fstat(directory_fd)) != _stat_identity(before) or
+                _stat_identity(os.stat(name, dir_fd=parent_fd, follow_symlinks=False)) != _stat_identity(before)):
+            return
+        for child, expected in children.items():
+            if _stat_identity(os.stat(child, dir_fd=directory_fd, follow_symlinks=False)) != expected:
+                return
+        # The opened directory anchors every unlink. Never recurse into other
+        # directories, and retain the lease until the potentially huge DB is gone.
+        for child in children:
+            if child != _LEASE_NAME:
+                if _stat_identity(os.stat(child, dir_fd=directory_fd, follow_symlinks=False)) != children[child]:
+                    return
+                os.unlink(child, dir_fd=directory_fd)
+        if _stat_identity(os.stat(_LEASE_NAME, dir_fd=directory_fd, follow_symlinks=False)) != _stat_identity(lease):
+            return
+        os.unlink(_LEASE_NAME, dir_fd=directory_fd)
+        if _stat_identity(os.stat(name, dir_fd=parent_fd, follow_symlinks=False)) == _stat_identity(os.fstat(directory_fd)):
+            os.rmdir(name, dir_fd=parent_fd)
+    except OSError:
+        # A live lock, inaccessible/changed entry or another collector wins:
+        # preserve it and let normal cache creation report its own I/O errors.
+        return
+    finally:
+        if lease_fd is not None:
+            os.close(lease_fd)
+        if directory_fd is not None:
+            os.close(directory_fd)
+
+
+def _reclaim_orphaned_caches(parent):
+    parent_fd = os.open(parent, _DIRECTORY_FLAGS)
+    try:
+        with os.scandir(parent_fd) as entries:
+            for entry in entries:
+                if entry.name.startswith(_CACHE_PREFIX):
+                    _reclaim_cache(parent_fd, entry.name, os.geteuid())
+    finally:
+        os.close(parent_fd)
+
+
+def _open_cache_lease(directory):
+    descriptor = os.open(directory / _LEASE_NAME, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    try:
+        # Publish the recognizable magic only after holding the lifetime lock.
+        fcntl.flock(descriptor, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        if os.write(descriptor, _LEASE_MAGIC) != len(_LEASE_MAGIC):
+            raise OSError("incomplete NVD cache lease")
+        os.fchmod(descriptor, 0o400)
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _cleanup_cache(temporary, descriptor):
+    try:
+        temporary.cleanup()
+    finally:
+        os.close(descriptor)
 
 
 def _identity(path):
@@ -40,9 +146,13 @@ class NvdRecordIndex(Mapping):
     def __init__(self, source, cache_parent, normalize_fn):
         cache_parent = Path(cache_parent).resolve()
         cache_parent.mkdir(parents=True, exist_ok=True)
-        self._temporary = tempfile.TemporaryDirectory(prefix="cve-records-", dir=cache_parent)
+        _reclaim_orphaned_caches(cache_parent)
+        self._temporary = tempfile.TemporaryDirectory(prefix=_CACHE_PREFIX, dir=cache_parent)
         self.path = Path(self._temporary.name) / "records.sqlite3"
         try:
+            self.path.parent.chmod(0o700)
+            self._lease_fd = _open_cache_lease(self.path.parent)
+            self._cleanup = weakref.finalize(self, _cleanup_cache, self._temporary, self._lease_fd)
             with sqlite3.connect(self.path) as db:
                 db.execute("PRAGMA cache_size=-4096")
                 db.execute("CREATE TABLE records (source_key TEXT PRIMARY KEY, position INTEGER NOT NULL, id TEXT, record_json TEXT NOT NULL, search_text BLOB NOT NULL) WITHOUT ROWID")
@@ -71,7 +181,14 @@ class NvdRecordIndex(Mapping):
         except BaseException:
             if "db" in locals():
                 db.close()
-            self._temporary.cleanup()
+            if hasattr(self, "_cleanup"):
+                self._cleanup()
+            else:
+                try:
+                    self._temporary.cleanup()
+                finally:
+                    if hasattr(self, "_lease_fd"):
+                        os.close(self._lease_fd)
             raise
 
     @contextmanager
