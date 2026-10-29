@@ -98,3 +98,14 @@ def test_reference_database_failure_compensates_approval_instead_of_reporting_su
     assert not (root / "current").exists()
     assert json.loads((root / ".managed.json").read_text())["state"] == "unavailable"
     assert db.scalar(select(func.count()).select_from(OfflineReferenceSnapshot)) == 0
+
+
+def test_installer_cli_does_not_report_success_for_preserved_unavailable_data(monkeypatch, capsys):
+    monkeypatch.setattr("sys.argv", ["bootstrap-vuln-data.py", "/unused/unified-update.tar.gz"])
+    monkeypatch.setattr(bootstrap_module, "bootstrap", lambda archive: {
+        "status": "preserved", "state": "unavailable", "approvalChecked": False,
+    })
+    assert bootstrap_module.main() == 1
+    output = capsys.readouterr()
+    assert "Existing unavailable data was preserved" in output.err
+    assert not output.out

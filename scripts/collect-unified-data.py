@@ -66,6 +66,10 @@ def build(source, output, signing_key, *, version, data_date, grype_date=None, r
                 if path.name not in {'metadata.env', 'manifest.sha256'}:
                     if path.is_dir(): shutil.copytree(path, root / path.name)
                     else: shutil.copy2(path, root / path.name)
+            # Keep a multi-gigabyte database once after its verified component
+            # has been copied into the final signed payload.
+            shutil.rmtree(part)
+            archive.unlink()
         if 'EPSS_SNAPSHOT' not in metadata: raise ValueError('unified packages require an approved EPSS snapshot')
         kinds = set()
         reference_dates = {}

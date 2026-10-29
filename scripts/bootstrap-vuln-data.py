@@ -115,7 +115,10 @@ def main():
     parser.add_argument("archive", type=Path)
     args = parser.parse_args()
     try:
-        print(json.dumps(bootstrap(args.archive), ensure_ascii=False))
+        result = bootstrap(args.archive)
+        if result.get("status") == "preserved" and result.get("state") not in {"active", "purged", "purging"}:
+            raise DataUpdateError("Existing unavailable data was preserved; repair or apply a signed archive through administrator settings before completing installation")
+        print(json.dumps(result, ensure_ascii=False))
     except (DataUpdateError, OSError, tarfile.TarError) as exc:
         print("Approved vulnerability bootstrap failed: " + str(exc), file=sys.stderr)
         return 1
