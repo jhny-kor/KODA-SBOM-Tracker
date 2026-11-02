@@ -8,6 +8,7 @@ import zipfile
 
 import pytest
 
+from koda_tracker import archive_formats
 from koda_tracker.archive_formats import ArchiveError, _zip_bounds, archive_unpacked_size, create_archive, extract_archive
 
 
@@ -53,3 +54,19 @@ def test_standard_zip_compression_methods_keep_the_same_document(tmp_path, metho
         target.writestr("bom.json", b'{"bomFormat":"CycloneDX"}')
     target = tmp_path / "out"; target.mkdir()
     assert extract_archive(archive, target)[0].read_bytes() == b'{"bomFormat":"CycloneDX"}'
+
+
+def test_pax_scan_occurs_in_child_not_api_process(tmp_path, monkeypatch):
+    source = tmp_path / "pax.tar.gz"
+    with tarfile.open(source, "w:gz") as archive:
+        metadata = tarfile.TarInfo("PaxHeader")
+        metadata.type = tarfile.XHDTYPE
+        metadata.size = 2 * 1024 * 1024
+        archive.addfile(metadata, io.BytesIO(bytes(metadata.size)))
+        member = tarfile.TarInfo("document.json")
+        member.size = 2
+        archive.addfile(member, io.BytesIO(b"{}"))
+    monkeypatch.setattr(tarfile, "open", lambda *args, **kwargs: pytest.fail("untrusted PAX parsed in API process"))
+    assert archive_formats.archive_unpacked_size(source, max_members=2, max_unpacked_bytes=8, max_member_bytes=8) == 2
+    # This proves process separation only. Linux address-space enforcement is
+    # measured separately with the real runtime image, never inferred on macOS.
