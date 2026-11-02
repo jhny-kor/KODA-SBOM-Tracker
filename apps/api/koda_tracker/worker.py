@@ -4,6 +4,7 @@ import asyncio
 import argparse
 import fcntl
 import logging
+import re
 import time
 from pathlib import Path
 from contextlib import ExitStack
@@ -17,6 +18,14 @@ from .services import analyze_offline
 from .sbom_normalization import prepare_run, normalization_tick
 
 DATA_UPDATE_KINDS = {"data_update", "vulnerability_data_update"}
+
+
+def _purge_spooled_uploads(spool: Path) -> None:
+    """Remove generated upload names, including the old tar.gz spelling."""
+    for archive in spool.iterdir():
+        if re.fullmatch(r"upload-[0-9a-f]{32}\.(?:archive|tar\.gz)", archive.name):
+            if archive.is_file() or archive.is_symlink():
+                archive.unlink(missing_ok=True)
 
 
 def _reset_unified_live_references(db):
@@ -99,7 +108,7 @@ async def process_data_update_one() -> bool:
                 elif originals.is_dir(): rmtree(originals)
                 spool = get_settings().data_update_spool_dir
                 if spool.resolve() != (engine.root / "staging").resolve() and spool.is_dir():
-                    for archive in spool.glob("upload-*.tar.gz"): archive.unlink(missing_ok=True)
+                    _purge_spooled_uploads(spool)
                 job.payload = {**payload, "phase":"purged", "result":result}
                 db.add(AuditEvent(actor="data-update-worker",action="vuln_data.purge.complete",target_type="vulnerability_data_job",target_id=job.id,detail={"deleted":result,"sourceManifest":evidence,"preserved":["users","projects","sbom","analysis_results","ssvc","responses","vex","private_vulnerabilities"]}))
             elif action == "validate":

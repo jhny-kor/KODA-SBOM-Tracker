@@ -16,7 +16,7 @@ it("keeps source freshness and response counts with reference imports managed ce
   expect(screen.getByRole("region", {name:"반입 소스 가로 스크롤"})).toHaveAttribute("tabindex", "0");
   expect(screen.getByText("in_progress: 1, open: 1")).toBeInTheDocument();
   expect(screen.queryByLabelText("참조 자료 JSON 반입")).not.toBeInTheDocument();
-  expect(screen.getByText(/설정 → 취약점 데이터에서 통합 tar.gz로 반입·적용/)).toBeInTheDocument();
+  expect(screen.getByText(/설정 → 취약점 데이터에서 서명된 통합 압축파일로 반입·적용/)).toBeInTheDocument();
 });
 it("submits exact non-PURL response target and preserves explicit stale evidence", async () => {
   vi.mocked(request).mockImplementation(async (url, options) => options?.method === "POST" ? {id:"event",component:"demo@1.0",vulnerabilityId:"CVE-1",state:"in_progress",owner:"team",rationale:"upgrade",dueAt:null} : String(url).endsWith("/responses") ? {items:[]} : {revisionId:"rev",analysisReady:true,snapshotChanged:true,summary:manifest,components:[],findings:[{id:"CVE-1",component:"demo",version:"1.0",offlineReference:{supplierVexConflict:true}}]} as never);

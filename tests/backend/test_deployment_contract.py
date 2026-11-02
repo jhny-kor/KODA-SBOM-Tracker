@@ -37,7 +37,8 @@ def test_upload_limit_defaults_match_gateway_and_ui() -> None:
     ui = (ROOT / "apps/web/src/App.tsx").read_text()
 
     assert "max_upload_bytes: int = 500 * 1024 * 1024" in config
-    assert 'standaloneMode ? "100 MiB" : "500 MiB"' in ui
+    assert 'id="sbom-upload-limit"' in ui
+    assert '"100 MiB"' in ui and '"500 MiB (압축파일과 해제한 문서에 각각 적용)"' in ui
     assert "client_max_body_size 501m;" in (ROOT / "deploy/nginx/gateway.conf.template").read_text()
 
 

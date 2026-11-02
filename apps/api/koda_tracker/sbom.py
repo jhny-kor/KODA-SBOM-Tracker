@@ -6,14 +6,50 @@ import re
 import shutil
 import subprocess
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import unquote
 
 from defusedxml import ElementTree as SafeET
+from .archive_formats import MEDIA_TYPES as SBOM_ARCHIVE_MEDIA_TYPES
 
 
 class SbomValidationError(ValueError):
     pass
+
+
+def sbom_upload_media_type(path: Path, document_media_type: str) -> str:
+    """Describe the immutable uploaded bytes, rather than the extracted view."""
+    from .archive_formats import archive_kind, archive_media_type
+
+    kind = archive_kind(path)
+    return archive_media_type(kind) if kind is not None else document_media_type
+
+
+@contextmanager
+def sbom_document_path(path: Path, *, max_bytes: int | None = None):
+    """Yield one plain document; never persist or recursively unpack members."""
+    from .archive_formats import ArchiveError, archive_kind, extract_archive
+    from .config import get_settings
+
+    try:
+        kind = archive_kind(path)
+        if kind is None:
+            yield path
+            return
+        settings = get_settings()
+        limit = settings.max_upload_bytes if max_bytes is None else max_bytes
+        settings.artifact_dir.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix=".koda-sbom-archive-", dir=settings.artifact_dir) as temporary:
+            files = extract_archive(path, Path(temporary), max_members=256,
+                                    max_unpacked_bytes=limit, max_member_bytes=limit)
+            if len(files) != 1:
+                raise SbomValidationError("압축파일에는 디렉터리 외 SBOM 파일이 정확히 하나 있어야 합니다")
+            if archive_kind(files[0]) is not None:
+                raise SbomValidationError("중첩된 SBOM 압축파일은 허용되지 않습니다")
+            yield files[0]
+    except ArchiveError as exc:
+        raise SbomValidationError(f"SBOM 압축파일이 올바르지 않습니다: {exc}") from exc
 
 
 def _normalize_json(payload):
@@ -99,6 +135,11 @@ def parse_sbom(raw: bytes) -> tuple[dict, str]:
 
 
 def parse_sbom_file(path: Path) -> tuple[dict, str]:
+    with sbom_document_path(path) as document:
+        return _parse_sbom_document_file(document)
+
+
+def _parse_sbom_document_file(path: Path) -> tuple[dict, str]:
     with path.open("rb") as candidate:
         prefix = candidate.read(4096).lstrip()
         candidate.seek(0)
@@ -158,7 +199,7 @@ def validate_file_with_cyclonedx_cli(path: Path, binary: str, *, input_format: s
                 raise SbomValidationError("유효한 JSON 문서가 아닙니다") from exc
             if isinstance(candidate, dict) and "spdxVersion" in candidate:
                 normalized, _ = _normalize_json(candidate)
-                with tempfile.NamedTemporaryFile("w", suffix=".json", encoding="utf-8") as converted:
+                with tempfile.NamedTemporaryFile("w", suffix=".json", encoding="utf-8", dir=path.parent) as converted:
                     json.dump(normalized, converted, ensure_ascii=False)
                     converted.flush()
                     return validate_file_with_cyclonedx_cli(Path(converted.name), binary, input_format="json")

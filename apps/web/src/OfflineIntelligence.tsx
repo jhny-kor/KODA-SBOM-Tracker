@@ -61,7 +61,7 @@ export function OfflineIntelligencePanel() {
   }
   useEffect(() => { if (previewMode) return; let active = true; Promise.all([request<Status>(base), request<Impact>(`${base}/impact`)]).then(([next, projects]) => { if (active) {setStatus(next); setImpact(projects);} }).catch(e => {if (active) setError(message(e));}); return () => {active = false;}; }, []);
   return <section className="card tracker-view"><h3>폐쇄망 참조 자료 현황 · 영향과 대응</h3>
-    <p>참조 자료는 설정 → 취약점 데이터에서 통합 tar.gz로 반입·적용합니다. 이 화면에서는 자료별 기준일·유효기간과 영향·대응 현황을 확인합니다. 공급자 VEX 자동 억제와 SSVC 자동 결정은 적용하지 않습니다.</p>
+    <p>참조 자료는 설정 → 취약점 데이터에서 서명된 통합 압축파일로 반입·적용합니다. 이 화면에서는 자료별 기준일·유효기간과 영향·대응 현황을 확인합니다. 공급자 VEX 자동 억제와 SSVC 자동 결정은 적용하지 않습니다.</p>
     {previewMode && <p>참조 자료 현황과 대응 기록은 서버 연결 모드에서 확인할 수 있습니다.</p>}
     {error && <p role="alert">{error}</p>}
     {status && <>{Boolean(status.missingKinds?.length) && <p>자료 없음: {status.missingKinds?.join(", ")}</p>}<p>현재 {status.current.sources.length}개 소스 · 자료가 없거나 만료된 경우 최신 근거로 사용하지 않습니다.</p><div className="table-scroll tracker-table-scroll" role="region" aria-label="반입 소스 가로 스크롤" tabIndex={0}><table className="tracker-evidence-table tracker-evidence-sources" aria-label="반입 참조 소스 현황"><thead><tr><th>종류 / 소스</th><th>기준일</th><th>상태 / 유효일</th><th>원본 SHA-256</th></tr></thead><tbody>{status.current.sources.map(source => <tr key={`${source.kind}/${source.id}`}><td>{source.kind} / {source.id}</td><td>{source.dataDate}</td><td>{source.status} / {source.maxAgeDays}</td><td><code>{source.sha256}</code></td></tr>)}</tbody></table></div>

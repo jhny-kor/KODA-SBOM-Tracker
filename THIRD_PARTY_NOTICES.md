@@ -12,6 +12,7 @@ inventory for a specific build.
 | Eclipse Temurin OpenJDK runtime | 21 (image digest pinned in Dockerfile) | GPL-2.0 with Classpath Exception and included notices | https://adoptium.net/temurin/ |
 | Grype | 0.109.1 | Apache-2.0 | https://github.com/anchore/grype |
 | CycloneDX CLI | 0.30.0 | Apache-2.0 | https://github.com/CycloneDX/cyclonedx-cli |
+| libarchive and libarchive-tools | Debian package version recorded in the built image | BSD-2-Clause and included file-specific notices | https://github.com/libarchive/libarchive |
 | React and React DOM | 19.2.3 | MIT | https://github.com/facebook/react |
 | Scheduler | 0.27.0 | MIT | https://github.com/facebook/react |
 | Vite | 7.3.6 | MIT and bundled third-party notices | https://github.com/vitejs/vite |
@@ -28,6 +29,11 @@ package or image publishers. The bundled Java runtime retains its module-specifi
 license files under `/opt/koda-java/legal` and release metadata under
 `/opt/koda-java/release`. The Java adapter is compiled during the image build;
 the application image contains the runtime rather than the Java compiler.
+
+The Linux image includes libarchive for reading and creating supported 7-Zip
+data and SBOM archives. Its Debian copyright files and dependency notices remain
+under `/usr/share/doc/` in the image. Unsupported codecs and encrypted archives
+are rejected. This archive support does not change installer package formats.
 
 ## Presentation and documentation assets
 

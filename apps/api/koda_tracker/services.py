@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+from contextlib import nullcontext
 from collections import Counter
 from pathlib import Path
 
@@ -19,7 +20,7 @@ from .models import (
     RunComponent,
     SbomRun,
 )
-from .sbom import iter_components, licenses_for, normalized_identity, sha256_for
+from .sbom import SBOM_ARCHIVE_MEDIA_TYPES, iter_components, licenses_for, normalized_identity, sbom_document_path, sha256_for
 from . import package_metadata_models
 from .package_metadata import enqueue_components
 from . import workflow_models  # Register workflow tables before standalone create_all callers.
@@ -114,14 +115,21 @@ def _analyze_offline(db: Session, run: SbomRun) -> AnalysisRevision:
         env["GRYPE_DB_VALIDATE_AGE"] = "false"
         env["GRYPE_CHECK_FOR_APP_UPDATE"] = "false"
         env["GRYPE_EXTERNAL_SOURCES_ENABLE"] = "false"
-        process = subprocess.run(
-            [settings.grype_binary, f"sbom:{run.artifact_path}", "-o", "json"],
-            text=True,
-            capture_output=True,
-            timeout=300,
-            env=env,
-            check=False,
+        source = Path(run.artifact_path)
+        document = (
+            sbom_document_path(source, max_bytes=settings.max_upload_bytes)
+            if getattr(run, "media_type", "") in SBOM_ARCHIVE_MEDIA_TYPES.values()
+            else nullcontext(source)
         )
+        with document as selected:
+            process = subprocess.run(
+                [settings.grype_binary, f"sbom:{selected}", "-o", "json"],
+                text=True,
+                capture_output=True,
+                timeout=300,
+                env=env,
+                check=False,
+            )
         if process.returncode == 0:
             payload = json.loads(process.stdout)
             for match in payload.get("matches", []):

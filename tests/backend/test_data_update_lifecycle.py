@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import subprocess
 import tarfile
 from pathlib import Path
 
@@ -57,7 +58,11 @@ def test_upload_validate_apply_rollback_lifecycle(tmp_path, monkeypatch) -> None
     (base / "kev.json").write_text('{"vulnerabilities": []}', encoding="utf-8")
     (base / "metadata.env").write_text("BUNDLE_VERSION=base\nGRYPE_DB_SCHEMA=5\nKEV_CATALOG=kev.json\nVULN_DATA_VERSION=one\n", encoding="utf-8")
     engine._swap_pointer("current", base)
+    real_run = subprocess.run
     def fake_grype(command, **kwargs):
+        # Mock only Grype, retaining the real bounded archive subprocess.
+        if str(command[0]) != settings.grype_binary:
+            return real_run(command, **kwargs)
         if any(str(item).startswith("sbom:") for item in command):
             return type("R", (), {"returncode": 0, "stderr": "", "stdout": '{"matches": []}'})()
         cache = kwargs["env"]["GRYPE_DB_CACHE_DIR"]

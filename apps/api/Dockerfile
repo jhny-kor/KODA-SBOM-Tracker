@@ -24,6 +24,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1
 WORKDIR /app
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y libarchive-tools \
+    && rm -rf /var/lib/apt/lists/*
 COPY apps/api/pyproject.toml ./
 COPY apps/api/constraints.txt ./
 COPY apps/api/koda_tracker ./koda_tracker

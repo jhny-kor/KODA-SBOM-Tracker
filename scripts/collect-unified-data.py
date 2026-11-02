@@ -14,6 +14,18 @@ import subprocess
 import tarfile
 import tempfile
 
+import sys
+_script_dir = Path(__file__).resolve().parent
+_archive_module = next((candidate for candidate in (
+    _script_dir.parent / 'apps/api/koda_tracker/archive_formats.py',
+    _script_dir / 'archive_formats.py',
+    _script_dir.parent / 'source/apps/api/koda_tracker/archive_formats.py',
+) if candidate.is_file()), None)
+if _archive_module is None:
+    raise RuntimeError('archive format helpers are missing from this distribution')
+sys.path.insert(0, str(_archive_module.parent))
+from archive_formats import FORMATS, create_archive, output_format
+
 HERE = Path(__file__).resolve().parent
 OPTIONAL = {'vulnrichment', 'csaf', 'vex', 'ubuntu-oval', 'lifecycle', 'cpe-dictionary', 'cpe-match', 'cwe', 'spdx', 'package-metadata'}
 
@@ -32,12 +44,13 @@ def digest(path):
     return value.hexdigest()
 
 
-def build(source, output, signing_key, *, version, data_date, grype_date=None, required_kinds=()):
+def build(source, output, signing_key, *, version, data_date, grype_date=None, required_kinds=(), archive_format=None):
     source, output, signing_key = map(Path, (source, output, signing_key))
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,127}', version) or version in {'.', '..'}:
         raise ValueError('invalid version')
     dt.date.fromisoformat(data_date)
     dt.date.fromisoformat(grype_date or data_date)
+    selected_format = output_format(output, archive_format)
     if output.exists(): raise ValueError('output already exists')
     if not signing_key.is_file(): raise ValueError('a signing private key is required')
     if source.resolve() == signing_key.resolve() or source.resolve() in signing_key.resolve().parents:
@@ -95,14 +108,7 @@ def build(source, output, signing_key, *, version, data_date, grype_date=None, r
         manifest = root / 'manifest.sha256'
         manifest.write_text(''.join(f'{digest(path)}  {path.relative_to(root).as_posix()}\n' for path in files))
         subprocess.run(['openssl', 'dgst', '-sha256', '-sign', str(signing_key), '-out', str(root / 'manifest.sha256.sig'), str(manifest)], check=True, capture_output=True)
-        packed = temporary / 'complete.tar.gz'
-        with tarfile.open(packed, 'w:gz') as handle:
-            for path in sorted(root.rglob('*')):
-                if path.is_file(): handle.add(path, arcname=path.relative_to(root).as_posix(), recursive=False)
-        # Publish a completed file atomically on the same filesystem; never leave
-        # a partial named release after an interrupted copy or replace another build.
-        with packed.open('rb') as stream: os.fsync(stream.fileno())
-        os.link(packed, output)
+        create_archive(root, output, archive_format=selected_format)
     return output
 
 
@@ -137,6 +143,7 @@ def acquire(args, destination):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--format', choices=FORMATS, dest='archive_format', help='archive format; inferred from --output extension when omitted')
     parser.add_argument('--signing-key', type=Path, required=True, help='private RSA key, never included in the archive')
     parser.add_argument('--source', type=Path, help='approved local directory containing grype-db/ and vuln-data/; without this, collect online')
     parser.add_argument('--data-date', help='required when packaging approved local sources')
@@ -158,13 +165,13 @@ def main():
         if args.source:
             if not args.data_date or not args.grype_date: parser.error('--source requires --data-date and --grype-date')
             if args.epss or args.intelligence_spec: parser.error('with --source place approved EPSS/references inside vuln-data/')
-            output = build(args.source, args.output, args.signing_key, version=args.version, data_date=args.data_date, grype_date=args.grype_date, required_kinds=args.require_kind)
+            output = build(args.source, args.output, args.signing_key, version=args.version, data_date=args.data_date, grype_date=args.grype_date, required_kinds=args.require_kind, archive_format=args.archive_format)
         else:
             with tempfile.TemporaryDirectory(prefix='koda-connected-collect-') as temp:
                 source = Path(temp)
                 acquire(args, source)
                 output = build(source, args.output, args.signing_key, version=args.version,
-                               data_date=dt.datetime.now(dt.timezone.utc).date().isoformat(), grype_date=args.grype_date, required_kinds=args.require_kind)
+                               data_date=dt.datetime.now(dt.timezone.utc).date().isoformat(), grype_date=args.grype_date, required_kinds=args.require_kind, archive_format=args.archive_format)
         print('Created signed unified archive: ' + str(output))
         print('SHA-256: ' + digest(output))
     except (ValueError, OSError, subprocess.CalledProcessError) as exc:

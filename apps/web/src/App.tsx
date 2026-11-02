@@ -723,7 +723,7 @@ function UploadModal({
       <div className="form-row">{!standaloneMode && (<label>환경
                 <FlowSelect name="environmentId" required>{environments.filter((environment) => environment.active !== false).map((environment) => (<option key={environment.id} value={environment.id}>{environment.name}</option>))}</FlowSelect></label>)}<label>{standaloneMode ? "릴리스 (선택)" : "릴리스"}<input name="releaseVersion" placeholder="예: 1.4.2" defaultValue={standaloneMode ? "preview" : undefined} required={!standaloneMode} /></label></div>
       <label>SBOM 파일
-            <input name="sbom" type="file" aria-label="SBOM 파일" accept={standaloneMode ? ".json,.xml,application/json,application/xml" : ".json,.xml,application/json,application/xml,application/spdx+json,application/vnd.cyclonedx+json,application/vnd.cyclonedx+xml"} aria-describedby="sbom-supported-formats sbom-upload-limit" required /><small id="sbom-supported-formats">{standaloneMode ? "로컬 미리보기: CycloneDX JSON/XML" : "지원 형식: CycloneDX 1.4, 1.5, 1.6, 1.7 (JSON/XML) · SPDX 2.3 (JSON)"}</small><small id="sbom-upload-limit">최대 {standaloneMode ? "100 MiB" : "500 MiB"}</small></label>
+            <input name="sbom" type="file" aria-label="SBOM 파일" accept={standaloneMode ? ".json,.xml,application/json,application/xml" : ".json,.xml,.zip,.tar,.tar.gz,.tgz,.7z,application/json,application/xml,application/spdx+json,application/vnd.cyclonedx+json,application/vnd.cyclonedx+xml"} aria-describedby={`sbom-supported-formats${standaloneMode ? "" : " sbom-archive-formats"} sbom-upload-limit`} required /><small id="sbom-supported-formats">{standaloneMode ? "로컬 미리보기: CycloneDX JSON/XML" : "지원 형식: CycloneDX 1.4, 1.5, 1.6, 1.7 (JSON/XML) · SPDX 2.3 (JSON)"}</small>{!standaloneMode && <small id="sbom-archive-formats">압축 업로드: ZIP · TAR.GZ/TGZ · TAR · 7Z. 압축파일에는 위 지원 형식의 JSON/XML 문서 파일만 정확히 1개 넣으세요. README 등 동반 파일은 허용하지 않습니다. 형식과 내용은 서버에서 확인합니다.</small>}<small id="sbom-upload-limit">최대 {standaloneMode ? "100 MiB" : "500 MiB (압축파일과 해제한 문서에 각각 적용)"}</small></label>
       <label>메모
             <textarea name="note" rows={3} placeholder="변경 사유 또는 배포 식별자" /></label>
       {message && (<p className="form-message" role="status">{message}{jobState && <small> · 작업 상태: {jobStateLabel(jobState)}</small>}</p>)}
@@ -1223,7 +1223,7 @@ function GuidePage() {
       <h2 id="guide-flow-title">기본 사용 순서</h2>
       <ol className="guide-flow">
         <li><strong>서비스·환경 준비</strong><span>설정에서 SBOM을 구분할 서비스와 운영 환경을 확인합니다.</span></li>
-        <li><strong>SBOM 업로드</strong><span>서비스, 환경, 릴리스를 선택하고 CycloneDX 1.4~1.7 JSON/XML 또는 SPDX 2.3 JSON 파일을 등록합니다.</span></li>
+        <li><strong>SBOM 업로드</strong><span>서비스, 환경, 릴리스를 선택하고 CycloneDX 1.4~1.7 JSON/XML 또는 SPDX 2.3 JSON 파일을 등록합니다. ZIP, TAR.GZ/TGZ, TAR, 7Z 압축파일에는 지원 문서가 정확히 1개 있어야 합니다.</span></li>
         <li><strong>분석 결과 확인</strong><span>회차 상세에서 구성요소, CVE, CVSS, KEV, 제안 버전을 검토합니다.</span></li>
         <li><strong>변경 추적</strong><span>회차 비교에서 구성요소·취약점·정책 결과의 추가, 제거, 변경을 확인합니다.</span></li>
       </ol>

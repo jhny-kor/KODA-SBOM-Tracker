@@ -11,9 +11,20 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
-import tarfile
 import tempfile
 import importlib.util
+
+import sys
+_script_dir = Path(__file__).resolve().parent
+_archive_module = next((candidate for candidate in (
+    _script_dir.parent / 'apps/api/koda_tracker/archive_formats.py',
+    _script_dir / 'archive_formats.py',
+    _script_dir.parent / 'source/apps/api/koda_tracker/archive_formats.py',
+) if candidate.is_file()), None)
+if _archive_module is None:
+    raise RuntimeError('archive format helpers are missing from this distribution')
+sys.path.insert(0, str(_archive_module.parent))
+from archive_formats import FORMATS, create_archive, output_format
 
 
 def sha256(path: Path) -> str:
@@ -21,10 +32,11 @@ def sha256(path: Path) -> str:
         return hashlib.file_digest(stream, 'sha256').hexdigest()
 
 
-def build(kind: str, source: Path, output: Path, version: str, data_date: str) -> Path:
+def build(kind: str, source: Path, output: Path, version: str, data_date: str, *, archive_format: str | None = None) -> Path:
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,127}', version):
         raise ValueError('invalid version')
     dt.date.fromisoformat(data_date)
+    selected_format = output_format(output, archive_format)
     if output.exists():
         raise ValueError(f'output already exists: {output}')
     if any(p.is_symlink() for p in source.rglob('*')):
@@ -76,13 +88,7 @@ def build(kind: str, source: Path, output: Path, version: str, data_date: str) -
         (root / 'metadata.env').write_text(''.join(f'{k}={v}\n' for k, v in metadata.items()))
         files = sorted(p for p in root.rglob('*') if p.is_file())
         (root / 'manifest.sha256').write_text(''.join(f'{sha256(p)}  {p.relative_to(root).as_posix()}\n' for p in files))
-        partial = root / 'package.tar.gz'
-        with tarfile.open(partial, 'w:gz', compresslevel=1) as archive:
-            for path in [*files, root / 'manifest.sha256']:
-                archive.add(path, arcname=path.relative_to(root).as_posix(), recursive=False)
-        # Never overwrite a completed package, including a concurrent builder's output.
-        with output.open('xb') as target, partial.open('rb') as incoming:
-            shutil.copyfileobj(incoming, target)
+        create_archive(root, output, archive_format=selected_format)
     output.with_suffix(output.suffix + '.sha256').write_text(f'{sha256(output)}  {output.name}\n')
     return output
 
@@ -91,6 +97,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('kind', choices=['grype-db', 'vuln-data'])
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--format', choices=FORMATS, dest='archive_format', help='archive format; inferred from --output extension when omitted')
     parser.add_argument('--source', type=Path, help='verified imported Grype cache or NVD/KEV source directory')
     parser.add_argument('--download', action='store_true', help='refresh from official sources on this internet-connected host')
     parser.add_argument('--cache', type=Path, default=Path('.data-update-cache'))
@@ -117,7 +124,7 @@ def main() -> None:
             args.data_date = args.data_date or dt.datetime.now(dt.timezone.utc).date().isoformat()
     if not args.source or not args.data_date:
         parser.error('supply --source and --data-date, or --download')
-    print(build(args.kind, args.source, args.output, args.version, args.data_date))
+    print(build(args.kind, args.source, args.output, args.version, args.data_date, archive_format=args.archive_format))
 
 
 if __name__ == '__main__':

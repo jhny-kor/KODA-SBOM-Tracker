@@ -55,7 +55,7 @@ from .models import (
     VulnerabilityDataBundle,
 )
 from .sbom_normalization import mark_current
-from .sbom import component_count, SbomValidationError, parse_sbom_file, store_artifact_file, validate_component_count, validate_file_with_cyclonedx_cli
+from .sbom import component_count, SbomValidationError, parse_sbom_file, sbom_document_path, sbom_upload_media_type, store_artifact_file, validate_component_count, validate_file_with_cyclonedx_cli
 from .security import (
     current_principal,
     digest,
@@ -792,7 +792,9 @@ async def _stage_upload(upload: UploadFile, max_bytes: int) -> tuple[Path, str, 
     """Bound and hash the upload while keeping the payload on disk."""
     total = 0
     hasher = hashlib.sha256()
-    staged = tempfile.NamedTemporaryFile(prefix="koda-sbom-", delete=False)
+    directory = get_settings().artifact_dir
+    directory.mkdir(parents=True, exist_ok=True)
+    staged = tempfile.NamedTemporaryFile(prefix=".koda-sbom-upload-", dir=directory, delete=False)
     path = Path(staged.name)
     try:
         while chunk := await upload.read(1024 * 1024):
@@ -2012,14 +2014,16 @@ async def upload_sbom(
     staged_path, raw_sha256, size_bytes = await _stage_upload(sbom, get_settings().max_upload_bytes)
     try:
         try:
-            payload, media_type = parse_sbom_file(staged_path)
-            validate_component_count(payload, get_settings().max_sbom_components)
-            input_format = "json" if media_type.endswith("+json") else "xml"
-            validate_file_with_cyclonedx_cli(
-                staged_path,
-                get_settings().cyclonedx_cli_binary,
-                input_format=input_format,
-            )
+            with sbom_document_path(staged_path, max_bytes=get_settings().max_upload_bytes) as document:
+                payload, document_media_type = parse_sbom_file(document)
+                validate_component_count(payload, get_settings().max_sbom_components)
+                input_format = "json" if document_media_type.endswith("+json") else "xml"
+                validate_file_with_cyclonedx_cli(
+                    document,
+                    get_settings().cyclonedx_cli_binary,
+                    input_format=input_format,
+                )
+                media_type = sbom_upload_media_type(staged_path, document_media_type)
         except SbomValidationError as exc:
             raise HTTPException(422, str(exc)) from exc
         if source_value == "scheduled":
@@ -2704,7 +2708,8 @@ async def _stage_data_update_request(request: Request, *, kind: str) -> tuple[Pa
         raise HTTPException(422, "데이터 종류는 unified, grype-db 또는 vuln-data여야 합니다")
     spool = get_settings().data_update_spool_dir
     spool.mkdir(parents=True, exist_ok=True)
-    path = spool / f"upload-{uuid.uuid4().hex}.tar.gz"
+    # The data worker detects the actual archive format from its contents.
+    path = spool / f"upload-{uuid.uuid4().hex}.archive"
     digest_value = hashlib.sha256()
     total = 0
     try:

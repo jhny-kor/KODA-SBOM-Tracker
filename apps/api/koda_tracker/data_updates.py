@@ -12,7 +12,6 @@ import json
 import os
 import shutil
 import subprocess
-import tarfile
 import tempfile
 import uuid
 import re
@@ -29,6 +28,7 @@ from .security import require_permission
 from .config import Settings
 from .offline_intelligence import load_intelligence, normalize_source
 from .streaming_nvd import NvdShapeError, read_nvd
+from .archive_formats import ArchiveError, extract_archive, archive_unpacked_size
 
 DataType = Literal["grype-db", "vuln-data", "unified"]
 VULN_FILES = ("nvd.json", "nvd-data.json", "kev.json", "cisa-kev.json", "alias-index.json", "aliases.json", "epss.csv", "epss.csv.gz", "intelligence.json", "intelligence-sources")
@@ -388,57 +388,18 @@ def _sha256(path: Path) -> str:
 
 def _extract(archive: Path, destination: Path, limits: Limits) -> None:
     try:
-        handle = tarfile.open(archive, "r:gz")
-    except (OSError, tarfile.TarError) as exc:
-        raise DataUpdateError("invalid gzip tar package") from exc
-    with handle:
-        members = handle.getmembers()
-        if len(members) > limits.max_members:
-            raise DataUpdateError("package has too many members")
-        names: set[str] = set()
-        total = 0
-        for member in members:
-            name = member.name
-            if not name or name.startswith("/") or "\\" in name or any(part in {"", ".", ".."} for part in name.split("/")):
-                raise DataUpdateError("package path traversal")
-            if name in names:
-                raise DataUpdateError("duplicate package member")
-            names.add(name)
-            if member.issym() or member.islnk() or member.isdev() or member.isfifo():
-                raise DataUpdateError("links and special files are not allowed")
-            target = (destination / name).resolve()
-            if destination.resolve() not in target.parents and target != destination.resolve():
-                raise DataUpdateError("package path traversal")
-            if member.isfile():
-                if member.size > limits.max_file_bytes:
-                    raise DataUpdateError("package member exceeds size limit")
-                total += member.size
-                if total > limits.max_total_bytes:
-                    raise DataUpdateError("package exceeds size limit")
-        try:
-            handle.extractall(destination, filter="data")
-        except (OSError, tarfile.TarError) as exc:
-            raise DataUpdateError("package extraction failed") from exc
+        extract_archive(archive, destination, max_members=limits.max_members,
+                        max_member_bytes=limits.max_file_bytes, max_unpacked_bytes=limits.max_total_bytes)
+    except ArchiveError as exc:
+        raise DataUpdateError(str(exc)) from exc
 
 
 def _expanded_size(archive: Path, limits: Limits) -> int:
     try:
-        with tarfile.open(archive, "r:gz") as handle:
-            total = 0
-            count = 0
-            for member in handle:
-                count += 1
-                if count > limits.max_members:
-                    raise DataUpdateError("package has too many members")
-                if member.isfile():
-                    if member.size > limits.max_file_bytes:
-                        raise DataUpdateError("package member exceeds size limit")
-                    total += member.size
-                    if total > limits.max_total_bytes:
-                        raise DataUpdateError("package exceeds size limit")
-            return total
-    except (OSError, tarfile.TarError) as exc:
-        raise DataUpdateError("invalid gzip tar package") from exc
+        return archive_unpacked_size(archive, max_members=limits.max_members,
+                                     max_member_bytes=limits.max_file_bytes, max_unpacked_bytes=limits.max_total_bytes)
+    except ArchiveError as exc:
+        raise DataUpdateError(str(exc)) from exc
 
 
 def validate_package(archive: str | Path, kind: DataType, *, limits: Limits | None = None) -> Package:
