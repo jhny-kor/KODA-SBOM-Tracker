@@ -165,7 +165,7 @@ class SbomRun(Base):
     analysis_state: Mapped[JobState] = mapped_column(Enum(JobState), default=JobState.QUEUED)
     source: Mapped[str] = mapped_column(String(32), default="manual")
     original_filename: Mapped[str] = mapped_column(String(255))
-    media_type: Mapped[str] = mapped_column(String(64))
+    media_type: Mapped[str] = mapped_column(String(128))
     spec_version: Mapped[str] = mapped_column(String(16))
     serial_number: Mapped[str | None] = mapped_column(String(255), nullable=True)
     sha256: Mapped[str] = mapped_column(String(64), index=True)

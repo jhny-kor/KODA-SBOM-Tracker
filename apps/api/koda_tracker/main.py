@@ -31,7 +31,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from .config import get_settings, session_cookie_name
 from .comparison import compare_components, compare_records
-from .db import Base, SessionLocal, engine, ensure_component_search_support, ensure_environment_active_column, ensure_ldap_subject_attribute_column, ensure_native_policy_columns, ensure_postgres_manager_enum, ensure_sbom_source_metadata_column, ensure_user_approval_state_column, ensure_user_identity_columns, get_db
+from .db import Base, SessionLocal, engine, ensure_component_search_support, ensure_environment_active_column, ensure_ldap_subject_attribute_column, ensure_native_policy_columns, ensure_postgres_manager_enum, ensure_sbom_media_type_column, ensure_sbom_source_metadata_column, ensure_user_approval_state_column, ensure_user_identity_columns, get_db
 from .models import (
     AnalysisRevision,
     ApiToken,
@@ -345,6 +345,7 @@ async def lifespan(_: FastAPI):
     ensure_component_search_support(engine)
     ensure_environment_active_column(engine)
     ensure_sbom_source_metadata_column(engine)
+    ensure_sbom_media_type_column(engine)
     ensure_native_policy_columns(engine)
     # v1 uses create_all for a fresh install, but keep the one additive field
     # introduced by the vulnerability-data lifecycle backward compatible with

@@ -11,6 +11,7 @@ from sqlalchemy import func, select
 
 from koda_tracker import main, services
 from koda_tracker.models import Job, JobState, SbomRun
+from koda_tracker.sbom_workbook import WORKBOOK_MEDIA_TYPE
 from test_sbom_archives import context  # noqa: F401 - shared authenticated upload fixture
 
 
@@ -78,6 +79,8 @@ def upload_workbook(context, raw):
 
 
 def test_workbook_upload_preserves_original_and_uses_same_normalized_document_for_analysis(context, monkeypatch):
+    # SQLite does not enforce VARCHAR lengths. Check the production schema contract.
+    assert len(WORKBOOK_MEDIA_TYPE) <= SbomRun.__table__.c.media_type.type.length
     raw = workbook_bytes()
     response = upload_workbook(context, raw)
     assert response.status_code == 202, response.text

@@ -111,6 +111,19 @@ def ensure_sbom_source_metadata_column(bind=engine) -> None:
             connection.execute(text("ALTER TABLE sbom_runs ADD COLUMN source_metadata JSON"))
 
 
+def ensure_sbom_media_type_column(bind=engine) -> None:
+    """Widen existing PostgreSQL columns to fit the standard Excel media type."""
+    if bind.dialect.name != "postgresql":
+        return
+    for column in inspect(bind).get_columns("sbom_runs"):
+        if column["name"] == "media_type":
+            length = getattr(column["type"], "length", None)
+            if length is not None and length < 128:
+                with bind.begin() as connection:
+                    connection.execute(text("ALTER TABLE sbom_runs ALTER COLUMN media_type TYPE VARCHAR(128)"))
+            return
+
+
 def ensure_native_policy_columns(bind=engine) -> None:
     """Preserve historical findings; old revisions remain explicitly unevaluated."""
     if "analysis_revisions" not in inspect(bind).get_table_names():
