@@ -115,6 +115,7 @@ export interface AnalysisRevisionSummary extends NativePolicyFields {
 export interface SbomRunDetail extends SbomRun {
   analyses: AnalysisRevisionSummary[];
   components: ComponentSnapshot[];
+  workbookMetadata?: Record<string, string>;
 }
 
 export interface ComponentSnapshot {

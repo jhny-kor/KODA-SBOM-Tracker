@@ -358,6 +358,8 @@ describe("KODA SBOM Tracker", () => {
     expect(screen.getByText("지원 형식: CycloneDX 1.4, 1.5, 1.6, 1.7 (JSON/XML) · SPDX 2.3 (JSON)")).toBeInTheDocument();
     expect(screen.getByLabelText("SBOM 파일")).toHaveAccessibleDescription(/CycloneDX 1\.4, 1\.5, 1\.6, 1\.7.*SPDX 2\.3/);
     expect(screen.getByLabelText("SBOM 파일")).toHaveAttribute("accept", expect.stringContaining(".json,.xml,.zip,.tar,.tar.gz,.tgz,.7z"));
+    expect(screen.getByLabelText("SBOM 파일")).toHaveAttribute("accept", expect.stringContaining(".xlsx"));
+    expect(screen.getByLabelText("SBOM 파일")).toHaveAccessibleDescription(/Excel \(\.xlsx, 최대 10 MiB\)/);
     expect(screen.getByLabelText("SBOM 파일")).toHaveAccessibleDescription(/ZIP.*TAR\.GZ\/TGZ.*TAR.*7Z.*JSON\/XML 문서 파일만 정확히 1개/);
     expect(screen.getByLabelText("SBOM 파일")).toHaveAccessibleDescription(/README 등 동반 파일은 허용하지 않습니다/);
     expect(screen.getByLabelText("SBOM 파일")).toHaveAttribute("accept", expect.not.stringContaining(".rar"));

@@ -13,6 +13,7 @@ services:
       - "${PUBLIC_HTTP_BIND:-127.0.0.1}:${PUBLIC_HTTP_PORT:-8088}:8080"
     volumes:
       - ./deploy/nginx/gateway.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - ./deploy/nginx/http-error.html:/etc/nginx/tracker-http-error.html:ro
     environment:
       GATEWAY_SERVER_NAME: ${GATEWAY_SERVER_NAME:-_}
       PORTAL_API_UPSTREAM: portal-api:${PORTAL_API_PORT:-8000}

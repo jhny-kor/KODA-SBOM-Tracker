@@ -56,6 +56,7 @@ from .models import (
 )
 from .sbom_normalization import mark_current
 from .sbom import component_count, SbomValidationError, parse_sbom_file, sbom_document_path, sbom_upload_media_type, store_artifact_file, validate_component_count, validate_file_with_cyclonedx_cli
+from .sbom_workbook import MAX_WORKBOOK_BYTES, METADATA_LABELS, WORKBOOK_MEDIA_TYPE
 from .security import (
     current_principal,
     digest,
@@ -2011,10 +2012,14 @@ async def upload_sbom(
         if not isinstance(parsed_source_metadata, dict):
             raise HTTPException(422, "예약 점검 메타데이터는 객체여야 합니다")
     source_value, parsed_source_metadata = _validated_source_metadata(principal, source_value, parsed_source_metadata)
-    staged_path, raw_sha256, size_bytes = await _stage_upload(sbom, get_settings().max_upload_bytes)
+    workbook = Path(sbom.filename or "").suffix.lower() == ".xlsx"
+    max_bytes = get_settings().max_upload_bytes
+    staged_path, raw_sha256, size_bytes = await _stage_upload(
+        sbom, min(max_bytes, MAX_WORKBOOK_BYTES) if workbook else max_bytes
+    )
     try:
         try:
-            with sbom_document_path(staged_path, max_bytes=get_settings().max_upload_bytes) as document:
+            with sbom_document_path(staged_path, max_bytes=max_bytes, workbook=workbook) as document:
                 payload, document_media_type = parse_sbom_file(document)
                 validate_component_count(payload, get_settings().max_sbom_components)
                 input_format = "json" if document_media_type.endswith("+json") else "xml"
@@ -2023,7 +2028,7 @@ async def upload_sbom(
                     get_settings().cyclonedx_cli_binary,
                     input_format=input_format,
                 )
-                media_type = sbom_upload_media_type(staged_path, document_media_type)
+                media_type = WORKBOOK_MEDIA_TYPE if workbook else sbom_upload_media_type(staged_path, document_media_type)
         except SbomValidationError as exc:
             raise HTTPException(422, str(exc)) from exc
         if source_value == "scheduled":
@@ -2290,6 +2295,10 @@ def get_run(
     ) or 0
     payload = {**_run_payload(item, component_count=component_count, native_reanalysis_pending=bool(db.scalar(select(NativeReanalysisPending.run_id).where(NativeReanalysisPending.run_id == run_id).limit(1)))), **_native_policy_result(max(item.analyses, key=lambda value: value.sequence, default=None), include_evidence=True)}
     payload["components"] = []
+    if item.media_type == WORKBOOK_MEDIA_TYPE:
+        properties = item.normalized_bom["metadata"]["properties"]
+        values = {prop["name"]: prop["value"] for prop in properties}
+        payload["workbookMetadata"] = {label: values.get(f"koda:xlsx:{label}", "") for label in METADATA_LABELS}
     payload["analyses"] = [
         {
             "id": analysis.id,

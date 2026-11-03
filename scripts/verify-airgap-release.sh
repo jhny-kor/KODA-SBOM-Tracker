@@ -53,6 +53,9 @@ for required_file in \
   scripts/verify-airgap-release.sh; do
   [[ -f "$input/$required_file" ]] || { echo "release file missing: $required_file" >&2; exit 1; }
 done
+if grep -Fq './deploy/nginx/http-error.html:' "$input/compose.yaml"; then
+  [[ -s "$input/deploy/nginx/http-error.html" ]] || { echo "release file missing: deploy/nginx/http-error.html" >&2; exit 1; }
+fi
 grep -q '^DISTRIBUTION_SCOPE=internal-only$' "$input/metadata.env" || { echo "release is not marked internal-only" >&2; exit 1; }
 grep -Eq '^TRACKER_GIT_REVISION=[0-9a-f]{40}$' "$input/metadata.env" || { echo "release git revision is missing or invalid" >&2; exit 1; }
 grep -q '^TRACKER_WORKTREE_DIRTY=false$' "$input/metadata.env" || { echo "release was not built from a clean worktree" >&2; exit 1; }

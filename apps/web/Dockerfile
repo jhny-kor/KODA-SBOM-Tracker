@@ -34,6 +34,7 @@ RUN mkdir -p /var/cache/nginx /var/log/nginx \
               -e 's#^[[:space:]]*pid[[:space:]].*;#pid /tmp/nginx.pid;#' /etc/nginx/nginx.conf
 COPY --from=build /app/dist /usr/share/nginx/html
 COPY apps/web/nginx.conf /etc/nginx/conf.d/default.conf
+COPY deploy/nginx/http-error.html /etc/nginx/tracker-http-error.html
 USER nginx
 EXPOSE 8080
 HEALTHCHECK CMD wget -q -O /dev/null http://127.0.0.1:8080/ || exit 1

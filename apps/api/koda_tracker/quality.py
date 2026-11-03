@@ -16,6 +16,7 @@ from .db import Base
 from .models import SbomRun, new_id, now
 from .project_catalog_models import NativeProject, ProjectRunLink
 from .sbom import normalized_identity, parse_sbom_file
+from .sbom_workbook import WORKBOOK_MEDIA_TYPE
 from .quality_scoring import DEFAULT_SCORE_WEIGHTS
 
 ENGINE_VERSION = '2'
@@ -465,7 +466,7 @@ def evaluate_quality(db: Session, run: SbomRun, actor='worker', force=False):
                 actual_sha256 = hashlib.file_digest(source, 'sha256').hexdigest()
             if actual_sha256 != run.sha256:
                 raise ValueError('원본 SBOM SHA-256 불일치')
-            bom, _ = parse_sbom_file(artifact)
+            bom, _ = parse_sbom_file(artifact, workbook=run.media_type == WORKBOOK_MEDIA_TYPE)
             source_basis = 'verified_original_artifact'
         issues, summary = diagnose(bom, profile, now())
         summary['sourceBasis'] = source_basis

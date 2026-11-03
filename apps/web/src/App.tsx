@@ -1,4 +1,4 @@
-import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { Fragment, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { demoMode, previewMode, standaloneMode, activateVulnerabilityBundle, approveUser, archiveRun, createApiToken, createAnalysis, createEnvironment, createService, createUser, deleteRun, deleteUser, fetchAuditEvents, fetchApiTokens, fetchCatalogs, fetchComparison, fetchJob, fetchLdapSettings, fetchRun, fetchRunComponents, fetchRunFindings, fetchRuns, fetchUsers, fetchVulnerabilityBundles, login, patchEnvironment, patchService, patchUser, logout, register, resumeSession, revokeApiToken, updateLdapSettings, uploadRun, syncVulnerabilityBundles, fetchRolePolicies, updateRolePolicies, setForbiddenHandler } from "./api";
 import { demoChanges, demoLdapSettings, demoRolePolicyCatalog, demoRuns } from "./demo";
 import { formatSeoulDateTime } from "./format";
@@ -713,7 +713,7 @@ function UploadModal({
       setMessage(error instanceof Error ? error.message : "업로드에 실패했습니다");
       setBusy(false);}
   }
-  return (<div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><section className="modal" role="dialog" aria-modal="true" aria-labelledby="upload-title">
+  return (<div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><section className="modal sbom-upload-modal" role="dialog" aria-modal="true" aria-labelledby="upload-title">
     <header><h2 id="upload-title">SBOM 업로드</h2><button type="button" className="icon-button" aria-label="SBOM 업로드 창 닫기" onClick={onClose}><Icon name="close" /></button></header>
     <form onSubmit={submit}>
       {standaloneMode ? (<p className="preview-note">로그인·서버 없이 브라우저에서 CycloneDX 구조와 파일에 포함된
@@ -723,7 +723,16 @@ function UploadModal({
       <div className="form-row">{!standaloneMode && (<label>환경
                 <FlowSelect name="environmentId" required>{environments.filter((environment) => environment.active !== false).map((environment) => (<option key={environment.id} value={environment.id}>{environment.name}</option>))}</FlowSelect></label>)}<label>{standaloneMode ? "릴리스 (선택)" : "릴리스"}<input name="releaseVersion" placeholder="예: 1.4.2" defaultValue={standaloneMode ? "preview" : undefined} required={!standaloneMode} /></label></div>
       <label>SBOM 파일
-            <input name="sbom" type="file" aria-label="SBOM 파일" accept={standaloneMode ? ".json,.xml,application/json,application/xml" : ".json,.xml,.zip,.tar,.tar.gz,.tgz,.7z,application/json,application/xml,application/spdx+json,application/vnd.cyclonedx+json,application/vnd.cyclonedx+xml"} aria-describedby={`sbom-supported-formats${standaloneMode ? "" : " sbom-archive-formats"} sbom-upload-limit`} required /><small id="sbom-supported-formats">{standaloneMode ? "로컬 미리보기: CycloneDX JSON/XML" : "지원 형식: CycloneDX 1.4, 1.5, 1.6, 1.7 (JSON/XML) · SPDX 2.3 (JSON)"}</small>{!standaloneMode && <small id="sbom-archive-formats">압축 업로드: ZIP · TAR.GZ/TGZ · TAR · 7Z. 압축파일에는 위 지원 형식의 JSON/XML 문서 파일만 정확히 1개 넣으세요. README 등 동반 파일은 허용하지 않습니다. 형식과 내용은 서버에서 확인합니다.</small>}<small id="sbom-upload-limit">최대 {standaloneMode ? "100 MiB" : "500 MiB (압축파일과 해제한 문서에 각각 적용)"}</small></label>
+        <input name="sbom" type="file" aria-label="SBOM 파일"
+          accept={standaloneMode ? ".json,.xml,application/json,application/xml" : ".json,.xml,.zip,.tar,.tar.gz,.tgz,.7z,.xlsx,application/json,application/xml,application/spdx+json,application/vnd.cyclonedx+json,application/vnd.cyclonedx+xml"}
+          aria-describedby={`sbom-supported-formats${standaloneMode ? "" : " sbom-archive-formats sbom-workbook-format"} sbom-upload-limit`} required />
+        <small id="sbom-supported-formats">{standaloneMode ? "로컬 미리보기: CycloneDX JSON/XML" : "지원 형식: CycloneDX 1.4, 1.5, 1.6, 1.7 (JSON/XML) · SPDX 2.3 (JSON)"}</small>
+        {!standaloneMode && <>
+          <small id="sbom-archive-formats">압축 업로드: ZIP · TAR.GZ/TGZ · TAR · 7Z. 압축파일에는 위 지원 형식의 JSON/XML 문서 파일만 정확히 1개 넣으세요. README 등 동반 파일은 허용하지 않습니다. 형식과 내용은 서버에서 확인합니다.</small>
+          <small id="sbom-workbook-format">Excel (.xlsx, 최대 10 MiB) 첫 시트의 1~5행에는 A열 또는 B열에 항목명, C열에 값을 입력하세요. 항목 순서는 솔루션명, 기준 버전, 운영 OS Platform, 작성일자, 대상 서버입니다. 6행 A~F열은 번호, 구분, 컴포넌트명, 버전, 라이선스 유형, 비고 / 상세 설명입니다. 버전은 텍스트 셀에 입력하세요.</small>
+        </>}
+        <small id="sbom-upload-limit">{!standaloneMode && "JSON/XML·압축 업로드 "}최대 {standaloneMode ? "100 MiB" : "500 MiB (압축파일과 해제한 문서에 각각 적용)"}</small>
+      </label>
       <label>메모
             <textarea name="note" rows={3} placeholder="변경 사유 또는 배포 식별자" /></label>
       {message && (<p className="form-message" role="status">{message}{jobState && <small> · 작업 상태: {jobStateLabel(jobState)}</small>}</p>)}
@@ -735,6 +744,18 @@ function UploadModal({
 function DetailPagination({ total, page, pageSize, onPage, onPageSize, label = "상세 페이지당 행 수" }: { total: number; page: number; pageSize: number; onPage: (page: number) => void; onPageSize: (size: number) => void; label?: string;}) {
   const pageCount = Math.max(1, Math.ceil(total / pageSize));
   return (<div className="detail-pagination"><span>전체 {total.toLocaleString()}건 · {page}/{pageCount}페이지</span><div><select aria-label={label} value={pageSize} onChange={(event) => onPageSize(Number(event.target.value))}><option value={10}>10개씩 보기</option><option value={25}>25개씩 보기</option><option value={50}>50개씩 보기</option><option value={100}>100개씩 보기</option></select><button type="button" aria-label="상세 이전 페이지" disabled={page <= 1} onClick={() => onPage(page - 1)}>‹</button><button type="button" aria-label="상세 다음 페이지" disabled={page >= pageCount} onClick={() => onPage(page + 1)}>›</button></div></div>);
+}
+
+function workbookComponentNotes(component: ComponentSnapshot) {
+  if (!Array.isArray(component.properties)) return "-";
+  const notes = [];
+  for (const property of component.properties) {
+    if (!property || typeof property !== "object" || !("name" in property) || !("value" in property)) continue;
+    if (property.name === "koda:xlsx:category" || property.name === "koda:xlsx:description") {
+      notes.push(String(property.value));
+    }
+  }
+  return notes.join(" · ") || "-";
 }
 
 function RunDetail({ run, onClose, onChanged, username, onOpenLibrary,
@@ -785,6 +806,7 @@ function RunDetail({ run, onClose, onChanged, username, onOpenLibrary,
     finally { setBusy(false); }
   }
   const current = detail || run;
+  const workbookMetadata = detail?.workbookMetadata;
   const scheduled = current.source === "scheduled";
   const sourceMetadata = current.sourceMetadata || {};
   const components = componentResult.items;
@@ -796,6 +818,13 @@ function RunDetail({ run, onClose, onChanged, username, onOpenLibrary,
   return (<div className="drawer-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><section className="detail-modal" role="dialog" aria-modal="true" aria-labelledby="run-detail-title"><header><div><ScrollingText>{current.service.name}</ScrollingText><h2 id="run-detail-title"><ScrollingText>{`${current.releaseVersion} · ${current.roundNumber}차`}</ScrollingText></h2></div><button type="button" className="icon-button" aria-label="회차 상세 닫기" onClick={onClose}><Icon name="close" /></button></header>
     <div className="detail-status"><span className={`state ${current.state}`}>{stateLabel(current.state)}</span><span>{scheduled ? "스케줄 점검" : "수동/API 점검"}</span><span className="detail-environment"><ScrollingText>{current.environment.name}</ScrollingText></span><span>CycloneDX {current.specVersion}</span></div>
     <dl><dt>원본 파일</dt><dd><ScrollingText>{current.filename || "-"}</ScrollingText></dd>{scheduled && (<><dt>대상 서버</dt><dd>{String(sourceMetadata.server || sourceMetadata.remoteServer || "-")}</dd><dt>대상 디렉토리</dt><dd className="mono wrap">{String(sourceMetadata.directory || sourceMetadata.remoteDirectory || "-")}</dd><dt>점검 방식</dt><dd>{String(sourceMetadata.mode || "-")}</dd><dt>예약 실행 ID</dt><dd className="mono wrap">{String(sourceMetadata.scheduleRunId || "-")}</dd><dt>규칙 버전</dt><dd>{String(sourceMetadata.rulePolicyVersion ?? "-")}</dd></>)}<dt>CVE 기준일</dt><dd>{cveBaseline(current)}</dd><dt>오프라인 분석</dt><dd>{jobStateLabel(current.analysisState)}</dd><dt>구성요소</dt><dd>{current.componentCount.toLocaleString()}개</dd><dt>취약점</dt><dd>{analysisAvailable(current) ? `${current.vulnerabilityCount}건` : "미평가"}</dd><dt>정책 위반·경고·정보</dt><dd>{policyCountLabel(current)}{current.policyState === "completed" ? "건" : ""}</dd></dl>
+    {workbookMetadata && <>
+      <h3>Excel 원본 정보</h3>
+      <dl>{Object.entries(workbookMetadata).map(([label, value]) => (
+        <Fragment key={label}><dt>{label}</dt><dd><ScrollingText>{value || "-"}</ScrollingText></dd></Fragment>
+      ))}</dl>
+      <p className="preview-note">이 양식에는 PURL과 CPE 입력란이 없어 취약점 자동 매칭 범위가 제한될 수 있습니다.</p>
+    </>}
     {!analysisAvailable(current) && <p role="alert" className="drawer-error">{analysisUnavailableReason(current)}</p>}
     {current.note && <p className="preview-note">메모: {current.note}</p>}
     <RunMetadataEditor key={`metadata-${current.id}`} runId={current.id} onSaved={async () => { const refreshed = await fetchRun(current.id); setDetail(refreshed); onChanged(); }} />
@@ -805,7 +834,7 @@ function RunDetail({ run, onClose, onChanged, username, onOpenLibrary,
     <h3>분석 리비전</h3><ul className="paths">{detail?.analyses?.length ? (detail.analyses.map((analysis) => (<li key={analysis.id}>r{analysis.sequence} · {jobStateLabel(analysis.state)} ·{" "}
                 {dataBaselineLabel(preferredCveDate(analysis.cveDataAsOf, analysis.dataAsOf), "CVE 기준일 확인 필요")}{analysis.error ? ` · ${analysis.error}` : ""} · 정책 {analysis.policyVersion ? `v${analysis.policyVersion}` : "-"} · {analysis.policyState === "completed" ? "평가 완료" : analysis.policyState === "failed" ? "평가 실패" : "미평가"}{analysis.policyError ? ` · ${analysis.policyError}` : ""}<AnalysisPolicyHistory analysis={analysis} runId={current.id} /></li>) )
           ): (<li>상세를 불러오는 중이거나 분석 리비전이 없습니다.</li>)}</ul>
-    <div className="detail-table-heading"><h3>구성요소 검사기 ({componentResult.total.toLocaleString()})</h3><label className="detail-search"><Icon name="search" /><input aria-label="구성요소 검색" value={componentQuery} onChange={(event) => { setComponentQuery(event.target.value); setComponentPage(1); }} placeholder="이름, 버전, PURL 검색" /></label></div><div className="table-scroll"><table className="component-inspector-table"><thead><tr><th>이름</th><th>버전</th><th>PURL</th><th>라이선스</th></tr></thead><tbody>{components.map((component) => (<tr key={component.identityKey}><td>{onOpenLibrary ? <button className="environment-row-button" onClick={() => onOpenLibrary(component.name)}><ScrollingText focusable={false}>{component.name}</ScrollingText></button> : <ScrollingText>{component.name}</ScrollingText>}</td><td><ScrollingText>{component.version || "-"}</ScrollingText></td><td className="mono"><ScrollingText>{component.purl || component.bomRef || "-"}</ScrollingText></td><td>{component.licenses?.length ? component.licenses.map((license) => typeof license === "string" ? license : String((license as { license?: { id?: string; name?: string };}).license?.id || (license as { license?: { id?: string; name?: string;};}).license?.name || "식별 불가")).join(", ") : "-"}</td></tr>))}{!components.length && (<tr><td colSpan={4}>{deferredComponentQuery ? "검색 조건에 맞는 구성요소가 없습니다." : "구성요소 상세가 없습니다."}</td></tr>)}</tbody></table></div><DetailPagination total={componentResult.total} page={currentComponentPage} pageSize={componentPageSize} onPage={setComponentPage} onPageSize={(size) => { setComponentPageSize(size); setComponentPage(1); }} />
+    <div className="detail-table-heading"><h3>구성요소 검사기 ({componentResult.total.toLocaleString()})</h3><label className="detail-search"><Icon name="search" /><input aria-label="구성요소 검색" value={componentQuery} onChange={(event) => { setComponentQuery(event.target.value); setComponentPage(1); }} placeholder="이름, 버전, PURL 검색" /></label></div><div className="table-scroll"><table className="component-inspector-table"><thead><tr><th>이름</th><th>버전</th><th>{workbookMetadata ? "구분 · 비고" : "PURL"}</th><th>라이선스</th></tr></thead><tbody>{components.map((component) => (<tr key={component.identityKey}><td>{onOpenLibrary ? <button className="environment-row-button" onClick={() => onOpenLibrary(component.name)}><ScrollingText focusable={false}>{component.name}</ScrollingText></button> : <ScrollingText>{component.name}</ScrollingText>}</td><td><ScrollingText>{component.version || "-"}</ScrollingText></td><td className="mono"><ScrollingText>{workbookMetadata ? workbookComponentNotes(component) : component.purl || component.bomRef || "-"}</ScrollingText></td><td>{component.licenses?.length ? component.licenses.map((license) => typeof license === "string" ? license : String((license as { license?: { id?: string; name?: string };}).license?.id || (license as { license?: { id?: string; name?: string;};}).license?.name || "식별 불가")).join(", ") : "-"}</td></tr>))}{!components.length && (<tr><td colSpan={4}>{deferredComponentQuery ? "검색 조건에 맞는 구성요소가 없습니다." : "구성요소 상세가 없습니다."}</td></tr>)}</tbody></table></div><DetailPagination total={componentResult.total} page={currentComponentPage} pageSize={componentPageSize} onPage={setComponentPage} onPageSize={(size) => { setComponentPageSize(size); setComponentPage(1); }} />
     <h3>취약점 검사기 ({analysisAvailable(current) ? findingResult.total.toLocaleString() : "미평가"})</h3><div className="table-scroll"><table className="finding-inspector-table"><thead><tr><th>취약점 ID</th><th>심각도</th><th>구성요소</th><th>CVSS</th><th>KEV</th><th>CWE / EPSS</th><th>제안 버전</th><th>VEX 검토</th></tr></thead><tbody>{findings.map((finding, index) => { const severity = String(finding.severity || "unknown"); return (<tr key={`${String(finding.canonicalId || finding.id || "finding")}-${(currentFindingPage - 1) * findingPageSize + index}`}><td className="mono">{String(finding.canonicalId || finding.id || "식별자 없음")}{finding.sourceKind === "private_vulnerability" && <small className="workflow-id">사내 취약점 · {String(finding.title || "")}<br/>{String(finding.description || "")}</small>}</td><td><span className={`severity-pill ${severityClass(severity)}`}>{severityLabel(severity)}</span></td><td className="mono"><ScrollingText>{String(finding.component || "-")}</ScrollingText></td><td>{cvssScore(finding)}</td><td>{finding.kev ? "KEV" : "-"}</td><td>{Array.isArray(finding.cwes) && finding.cwes.length ? finding.cwes.map(value=>`CWE-${value}`).join(", ") : "CWE 확인 안 됨"}<br/><EpssEvidence finding={finding} /></td><td><ScrollingText>{fixedInLabel(finding)}</ScrollingText></td><td>{finding.vex && typeof finding.vex === "object" ? <span title={String((finding.vex as Record<string, unknown>).detail || "")}>{(finding.vex as Record<string, unknown>).suppressed ? "승인된 영향 없음·오탐 (원시 발견 보존)" : `승인된 ${String((finding.vex as Record<string, unknown>).state || "검토")}`}</span> : "미검토"}</td></tr>);})}{!findings.length && (<tr><td colSpan={8}>{analysisAvailable(current) ? "취약점 결과가 없습니다." : analysisUnavailableReason(current)}</td></tr>)}</tbody></table></div><DetailPagination total={findingResult.total} page={currentFindingPage} pageSize={findingPageSize} onPage={setFindingPage} onPageSize={(size) => { setFindingPageSize(size); setFindingPage(1); }} />
               {(can("metadata.view") || can("metadata.manage")) && <PackageMetadataPanel runId={current.id} canManage={can("metadata.manage")} />}
     {can("metadata.view") && <OfflineRunEvidence key={`offline-${current.id}`} runId={current.id} canRespond={can("vex.manage")} canViewResponses={can("vex.view")} />}
@@ -1223,7 +1252,7 @@ function GuidePage() {
       <h2 id="guide-flow-title">기본 사용 순서</h2>
       <ol className="guide-flow">
         <li><strong>서비스·환경 준비</strong><span>설정에서 SBOM을 구분할 서비스와 운영 환경을 확인합니다.</span></li>
-        <li><strong>SBOM 업로드</strong><span>서비스, 환경, 릴리스를 선택하고 CycloneDX 1.4~1.7 JSON/XML 또는 SPDX 2.3 JSON 파일을 등록합니다. ZIP, TAR.GZ/TGZ, TAR, 7Z 압축파일에는 지원 문서가 정확히 1개 있어야 합니다.</span></li>
+        <li><strong>SBOM 업로드</strong><span>서비스, 환경, 릴리스를 선택하고 CycloneDX 1.4~1.7 JSON/XML, SPDX 2.3 JSON 또는 구성요소 목록 Excel(.xlsx)을 등록합니다. ZIP, TAR.GZ/TGZ, TAR, 7Z 압축파일에는 지원 JSON/XML 문서가 정확히 1개 있어야 합니다.</span></li>
         <li><strong>분석 결과 확인</strong><span>회차 상세에서 구성요소, CVE, CVSS, KEV, 제안 버전을 검토합니다.</span></li>
         <li><strong>변경 추적</strong><span>회차 비교에서 구성요소·취약점·정책 결과의 추가, 제거, 변경을 확인합니다.</span></li>
       </ol>

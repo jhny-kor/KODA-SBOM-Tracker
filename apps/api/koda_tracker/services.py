@@ -26,6 +26,7 @@ from .package_metadata import enqueue_components
 from . import workflow_models  # Register workflow tables before standalone create_all callers.
 from .private_vulnerability import match_private_vulnerabilities
 from .sbom_normalization import mark_current
+from .sbom_workbook import WORKBOOK_MEDIA_TYPE
 from .policies import evaluate_revision
 from .quality import evaluate_quality, revision_payload as quality_payload
 from .vulnerability import active_bundle, load_context, normalize_finding
@@ -116,9 +117,10 @@ def _analyze_offline(db: Session, run: SbomRun) -> AnalysisRevision:
         env["GRYPE_CHECK_FOR_APP_UPDATE"] = "false"
         env["GRYPE_EXTERNAL_SOURCES_ENABLE"] = "false"
         source = Path(run.artifact_path)
+        media_type = getattr(run, "media_type", "")
         document = (
-            sbom_document_path(source, max_bytes=settings.max_upload_bytes)
-            if getattr(run, "media_type", "") in SBOM_ARCHIVE_MEDIA_TYPES.values()
+            sbom_document_path(source, max_bytes=settings.max_upload_bytes, workbook=media_type == WORKBOOK_MEDIA_TYPE)
+            if media_type == WORKBOOK_MEDIA_TYPE or media_type in SBOM_ARCHIVE_MEDIA_TYPES.values()
             else nullcontext(source)
         )
         with document as selected:

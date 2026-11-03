@@ -27,13 +27,17 @@ def sbom_upload_media_type(path: Path, document_media_type: str) -> str:
 
 
 @contextmanager
-def sbom_document_path(path: Path, *, max_bytes: int | None = None):
+def sbom_document_path(path: Path, *, max_bytes: int | None = None, workbook: bool = False):
     """Yield one plain document; never persist or recursively unpack members."""
     from .archive_formats import ArchiveError, archive_kind, extract_archive
     from .config import get_settings
 
     try:
         kind = archive_kind(path)
+        if workbook:
+            from .sbom_workbook import MAX_WORKBOOK_BYTES
+            if kind != "zip" or path.stat().st_size > MAX_WORKBOOK_BYTES:
+                raise SbomValidationError("10 MiB 이하의 Excel .xlsx 파일을 선택하세요")
         if kind is None:
             yield path
             return
@@ -41,6 +45,19 @@ def sbom_document_path(path: Path, *, max_bytes: int | None = None):
         limit = settings.max_upload_bytes if max_bytes is None else max_bytes
         settings.artifact_dir.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix=".koda-sbom-archive-", dir=settings.artifact_dir) as temporary:
+            if workbook:
+                from .sbom_workbook import read_workbook
+                root = Path(temporary) / "workbook"
+                root.mkdir(mode=0o700)
+                workbook_limit = min(limit, 24 * 1024**2)
+                extract_archive(path, root, max_members=256, max_unpacked_bytes=workbook_limit,
+                                max_member_bytes=workbook_limit)
+                document = Path(temporary) / "inventory.cdx.json"
+                document.write_text(json.dumps(read_workbook(root), ensure_ascii=False), encoding="utf-8")
+                if document.stat().st_size > limit:
+                    raise SbomValidationError("변환된 Excel SBOM이 문서 크기 제한을 초과했습니다")
+                yield document
+                return
             files = extract_archive(path, Path(temporary), max_members=256,
                                     max_unpacked_bytes=limit, max_member_bytes=limit)
             if len(files) != 1:
@@ -134,8 +151,8 @@ def parse_sbom(raw: bytes) -> tuple[dict, str]:
     return _validated_payload(payload), media
 
 
-def parse_sbom_file(path: Path) -> tuple[dict, str]:
-    with sbom_document_path(path) as document:
+def parse_sbom_file(path: Path, *, workbook: bool = False) -> tuple[dict, str]:
+    with sbom_document_path(path, workbook=workbook) as document:
         return _parse_sbom_document_file(document)
 
 
