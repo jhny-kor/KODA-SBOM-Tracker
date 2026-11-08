@@ -56,10 +56,10 @@ curl --fail-with-body --silent --show-error \
 
 ## KODA와 Tracker 공통 AI
 
-1. Tracker가 실행되는 호스트의 운영 env에 모델 주소를 넣습니다. 통합 설치에서는 `<설치 경로>/tracker/.env`를 사용합니다. 예시는 `TRACKER_AI_BASE_URL=https://ai-gateway.internal/v1`입니다. 인증 키를 사용하는 서버에는 HTTPS와 Tracker 컨테이너가 신뢰하는 인증서가 필요합니다.
+1. Tracker의 **설정 → 공통 AI → 사내 AI 서버 주소**에 `https://ai-gateway.internal/v1`처럼 주소를 입력합니다. 사설망으로 해석되는 주소를 사용합니다. 인증 키를 사용하는 사내 서버에는 HTTPS와 Tracker 컨테이너가 신뢰하는 인증서가 필요합니다. 운영 env의 `TRACKER_AI_BASE_URL`은 처음 설정할 때 기본값으로 사용합니다.
 2. 별도로 생성한 Fernet 암호화 키를 운영 env의 `TRACKER_AI_ENCRYPTION_KEY`에 보관합니다. 이 값은 AI 서버의 API 키와 별개입니다. 안전한 관리 세션에서 `python3 -c 'import base64,secrets; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())'`로 생성할 수 있습니다. 암호화 키는 보호된 설정과 함께 백업합니다.
 3. Compose 기본 구성에서는 Tracker API만 전용 `<Compose 프로젝트명>-ai` 내부 네트워크에 연결됩니다. 같은 호스트에서는 승인된 모델 컨테이너 또는 TLS 프록시를 이 네트워크에 연결합니다. 모델이 다른 서버에 있으면 사내 방화벽으로 모델 주소와 포트만 허용한 프록시를 이 네트워크에 배치합니다. Tracker API 컨테이너에서 지정 호스트가 사설 주소로 해석되어야 합니다. 호스트의 `localhost`와 컨테이너의 `localhost`는 서로 다른 주소입니다.
-4. 새 설정을 적용한 Tracker에서 **설정 → 공통 AI**를 엽니다. 서버에서 사용하는 모델 ID와 필요한 API 키를 저장하고 **저장된 설정으로 연결 시험**을 실행합니다. 저장된 API 키는 암호화되며 화면에는 등록 여부만 보입니다. 운영 주소를 변경하면 새 주소의 모델과 API 키를 다시 저장합니다.
+4. 새 설정을 적용한 Tracker에서 **설정 → 공통 AI**를 엽니다. 서버에서 사용하는 모델 ID와 필요한 API 키를 저장하고 **저장된 설정으로 연결 시험**을 실행합니다. 저장된 API 키는 암호화되며 화면에는 등록 여부만 보입니다. 주소를 변경할 때 새 서버에 API 키가 필요하면 키를 다시 입력합니다.
 5. Tracker는 **SBOM 회차 상세 → 사내 AI로 요약**, KODA는 **점검 결과 상세 → AI 요약 생성**에서 사용합니다. KODA는 기존 `KODA_TRACKER_URL`과 `KODA_TRACKER_PROVISIONING_TOKEN_FILE`로 Tracker를 호출합니다. KODA **관리자 설정 → 연동 설정**에서도 Tracker의 공통 AI 설정을 열 수 있습니다.
 
 모델에 보내는 정보는 Tracker의 심각도별 건수와 최대 25개 CVE ID, KODA의 심각도별 건수와 최대 25개 규칙 ID로 제한합니다. AI 응답은 검토 참고용으로 화면에 표시합니다. 점검 결과나 정책 판정은 원래 분석기가 관리합니다.

@@ -12,7 +12,8 @@ from urllib.parse import urlsplit
 from cryptography.fernet import Fernet, InvalidToken
 from fastapi import APIRouter, Body, Depends, HTTPException
 from pydantic import BaseModel, Field, SecretStr, ValidationError
-from sqlalchemy import String, Text, select
+from sqlalchemy import String, Text, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from .config import get_settings
@@ -39,6 +40,7 @@ class SharedAISettings(Base):
 
 
 class SettingsInput(BaseModel):
+    baseUrl: str | None = Field(default=None, max_length=512)
     model: str = Field(pattern=r"^[A-Za-z0-9._:/-]{1,128}$")
     apiKey: SecretStr | None = None
     clearKey: bool = False
@@ -49,17 +51,28 @@ class KodaSummaryFacts(BaseModel):
     ruleIds: list[str] = Field(max_length=25)
 
 
-def _provider_url():
+def _provider_url(raw: str, *, error_status: int = 503):
     try:
-        value = urlsplit(get_settings().ai_base_url.strip())
+        if re.search(r"[\s\x00-\x1f\x7f]", raw) or any(char in raw for char in ("\\", "?", "#")):
+            raise ValueError
+        value = urlsplit(raw)
         port = value.port
-        if (len(value.geturl()) > 512 or value.scheme not in {"http", "https"} or not value.hostname or value.username is not None
-                or value.password is not None or value.query or value.fragment or value.path.rstrip("/") != "/v1"
-                or port == 0):
+        if (len(raw) > 512 or value.scheme not in {"http", "https"} or not value.hostname or value.username is not None
+                or value.password is not None or value.path.rstrip("/") != "/v1" or port == 0
+                or "%" in value.netloc):
             raise ValueError
         return value
     except ValueError as exc:
-        raise HTTPException(503, "운영자가 사내 AI의 /v1 주소를 설정해야 합니다") from exc
+        raise HTTPException(error_status, "사내 AI의 HTTP 또는 HTTPS /v1 주소를 입력하세요") from exc
+
+
+def _port(url):
+    return url.port or (443 if url.scheme == "https" else 80)
+
+
+def _require_key_transport(url, addresses, has_key, *, error_status: int = 503):
+    if has_key and url.scheme == "http" and not all(ipaddress.ip_address(address).is_loopback for address in addresses):
+        raise HTTPException(error_status, "API 키를 사용하는 사내 AI 서버에는 HTTPS가 필요합니다")
 
 
 def _cipher():
@@ -71,7 +84,8 @@ def _cipher():
 
 def _status(row):
     try:
-        base = _provider_url().geturl().rstrip("/")
+        raw = row.endpoint if row is not None else get_settings().ai_base_url.strip()
+        base = _provider_url(raw).geturl().rstrip("/")
     except HTTPException:
         base = None
     configured = row is not None and row.endpoint == base
@@ -86,7 +100,6 @@ def read_settings(db: Session = Depends(get_db)):
 
 @router.put("/settings", dependencies=[Depends(require_admin), Depends(require_csrf)])
 def save_settings(body: Any = Body(), db: Session = Depends(get_db), user=Depends(require_admin)):
-    endpoint = _provider_url().geturl().rstrip("/")
     try:
         values = SettingsInput.model_validate(body)
         key = values.apiKey.get_secret_value() if values.apiKey is not None else ""
@@ -94,23 +107,35 @@ def save_settings(body: Any = Body(), db: Session = Depends(get_db), user=Depend
             raise ValueError
     except (ValidationError, ValueError) as exc:
         raise HTTPException(422, "모델 ID와 API 키 형식을 확인하세요") from exc
-    row = db.get(SharedAISettings, 1)
+    # Serialize edits on PostgreSQL so simultaneous edits cannot carry an old
+    # endpoint's key over to a newly selected provider.
+    row = db.get(SharedAISettings, 1, with_for_update=True)
+    raw = values.baseUrl.strip() if values.baseUrl is not None else (
+        row.endpoint if row is not None else get_settings().ai_base_url.strip()
+    )
+    url = _provider_url(raw, error_status=422)
+    endpoint = url.geturl().rstrip("/")
+    retained_key = row.encrypted_key if row and row.endpoint == endpoint and not values.clearKey else None
+    addresses = _private_addresses(url.hostname, _port(url), error_status=422)
+    _require_key_transport(url, addresses, bool(key or retained_key), error_status=422)
+    encrypted_key = _cipher().encrypt(key.encode()).decode("ascii") if key else retained_key
     if row is None:
-        row = SharedAISettings(id=1, endpoint=endpoint, model=values.model)
+        row = SharedAISettings(id=1, endpoint=endpoint, model=values.model, encrypted_key=encrypted_key)
         db.add(row)
-    if row.endpoint != endpoint:
-        row.endpoint, row.encrypted_key = endpoint, None
-    row.model = values.model
-    if key:
-        row.encrypted_key = _cipher().encrypt(key.encode()).decode("ascii")
-    elif values.clearKey:
-        row.encrypted_key = None
-    audit(db, user.username, "ai.settings.update", "ai_settings", "1", {"model": row.model})
-    db.commit()
+    else:
+        db.execute(update(SharedAISettings).where(SharedAISettings.id == 1).values(
+            endpoint=endpoint, model=values.model, encrypted_key=encrypted_key,
+        ))
+    audit(db, user.username, "ai.settings.update", "ai_settings", "1", {"model": values.model})
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(409, "다른 관리자가 설정을 먼저 저장했습니다. 새로고침한 뒤 다시 저장하세요") from exc
     return _status(row)
 
 
-def _private_addresses(host, port):
+def _private_addresses(host, port, *, error_status: int = 503):
     try:
         records = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
         addresses = {item[4][0] for item in records}
@@ -118,19 +143,16 @@ def _private_addresses(host, port):
             raise ValueError
         return sorted(addresses)
     except (OSError, ValueError) as exc:
-        raise HTTPException(503, "사내 AI 주소는 허용된 사설 네트워크로 해석되어야 합니다") from exc
+        raise HTTPException(error_status, "사내 AI 주소는 허용된 사설 네트워크로 해석되어야 합니다") from exc
 
 
 def _call_model(row, facts):
-    url = _provider_url()
-    if row.endpoint != url.geturl().rstrip("/"):
-        raise HTTPException(503, "AI 서버 주소가 변경되었습니다. 공통 AI 설정을 다시 저장하세요")
-    port = url.port or (443 if url.scheme == "https" else 80)
+    url = _provider_url(row.endpoint)
+    port = _port(url)
     addresses = _private_addresses(url.hostname, port)
+    _require_key_transport(url, addresses, bool(row.encrypted_key))
     key = ""
     if row.encrypted_key:
-        if url.scheme == "http" and not all(ipaddress.ip_address(address).is_loopback for address in addresses):
-            raise HTTPException(503, "API 키를 사용하는 사내 AI 서버에는 HTTPS가 필요합니다")
         try:
             key = _cipher().decrypt(row.encrypted_key.encode("ascii")).decode()
         except (InvalidToken, UnicodeError) as exc:

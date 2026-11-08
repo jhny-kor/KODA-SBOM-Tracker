@@ -53,12 +53,17 @@ it("lazily loads deployment evidence and displays a declared Java conflict", asy
 
 it("clears the submitted API key and displays AI output as literal text", async () => {
   const settings = { endpointConfigured: true, baseUrl: "https://ai.internal/v1", model: "inside", hasKey: true };
-  apiRequest.mockResolvedValueOnce(settings).mockResolvedValueOnce(settings).mockResolvedValueOnce({ summary: "<b>검토 참고</b>" });
+  apiRequest.mockResolvedValueOnce({ endpointConfigured: false, baseUrl: null, model: null, hasKey: false })
+    .mockResolvedValueOnce(settings).mockResolvedValueOnce({ summary: "<b>검토 참고</b>" });
   render(<><SharedAISettingsPanel /><TrackerAISummary runId="r1" /></>);
-  const key = await screen.findByLabelText("AI API 키");
+  const address = await screen.findByLabelText("사내 AI 서버 주소");
+  const key = screen.getByLabelText("AI API 키");
+  fireEvent.change(address, { target: { value: settings.baseUrl } });
+  fireEvent.change(screen.getByLabelText("모델 ID"), { target: { value: settings.model } });
   fireEvent.change(key, { target: { value: "example-key" } });
   fireEvent.click(screen.getByRole("button", { name: "설정 저장" }));
   await waitFor(() => expect(key).toHaveValue(""));
+  expect(JSON.parse(apiRequest.mock.calls[1][1]?.body as string)).toMatchObject({ baseUrl: settings.baseUrl, model: settings.model });
   fireEvent.click(screen.getByRole("button", { name: "사내 AI로 요약" }));
   expect(await screen.findByText("<b>검토 참고</b>")).toBeInTheDocument();
   expect(document.querySelector("b")).toBeNull();

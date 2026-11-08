@@ -193,7 +193,7 @@ def test_shared_private_ai_provider_for_koda_and_tracker(monkeypatch):
     thread.start()
     endpoint = f"http://127.0.0.1:{server.server_port}/v1"
     settings = get_settings()
-    monkeypatch.setattr(settings, "ai_base_url", endpoint)
+    monkeypatch.setattr(settings, "ai_base_url", "")
     monkeypatch.setattr(settings, "ai_encryption_key", SecretStr(Fernet.generate_key().decode()))
     try:
         with TestClient(app) as client:
@@ -202,7 +202,11 @@ def test_shared_private_ai_provider_for_koda_and_tracker(monkeypatch):
             env = next(item["id"] for item in client.get("/api/v1/environments").json() if item["slug"] == "prod")
             run_id = _run(client, csrf, service, env, "1.0", "CVE-2025-30301")
             secret = "private-model-fixture-secret"
-            body = {"model": "internal-model", "apiKey": secret}
+            assert client.get(AI + "/settings").json()["baseUrl"] is None
+            monkeypatch.setattr(settings, "ai_base_url", endpoint)
+            assert client.get(AI + "/settings").json()["baseUrl"] == endpoint
+            monkeypatch.setattr(settings, "ai_base_url", "")
+            body = {"baseUrl": endpoint, "model": "internal-model", "apiKey": secret}
             assert client.put(AI + "/settings", json=body).status_code == 403
             response = client.put(AI + "/settings", json=body, headers=csrf)
             assert response.status_code == 200, response.text
@@ -225,12 +229,20 @@ def test_shared_private_ai_provider_for_koda_and_tracker(monkeypatch):
             assert tracker_facts == {"source": "tracker", "severityCounts": {"high": 1}, "cves": ["CVE-2025-30301"]}
             assert json.loads(requests[2][2]["messages"][1]["content"]) == {"source": "koda", **facts}
 
-            monkeypatch.setattr(settings, "ai_base_url", "http://8.8.8.8/v1")
-            assert not client.get(AI + "/settings").json()["hasKey"]
-            assert client.post(AI + "/test", headers=csrf).status_code == 503
-            assert client.put(AI + "/settings", json={"model": "internal-model"}, headers=csrf).status_code == 200
-            assert client.post(AI + "/test", headers=csrf).status_code == 503
+            for disallowed in ("https://8.8.8.8/v1", "http://169.254.169.254/v1",
+                               "https://name:password@127.0.0.1/v1", "http://127.0.0.1/wrong"):
+                assert client.put(AI + "/settings", json={"model": "internal-model", "baseUrl": disallowed},
+                                  headers=csrf).status_code == 422
+            assert client.put(AI + "/settings", json={"model": "internal-model", "baseUrl": "http://10.0.0.3/v1",
+                              "apiKey": "demo-key"}, headers=csrf).status_code == 422
+            assert client.put(AI + "/settings", json={"model": "internal-model"}, headers=csrf).json()["hasKey"]
+            assert client.get(AI + "/settings").json()["hasKey"]
             assert len(requests) == 3
+            changed = client.put(AI + "/settings", json={"model": "internal-model",
+                                  "baseUrl": endpoint.replace("127.0.0.1", "127.0.0.2")}, headers=csrf)
+            assert changed.status_code == 200, changed.text
+            assert changed.json()["baseUrl"] != endpoint and not changed.json()["hasKey"]
+            assert not client.get(AI + "/settings").json()["hasKey"]
     finally:
         server.shutdown()
         server.server_close()
