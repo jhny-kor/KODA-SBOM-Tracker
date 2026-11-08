@@ -181,13 +181,25 @@ except (tarfile.TarError, OSError) as error:
 PY
 }
 
+# The application runs without a trust key. Only an explicitly configured
+# host public key adds the read-only file bind; no placeholder is created.
+data_update_key_compose_args() {
+  local compose_root="${1:-$ROOT_DIR}"
+  DATA_UPDATE_KEY_COMPOSE_ARGS=()
+  if [[ -n "${TRACKER_DATA_UPDATE_VERIFY_KEY_FILE:-}" ]]; then
+    [[ -f "$compose_root/compose.data-key.yaml" ]] || { echo "missing optional data-key Compose file" >&2; return 1; }
+    DATA_UPDATE_KEY_COMPOSE_ARGS=(-f "$compose_root/compose.data-key.yaml")
+  fi
+}
+
 compose() {
+  data_update_key_compose_args "$ROOT_DIR"
   if [[ -f "$ENV_FILE" ]]; then
     docker compose --project-directory "$ROOT_DIR" --env-file "$ENV_FILE" \
-      -f "$ROOT_DIR/compose.yaml" "$@"
+      -f "$ROOT_DIR/compose.yaml" ${DATA_UPDATE_KEY_COMPOSE_ARGS[@]+"${DATA_UPDATE_KEY_COMPOSE_ARGS[@]}"} "$@"
   else
     docker compose --project-directory "$ROOT_DIR" --env-file "$EXAMPLE_ENV_FILE" \
-      -f "$ROOT_DIR/compose.yaml" "$@"
+      -f "$ROOT_DIR/compose.yaml" ${DATA_UPDATE_KEY_COMPOSE_ARGS[@]+"${DATA_UPDATE_KEY_COMPOSE_ARGS[@]}"} "$@"
   fi
 }
 

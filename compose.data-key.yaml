@@ -1,0 +1,33 @@
+# Optional: append only after registering TRACKER_DATA_UPDATE_VERIFY_KEY_FILE.
+# No private key or generated placeholder belongs in this bind.
+services:
+  portal-api:
+    environment:
+      TRACKER_DATA_UPDATE_VERIFY_KEY: /run/secrets/tracker-data-update-verify.pub
+    volumes:
+      - type: bind
+        source: ${TRACKER_DATA_UPDATE_VERIFY_KEY_FILE:?Register a data-update public key}
+        target: /run/secrets/tracker-data-update-verify.pub
+        read_only: true
+        bind:
+          create_host_path: false
+  portal-worker:
+    environment:
+      TRACKER_DATA_UPDATE_VERIFY_KEY: /run/secrets/tracker-data-update-verify.pub
+    volumes:
+      - type: bind
+        source: ${TRACKER_DATA_UPDATE_VERIFY_KEY_FILE:?Register a data-update public key}
+        target: /run/secrets/tracker-data-update-verify.pub
+        read_only: true
+        bind:
+          create_host_path: false
+  portal-data-updater:
+    environment:
+      TRACKER_DATA_UPDATE_VERIFY_KEY: /run/secrets/tracker-data-update-verify.pub
+    volumes:
+      - type: bind
+        source: ${TRACKER_DATA_UPDATE_VERIFY_KEY_FILE:?Register a data-update public key}
+        target: /run/secrets/tracker-data-update-verify.pub
+        read_only: true
+        bind:
+          create_host_path: false

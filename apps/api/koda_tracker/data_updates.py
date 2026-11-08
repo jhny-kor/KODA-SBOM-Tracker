@@ -160,6 +160,32 @@ def _verify_approved_files(release_name, key_name, file_identities):
         if any(actual.get(key) != value for key,value in expected.items()): raise DataUpdateError("승인 데이터 메타데이터가 변경되었습니다")
 
 
+def verification_status(settings: Settings) -> dict[str, object]:
+    """Configuration status only; each imported artifact still needs a valid signature."""
+    key = settings.data_update_verify_key or os.environ.get("KODA_RELEASE_VERIFY_KEY")
+    if not key:
+        return {"state": "unconfigured", "signatureRequired": True,
+                "message": "취약점 자료 서명 검증키가 미설정(unconfigured)입니다. 공개키 등록 후 자료를 반입·적용할 수 있습니다."}
+    try:
+        path = Path(key)
+        if not path.is_file():
+            raise OSError("not a regular key file")
+        with path.open("rb") as handle:
+            if not handle.read(1):
+                raise OSError("empty key file")
+    except OSError:
+        return {"state": "unavailable", "signatureRequired": True,
+                "message": "등록된 취약점 자료 검증키를 읽을 수 없습니다. 공개키 설정을 확인하십시오."}
+    return {"state": "configured", "signatureRequired": True, "message": None}
+
+
+def require_verification_key(settings: Settings) -> Path:
+    status = verification_status(settings)
+    if status["state"] != "configured":
+        raise DataUpdateError(str(status["message"]))
+    return Path(settings.data_update_verify_key or os.environ["KODA_RELEASE_VERIFY_KEY"])
+
+
 def assert_approved_release(settings: Settings, release: Path | None) -> None:
     if not approval_required(settings): return
     state = managed_state(settings)
@@ -463,9 +489,9 @@ class DataUpdateEngine:
         finally: temporary.unlink(missing_ok=True)
 
     def _verify_signature(self, root):
-        key = self.settings.data_update_verify_key or os.environ.get("KODA_RELEASE_VERIFY_KEY")
+        key = require_verification_key(self.settings)
         signature = root / "manifest.sha256.sig"
-        if not key or not Path(key).is_file() or not signature.is_file() or signature.stat().st_size > 65536:
+        if not signature.is_file() or signature.stat().st_size > 65536:
             raise DataUpdateError("등록된 검증키와 manifest.sha256.sig 서명이 필요합니다")
         result = subprocess.run(["openssl", "dgst", "-sha256", "-verify", str(key), "-signature", str(signature), str(root / "manifest.sha256")], capture_output=True, timeout=30, check=False)
         if result.returncode != 0: raise DataUpdateError("통합 자료의 서명 검증에 실패했습니다")
@@ -563,6 +589,8 @@ class DataUpdateEngine:
             lock.close()
 
     def stage(self, archive: str | Path, kind: DataType, *, expected_base_version: str | None = None) -> Package:
+        if kind == "unified":
+            require_verification_key(self.settings)
         current = self.current()
         if approval_required(self.settings) and kind != "unified":
             raise DataUpdateError("통합 관리 모드에서는 통합 파일만 반입할 수 있습니다")

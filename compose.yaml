@@ -62,7 +62,6 @@ services:
     image: ${PORTAL_API_IMAGE}:${PORTAL_IMAGE_TAG:-dev}
     container_name: ${COMPOSE_PROJECT_NAME:-koda-sbom}-portal-api
     environment:
-      TRACKER_DATA_UPDATE_VERIFY_KEY: /run/secrets/tracker-data-update-verify.pub
       TRACKER_OFFLINE_MODE: "true"
       TRACKER_EPSS_POLICY_MAX_AGE_DAYS: ${TRACKER_EPSS_POLICY_MAX_AGE_DAYS:-7}
       TRACKER_DATABASE_URL: ${TRACKER_DATABASE_URL}
@@ -96,7 +95,6 @@ services:
       TRACKER_GRYPE_DB_DIR: ${TRACKER_GRYPE_DB_DIR:-/var/lib/sbom-tracker/vuln-data/current/grype-db}
       TRACKER_CYCLONEDX_CLI_BINARY: /usr/local/bin/cyclonedx
     volumes:
-      - ${TRACKER_DATA_UPDATE_VERIFY_KEY_FILE:-./config/data-update-verify.pub}:/run/secrets/tracker-data-update-verify.pub:ro
       - tracker-artifacts:${ARTIFACT_ROOT:-/var/lib/sbom-tracker/artifacts}
       - data-updates:/var/lib/sbom-tracker/data-updates
       - vuln-data:${VULN_DATA_ROOT:-/var/lib/sbom-tracker/vuln-data}:ro
@@ -124,7 +122,6 @@ services:
     container_name: ${COMPOSE_PROJECT_NAME:-koda-sbom}-portal-worker
     command: ["koda-tracker-worker"]
     environment:
-      TRACKER_DATA_UPDATE_VERIFY_KEY: /run/secrets/tracker-data-update-verify.pub
       TRACKER_OFFLINE_MODE: "true"
       TRACKER_EPSS_POLICY_MAX_AGE_DAYS: ${TRACKER_EPSS_POLICY_MAX_AGE_DAYS:-7}
       TRACKER_DATABASE_URL: ${TRACKER_DATABASE_URL}
@@ -142,7 +139,6 @@ services:
       TRACKER_GRYPE_DB_DIR: ${TRACKER_GRYPE_DB_DIR:-/var/lib/sbom-tracker/vuln-data/current/grype-db}
       TRACKER_CYCLONEDX_CLI_BINARY: /usr/local/bin/cyclonedx
     volumes:
-      - ${TRACKER_DATA_UPDATE_VERIFY_KEY_FILE:-./config/data-update-verify.pub}:/run/secrets/tracker-data-update-verify.pub:ro
       - tracker-artifacts:${ARTIFACT_ROOT:-/var/lib/sbom-tracker/artifacts}
       - vuln-data:${VULN_DATA_ROOT:-/var/lib/sbom-tracker/vuln-data}:ro
       - backups:/var/lib/sbom-tracker/backups
@@ -195,7 +191,6 @@ services:
     container_name: ${COMPOSE_PROJECT_NAME:-koda-sbom}-portal-data-updater
     command: ["python", "-m", "koda_tracker.worker", "--data-updates"]
     environment:
-      TRACKER_DATA_UPDATE_VERIFY_KEY: /run/secrets/tracker-data-update-verify.pub
       TRACKER_OFFLINE_MODE: "true"
       TRACKER_EPSS_POLICY_MAX_AGE_DAYS: ${TRACKER_EPSS_POLICY_MAX_AGE_DAYS:-7}
       TRACKER_DATABASE_URL: ${TRACKER_DATABASE_URL}
@@ -206,7 +201,6 @@ services:
       TRACKER_DATA_UPDATE_SPOOL_DIR: /var/lib/sbom-tracker/data-updates
     volumes:
       - tracker-artifacts:${ARTIFACT_ROOT:-/var/lib/sbom-tracker/artifacts}
-      - ${TRACKER_DATA_UPDATE_VERIFY_KEY_FILE:-./config/data-update-verify.pub}:/run/secrets/tracker-data-update-verify.pub:ro
       - data-updates:/var/lib/sbom-tracker/data-updates
       - vuln-data:${VULN_DATA_ROOT:-/var/lib/sbom-tracker/vuln-data}
     read_only: true

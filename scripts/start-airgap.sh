@@ -7,12 +7,10 @@ env_file="${1:-$root_dir/.env}"
 [[ -f "$env_file" ]] || { echo "env file not found: $env_file" >&2; exit 1; }
 
 "$script_dir/preflight-airgap.sh" "$env_file"
-set -a
-# shellcheck disable=SC1090
-source "$env_file"
-set +a
 source "$script_dir/lib.sh"
-compose_args=(--env-file "$env_file" -f "$root_dir/compose.yaml" -f "$root_dir/compose.airgap.yaml")
+load_env "$env_file"
+data_update_key_compose_args "$root_dir"
+compose_args=(--env-file "$env_file" -f "$root_dir/compose.yaml" -f "$root_dir/compose.airgap.yaml" ${DATA_UPDATE_KEY_COMPOSE_ARGS[@]+"${DATA_UPDATE_KEY_COMPOSE_ARGS[@]}"})
 docker compose "${compose_args[@]}" up -d --no-build --pull never
 
 deadline=$((SECONDS + ${AIRGAP_HEALTH_TIMEOUT:-420}))

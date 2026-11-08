@@ -489,6 +489,7 @@ export interface UnifiedVulnerabilityStatus {
   expectedBaseVersion: string | null;
   managed: boolean;
   signatureRequired: boolean;
+  verification?: {state: "configured" | "unconfigured" | "unavailable"; signatureRequired: boolean; message: string | null};
   referenceSources: {kind: string; id: string; dataDate?: string | null; status?: string; maxAgeDays?: number}[];
   datasets?: {kind: string; dataDate?: string | null; status?: string; records?: number | null}[];
   pendingJobs: VulnerabilityDataJob[];

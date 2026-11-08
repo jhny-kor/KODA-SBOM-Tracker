@@ -58,6 +58,17 @@ Suite 전달물의 `koda-suite patch --group portal-api-worker` 또는 전체 �
 
 ## 새 설치의 취약점 자료 초기화
 
+앱 설치·업데이트에는 취약점 자료 공개키 등록이 필요하지 않습니다.
+`TRACKER_DATA_UPDATE_VERIFY_KEY_FILE`을 비워 두면 키 파일 bind 없이 기동하며,
+기존 계정·LDAP 설정·점검 결과는 보존합니다. 자료 관리 화면에는 `unconfigured`가 표시되고
+서명 검증이 필요한 자료 반입·적용은 사용할 수 없습니다. 서명 없는 자료를 자동 허용하지 않습니다.
+
+신뢰한 공개키를 사용할 때만 `.env`의 `TRACKER_DATA_UPDATE_VERIFY_KEY_FILE`에 경로를 지정합니다.
+상대 경로는 그 `.env` 파일 위치를 기준으로 해석합니다. 제공된 설치·시작·유지보수 스크립트는
+`compose.data-key.yaml`을 선택적으로 추가하고, 키 경로가 잘못됐거나 개인키이면 중단합니다.
+Compose를 직접 실행하는 경우에도 키 등록 후에만 `-f compose.data-key.yaml`을 추가해야 합니다.
+이 파일은 키와 무관한 데이터 볼륨·토큰·LDAP 암호화 키를 바꾸지 않습니다.
+
 취약점 자료를 포함한 새 설치에서 `--import-vuln-bundle`을 사용하려면 자료 디렉터리에
 공식 EPSS를 포함하여 서명한 `unified-update.tar.gz`가 있어야 합니다.
 `TRACKER_DATA_UPDATE_VERIFY_KEY_FILE`에는 그 파일을 검증할 신뢰한 공개키를 등록합니다.

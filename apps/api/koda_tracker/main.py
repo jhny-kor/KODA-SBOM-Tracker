@@ -2772,7 +2772,7 @@ def _running_data_readers(db):
 
 @app.get("/api/v1/vulnerability-data-bundles/unified/status")
 def unified_vulnerability_status(db: Session = Depends(get_db), _admin=Depends(require_admin), _permission=Depends(require_permission("vulnerability.manage"))):
-    from .data_updates import DataUpdateEngine, managed_state, assert_approved_release, release_busy, release_read_lease
+    from .data_updates import DataUpdateEngine, managed_state, assert_approved_release, release_busy, release_read_lease, verification_status
     from .offline_intelligence_store import active_reference_document, reference_manifest
     settings = get_settings(); engine = DataUpdateEngine(settings, read_only=True); marker = managed_state(settings)
     current = engine.current(); error = None
@@ -2794,7 +2794,7 @@ def unified_vulnerability_status(db: Session = Depends(get_db), _admin=Depends(r
     if not available and state == "active": state = "unavailable"
     dates = {"grype-db":metadata.get("GRYPE_DATASET_DATE",metadata.get("DATASET_DATE")), "nvd":metadata.get("NVD_DATASET_DATE"),"kev":metadata.get("KEV_DATASET_DATE"),"epss":metadata.get("EPSS_DATASET_DATE")}
     busy = _running_data_readers(db) or bool(pending) or release_busy(settings)
-    return {"state":state,"available":available,"currentVersion":current.version if available else None,"expectedBaseVersion":current.version if current else None,"managed":marker is not None,"signatureRequired":True,"referenceSources":sources,"datasets":[{"kind":kind,"dataDate":value,"status":"available" if value and available else "missing"} for kind,value in dates.items()],"pendingJobs":[_data_job_payload(job) for job in pending],"canPurge":not busy,"blockedReason":("분석 또는 데이터 작업이 진행 중입니다. 완료 후 재시도하십시오" if busy else error)}
+    return {"state":state,"available":available,"currentVersion":current.version if available else None,"expectedBaseVersion":current.version if current else None,"managed":marker is not None,"signatureRequired":True,"verification":verification_status(settings),"referenceSources":sources,"datasets":[{"kind":kind,"dataDate":value,"status":"available" if value and available else "missing"} for kind,value in dates.items()],"pendingJobs":[_data_job_payload(job) for job in pending],"canPurge":not busy,"blockedReason":("분석 또는 데이터 작업이 진행 중입니다. 완료 후 재시도하십시오" if busy else error)}
 
 
 class PurgeVulnerabilityBody(BaseModel):

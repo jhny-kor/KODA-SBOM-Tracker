@@ -130,12 +130,14 @@ done < "$install_dir/config/images.lock"
 
 cd "$install_dir"
 load_env "$install_dir/.env"
-docker compose --env-file .env -f compose.yaml -f compose.airgap.yaml up -d --no-build --pull never --wait --wait-timeout "${AIRGAP_HEALTH_TIMEOUT:-420}" postgres
+data_update_key_compose_args "$install_dir"
+compose_args=(--env-file .env -f compose.yaml -f compose.airgap.yaml ${DATA_UPDATE_KEY_COMPOSE_ARGS[@]+"${DATA_UPDATE_KEY_COMPOSE_ARGS[@]}"})
+docker compose "${compose_args[@]}" up -d --no-build --pull never --wait --wait-timeout "${AIRGAP_HEALTH_TIMEOUT:-420}" postgres
 python3 "$install_dir/scripts/remove-retired-analysis.py" --env-file "$legacy_env" --phase database
-docker compose --env-file .env -f compose.yaml -f compose.airgap.yaml up -d --no-build --pull never --remove-orphans
+docker compose "${compose_args[@]}" up -d --no-build --pull never --remove-orphans
 deadline=$((SECONDS + ${AIRGAP_HEALTH_TIMEOUT:-420}))
 while (( SECONDS < deadline )); do
-  if compose_services_ready --env-file .env -f compose.yaml -f compose.airgap.yaml; then
+  if compose_services_ready "${compose_args[@]}"; then
     if (( import_vuln )); then
       [[ -d vulnerability-data ]] || { echo "--import-vuln-bundle requested but release has no bundle" >&2; exit 1; }
       ENV_FILE="$install_dir/.env" "$install_dir/scripts/import-vuln-bundle.sh" "$install_dir/vulnerability-data"
@@ -147,5 +149,5 @@ while (( SECONDS < deadline )); do
   sleep 5
 done
 echo "Timed out waiting for air-gap service health" >&2
-docker compose --env-file .env -f compose.yaml -f compose.airgap.yaml ps >&2 || true
+docker compose "${compose_args[@]}" ps >&2 || true
 exit 1

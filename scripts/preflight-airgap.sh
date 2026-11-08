@@ -3,11 +3,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 env_file="${1:-$ROOT_DIR/.env}"
 [[ -f "$env_file" ]] || { echo "Missing env file: $env_file" >&2; exit 2; }
-set -a
-# shellcheck disable=SC1090
-source "$env_file"
-set +a
 source "$ROOT_DIR/scripts/lib.sh"
+load_env "$env_file"
 required=(POSTGRES_PASSWORD TRACKER_DB_PASSWORD TRACKER_BOOTSTRAP_ADMIN_PASSWORD TRACKER_DATABASE_URL)
 for name in "${required[@]}"; do
   value="${!name:-}"
@@ -45,6 +42,9 @@ if [[ -n "${TRACKER_DATA_UPDATE_VERIFY_KEY_FILE:-}" ]]; then
     echo "data-update verification mount must contain only a public key" >&2; exit 2
   fi
   openssl pkey -pubin -in "$verify_key" -noout >/dev/null 2>&1 || { echo "invalid data-update public key" >&2; exit 2; }
+else
+  echo "Vulnerability-data verification: unconfigured; app startup is allowed, signed import requires a registered public key."
 fi
-docker compose --env-file "$env_file" -f "$ROOT_DIR/compose.yaml" -f "$ROOT_DIR/compose.airgap.yaml" config >/dev/null
+data_update_key_compose_args "$ROOT_DIR"
+docker compose --env-file "$env_file" -f "$ROOT_DIR/compose.yaml" -f "$ROOT_DIR/compose.airgap.yaml" ${DATA_UPDATE_KEY_COMPOSE_ARGS[@]+"${DATA_UPDATE_KEY_COMPOSE_ARGS[@]}"} config >/dev/null
 echo "Air-gap preflight OK: $env_file"

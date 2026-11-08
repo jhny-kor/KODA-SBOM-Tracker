@@ -68,6 +68,7 @@ for image in "${remote_images[@]}" "${local_images[@]}"; do
 done
 cp "$ROOT_DIR/compose.yaml" "$stage_dir/compose.yaml"
 cp "$ROOT_DIR/compose.airgap.yaml" "$stage_dir/compose.airgap.yaml"
+cp "$ROOT_DIR/compose.data-key.yaml" "$stage_dir/compose.data-key.yaml"
 cp "$ROOT_DIR/LICENSE" "$ROOT_DIR/NOTICE" "$ROOT_DIR/THIRD_PARTY_NOTICES.md" "$stage_dir/"
 cp "$EXAMPLE_ENV_FILE" "$stage_dir/config/.env.example"
 cp "$ROOT_DIR/deploy/manifests/images.lock" "$stage_dir/config/images.lock"

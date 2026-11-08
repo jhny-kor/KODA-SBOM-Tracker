@@ -62,7 +62,7 @@ class Settings(BaseSettings):
     nvd_cache_dir: Path | None = None
     koda_provisioning_token_file: Path | None = None
 
-    @field_validator("nvd_cache_dir", mode="before")
+    @field_validator("nvd_cache_dir", "data_update_verify_key", mode="before")
     @classmethod
     def empty_nvd_cache_dir(cls, value):
         return None if isinstance(value, str) and not value.strip() else value
