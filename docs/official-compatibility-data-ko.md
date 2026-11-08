@@ -10,7 +10,39 @@
 | Python | Python Software Foundation · PyPI | 공식 릴리스 JSON에 기재된 wheel URL과 SHA-256, wheel의 `Requires-Python`·`Requires-Dist`·플랫폼 태그 |
 | Linux C | Oracle · Oracle Linux Yum Server | Oracle Linux BaseOS/AppStream RPM 헤더의 패키지 EVR·아키텍처·`Provides`·`Requires`와 공유 라이브러리 심볼 버전 선언 |
 
-## 공개망에서 수집
+## 기관별 공개 카탈로그 전체 수집
+
+공개망에서 Tracker API의 Python 환경으로 수집 스크립트를 실행합니다. 새 환경은 Python
+3.12 이상에서 `python3 -m pip install -e apps/api`로 준비할 수 있습니다.
+
+```bash
+python3 scripts/collect-compatibility-repository.py --source all --output-dir ./compatibility-repositories
+```
+
+`--source maven`, `--source pypi`, `--source oracle`로 기관을 하나씩 실행할 수도 있습니다.
+수집기는 Maven Central 전체 색인, PyPI 공개 프로젝트 목록과 프로젝트별 릴리스 정보,
+Oracle Linux Yum 공개 목록에 연결된 저장소의 `repomd.xml`과 primary 색인을 읽습니다.
+범위는 기관이 색인에 공개한 패키지·버전입니다. Maven은 색인에 반영된 시점을 기준으로 합니다.
+Oracle 특정 채널은 `--oracle-repo`로 지정할 수 있습니다.
+
+| 출력 | 용도 |
+| --- | --- |
+| `catalog-*.tar.gz` | 패키지·버전·파일 URL, 공식 색인 출처와 SHA-256, 반입 지원 여부, 수집 오류를 검토합니다. PyPI 소스 배포본과 Tracker 미지원 Oracle 패키지도 목록에 남깁니다. |
+| `tracker-*.tar.gz` | 공식 POM, PyPI 릴리스 JSON과 지원 wheel, 지원 Oracle RPM을 담습니다. 각 압축은 최대 20개 항목과 16 MiB 제한을 적용하며 Tracker 검증기를 통과한 뒤 저장합니다. |
+| `*.tar.gz.sha256` | 반입 전에 각 압축의 무결성을 확인합니다. |
+| `catalog.sqlite3`, `indexes/` | 수집한 색인과 항목 상태를 작업 폴더에 저장합니다. |
+
+같은 출력 경로로 재실행하면 완료한 항목을 건너뜁니다. 새 시점의 카탈로그는 새 출력
+경로에 수집합니다. `--catalog-only`는 원본 증거 수집 전에 목록을 먼저 확보하고,
+`--export-only`는 현재까지의 목록을 네트워크 요청 없이 다시 압축합니다.
+`--limit`로 기관별 원본 요청 범위를 나눌 수 있습니다. 종료 코드 3이면 미완료 항목과 오류를
+`catalog-*.tar.gz`의 `summary.json`과 목록에서 확인합니다. Maven Central이 색인 요청을
+제한하는 경우 이미 확보한 공식 색인 파일을 `--maven-index`로 지정할 수 있습니다.
+[Maven Central 색인](https://maven.apache.org/repository/central-index.html),
+[PyPI Index API](https://docs.pypi.org/api/index-api/),
+[Oracle Linux Yum 저장소](https://docs.oracle.com/en/operating-systems/oracle-linux/software-management/sfw-mgmt-AvailableYumRepositories.html)
+
+## 패키지와 버전을 지정해 수집
 
 저장소 소스의 공개망 사본에서 아래처럼 검토할 패키지와 버전을 명시합니다. 수집기는 Python 표준 라이브러리로 지정 HTTPS 저장소에 접속합니다. Maven Central의 POM과 Oracle Linux Yum의 RPM은 버전별 원본 URL에서 직접 내려받습니다. PyPI는 공식 릴리스 JSON API로 지정 wheel 파일을 찾고, 원본 저장소에서 받은 바이트를 PyPI가 공개한 크기와 SHA-256으로 대조합니다.
 
@@ -28,7 +60,7 @@ python3 scripts/collect-compatibility-data.py \
 ## 폐쇄망에서 확인
 
 1. `shasum -a 256 -c tracker-official-compatibility.tar.gz.sha256` 또는 Linux의 `sha256sum -c tracker-official-compatibility.tar.gz.sha256`으로 전송받은 압축의 해시를 확인합니다.
-2. Tracker의 **설정 → 공식 호환성 자료**에서 `.tar.gz` 하나를 선택해 **반입하고 검증**을 누릅니다. 압축 파일의 한도는 16 MiB, 압축 해제 자료의 한도는 32 MiB입니다.
+2. Tracker의 **설정 → 공식 호환성 자료**에서 단건 수집 압축 또는 `tracker-*.tar.gz` 하나를 선택해 **반입하고 검증**을 누릅니다. 압축 파일의 한도는 16 MiB, 압축 해제 자료의 한도는 32 MiB입니다.
 3. **선언 근거 보기**와 **원본과 검증 해시**를 열면 기관별 근거와 URL, SHA-256을 확인할 수 있습니다.
 
 ## 후보 버전 검토에서 확인
