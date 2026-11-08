@@ -14,6 +14,11 @@ from defusedxml import ElementTree as SafeET
 from .archive_formats import MEDIA_TYPES as SBOM_ARCHIVE_MEDIA_TYPES
 
 
+# Large host inventories can exceed 30 seconds on offline server hardware.
+# Keep validation bounded and within the upload gateway's 600-second window.
+CYCLONEDX_VALIDATION_TIMEOUT_SECONDS = 300
+
+
 class SbomValidationError(ValueError):
     pass
 
@@ -197,8 +202,8 @@ def validate_with_cyclonedx_cli(raw: bytes, binary: str) -> None:
             candidate.write(raw)
             candidate.flush()
             validate_file_with_cyclonedx_cli(Path(candidate.name), binary, input_format=input_format)
-    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
-        raise SbomValidationError(f"CycloneDX CLI 검증기를 실행할 수 없습니다: {exc}") from exc
+    except FileNotFoundError as exc:
+        raise SbomValidationError("CycloneDX CLI 검증기를 찾을 수 없습니다. Tracker API 설치 상태를 확인하세요.") from exc
 
 
 def validate_file_with_cyclonedx_cli(path: Path, binary: str, *, input_format: str | None = None) -> None:
@@ -228,12 +233,28 @@ def validate_file_with_cyclonedx_cli(path: Path, binary: str, *, input_format: s
             command,
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=CYCLONEDX_VALIDATION_TIMEOUT_SECONDS,
             check=False,
         )
-    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
-        raise SbomValidationError(f"CycloneDX CLI 검증기를 실행할 수 없습니다: {exc}") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise SbomValidationError(
+            f"CycloneDX 스키마 검증 시간이 {CYCLONEDX_VALIDATION_TIMEOUT_SECONDS}초 제한을 초과했습니다. "
+            "검증이 완료되지 않아 업로드를 저장하지 않았습니다. "
+            "Tracker API 서버의 CPU·메모리와 SBOM 크기를 확인하세요."
+        ) from exc
+    except FileNotFoundError as exc:
+        raise SbomValidationError("CycloneDX CLI 검증기를 찾을 수 없습니다. Tracker API 설치 상태를 확인하세요.") from exc
     if process.returncode != 0:
+        if "System.OutOfMemoryException" in (process.stderr or "") + (process.stdout or ""):
+            raise SbomValidationError(
+                "CycloneDX 검증기의 메모리가 부족해 검증을 완료하지 못했습니다. "
+                "업로드를 저장하지 않았습니다. Tracker API 서버와 컨테이너의 메모리 한도를 확인하세요."
+            )
+        if process.returncode in {-9, 137}:
+            raise SbomValidationError(
+                "CycloneDX 검증기가 강제로 종료되어 검증을 완료하지 못했습니다. "
+                "업로드를 저장하지 않았습니다. Tracker API 서버의 자원 상태와 종료 원인을 확인하세요."
+            )
         message = (process.stderr or process.stdout or "스키마 검증 실패").strip()
         raise SbomValidationError(f"CycloneDX 스키마 검증에 실패했습니다: {message[-1000:]}")
 

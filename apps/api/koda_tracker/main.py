@@ -28,6 +28,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import Text, cast, delete, func, inspect, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
+from starlette.concurrency import run_in_threadpool
 
 from .config import get_settings, session_cookie_name
 from .comparison import compare_components, compare_records
@@ -2020,16 +2021,21 @@ async def upload_sbom(
     )
     try:
         try:
-            with sbom_document_path(staged_path, max_bytes=max_bytes, workbook=workbook) as document:
-                payload, document_media_type = parse_sbom_file(document)
-                validate_component_count(payload, get_settings().max_sbom_components)
-                input_format = "json" if document_media_type.endswith("+json") else "xml"
-                validate_file_with_cyclonedx_cli(
-                    document,
-                    get_settings().cyclonedx_cli_binary,
-                    input_format=input_format,
-                )
-                media_type = WORKBOOK_MEDIA_TYPE if workbook else sbom_upload_media_type(staged_path, document_media_type)
+            def validate_staged_upload():
+                settings = get_settings()
+                with sbom_document_path(staged_path, max_bytes=max_bytes, workbook=workbook) as document:
+                    payload, document_media_type = parse_sbom_file(document)
+                    validate_component_count(payload, settings.max_sbom_components)
+                    input_format = "json" if document_media_type.endswith("+json") else "xml"
+                    validate_file_with_cyclonedx_cli(
+                        document,
+                        settings.cyclonedx_cli_binary,
+                        input_format=input_format,
+                    )
+                    media_type = WORKBOOK_MEDIA_TYPE if workbook else sbom_upload_media_type(staged_path, document_media_type)
+                    return payload, media_type
+
+            payload, media_type = await run_in_threadpool(validate_staged_upload)
         except SbomValidationError as exc:
             raise HTTPException(422, str(exc)) from exc
         if source_value == "scheduled":
