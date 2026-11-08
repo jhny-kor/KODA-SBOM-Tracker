@@ -30,6 +30,12 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 from starlette.concurrency import run_in_threadpool
 
+from .external_api import router as external_router
+from .java_impact import router as java_impact_router
+from .shared_ai import KodaSummaryFacts, router as ai_router, summarize_koda_facts
+from .upgrade_batches import router as upgrade_batches_router
+from .compatibility_data import router as compatibility_data_router
+from .compatibility_sources import MAX_ARCHIVE_BYTES as MAX_COMPATIBILITY_ARCHIVE_BYTES
 from .config import get_settings, session_cookie_name
 from .comparison import compare_components, compare_records
 from .db import Base, SessionLocal, engine, ensure_component_search_support, ensure_environment_active_column, ensure_ldap_subject_attribute_column, ensure_native_policy_columns, ensure_postgres_manager_enum, ensure_sbom_media_type_column, ensure_sbom_source_metadata_column, ensure_user_approval_state_column, ensure_user_identity_columns, get_db
@@ -120,6 +126,10 @@ class RequestBodyLimitMiddleware:
         settings = get_settings()
         path = scope.get("path", "")
         method = scope.get("method", "GET")
+        if method == "POST" and path == "/api/v1/compatibility-data/import":
+            return MAX_COMPATIBILITY_ARCHIVE_BYTES + 64 * 1024
+        if method == "POST" and path == "/api/v1/upgrade-batches/import":
+            return 1024 * 1024
         if method == "POST" and path == "/api/v1/sbom-runs":
             return settings.max_upload_bytes + (2 * 1024 * 1024)
         if method == "POST" and path == "/api/v1/offline-intelligence/import":
@@ -448,6 +458,11 @@ app.include_router(ci_gate_router)
 app.include_router(environment_admin_router)
 app.include_router(library_router)
 app.include_router(cve_catalog_router)
+app.include_router(external_router)
+app.include_router(java_impact_router)
+app.include_router(upgrade_batches_router)
+app.include_router(compatibility_data_router)
+app.include_router(ai_router)
 app.add_middleware(RequestBodyLimitMiddleware)
 _upload_persist_lock = asyncio.Lock()
 
@@ -897,6 +912,12 @@ async def http_problem(request: Request, exc: HTTPException):
 
 @app.exception_handler(RequestValidationError)
 async def validation_problem(request: Request, exc: RequestValidationError):
+    if request.url.path == "/api/v1/upgrade-batches/import":
+        errors = exc.errors()
+        if errors:
+            location = ".".join(str(part) for part in errors[0]["loc"][1:])
+            detail = " · ".join(part for part in (location, errors[0]["msg"]) if part)
+            return problem(422, "일괄 검토 JSON 입력값 검증 실패", detail, request)
     return problem(422, "입력값 검증 실패", str(exc.errors()), request)
 
 
@@ -1812,6 +1833,11 @@ def _require_koda_provisioning(
     if not expected or not secrets.compare_digest(supplied, expected):
         raise HTTPException(401, "KODA 자동 연동 인증이 필요합니다")
     return "integration:koda"
+
+
+@app.post("/api/v1/integrations/koda/ai-summary", dependencies=[Depends(_require_koda_provisioning)])
+def koda_ai_summary(body: KodaSummaryFacts, db: Session = Depends(get_db)):
+    return summarize_koda_facts(db, body)
 
 
 @app.get("/api/v1/integrations/koda/users")

@@ -1,0 +1,87 @@
+import { useEffect, useState, type FormEvent } from "react";
+import { request } from "./api";
+
+type AISettings = { endpointConfigured: boolean; baseUrl: string | null; model: string | null; hasKey: boolean };
+
+export function SharedAISettingsPanel() {
+  const [settings, setSettings] = useState<AISettings | null>(null);
+  const [model, setModel] = useState("");
+  const [apiKey, setApiKey] = useState("");
+  const [clearKey, setClearKey] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState("");
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void request<AISettings>("/api/v1/ai/settings", { signal: controller.signal }).then(value => {
+      if (!controller.signal.aborted) {
+        setSettings(value);
+        setModel(value.model ?? "");
+      }
+    }).catch(cause => { if (!controller.signal.aborted) setError(cause.message); });
+    return () => controller.abort();
+  }, []);
+
+  async function save(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBusy(true); setStatus(""); setError("");
+    try {
+      const value = await request<AISettings>("/api/v1/ai/settings", {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model, ...(apiKey ? { apiKey } : {}), clearKey }),
+      });
+      setSettings(value); setClearKey(false);
+      setStatus("KODA와 Tracker의 공통 AI 설정을 저장했습니다.");
+    } catch (cause) { setError((cause as Error).message); }
+    finally { setApiKey(""); setBusy(false); }
+  }
+
+  async function test() {
+    setBusy(true); setStatus(""); setError("");
+    try {
+      await request("/api/v1/ai/test", { method: "POST" });
+      setStatus("저장된 설정으로 사내 모델의 응답을 확인했습니다.");
+    } catch (cause) { setError((cause as Error).message); }
+    finally { setBusy(false); }
+  }
+
+  return <section className="card" aria-label="공통 AI 연결">
+    <h2>공통 AI 연결</h2>
+    <p>관리자가 등록한 사내 OpenAI 호환 모델을 KODA와 Tracker의 점검 요약에 사용합니다.</p>
+    {error && <p className="form-message" role="alert">{error}</p>}
+    {status && <p className="form-message" role="status">{status}</p>}
+    {settings && <form className="run-metadata-form" onSubmit={event => void save(event)}>
+      <p className="mono wrap">{settings.baseUrl ?? "운영자가 사내 AI 주소를 설정해야 합니다."}</p>
+      <div className="run-metadata-fields">
+        <label>모델 ID<input required value={model} maxLength={128} disabled={busy} onChange={event => setModel(event.target.value)} /></label>
+        <label>AI API 키<input type="password" autoComplete="new-password" value={apiKey} maxLength={4096} disabled={busy || clearKey} placeholder={settings.hasKey ? "등록됨 · 교체할 때만 입력" : "서버가 키를 요구할 때 입력"} onChange={event => setApiKey(event.target.value)} /></label>
+      </div>
+      {settings.hasKey && <label className="check-label"><input type="checkbox" checked={clearKey} disabled={busy} onChange={event => { setClearKey(event.target.checked); setApiKey(""); }} />저장된 키 삭제</label>}
+      <div className="button-row">
+        <button className="primary" disabled={!settings.endpointConfigured || busy}>설정 저장</button>
+        <button className="secondary" type="button" disabled={!settings.model || busy} onClick={() => void test()}>저장된 설정으로 연결 시험</button>
+      </div>
+    </form>}
+  </section>;
+}
+
+export function TrackerAISummary({ runId }: { runId: string }) {
+  const [summary, setSummary] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  async function generate() {
+    setBusy(true); setError(""); setSummary("");
+    try {
+      const result = await request<{ summary: string }>(`/api/v1/ai/runs/${encodeURIComponent(runId)}/summary`, { method: "POST" });
+      setSummary(result.summary);
+    } catch (cause) { setError((cause as Error).message); }
+    finally { setBusy(false); }
+  }
+  return <section className="run-metadata-section" aria-label="공통 AI 분석 요약">
+    <button className="secondary" type="button" disabled={busy} onClick={() => void generate()}>{busy ? "요약 생성 중…" : "사내 AI로 요약"}</button>
+    <p className="muted">심각도별 건수와 최대 25개 CVE ID를 사내 모델에 보냅니다. 응답은 검토 참고용입니다.</p>
+    {error && <p className="form-message" role="alert">{error}</p>}
+    {summary && <p role="status" style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{summary}</p>}
+  </section>;
+}

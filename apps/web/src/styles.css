@@ -671,3 +671,28 @@ select, input, textarea, .form-row > label, .workflow-form > label, .workflow-fo
 .finding-inspector-table th:nth-child(6) { width: 200px; }
 .finding-inspector-table th:nth-child(7) { width: 130px; }
 .finding-inspector-table th:nth-child(8) { width: 190px; }
+
+.official-compatibility-panel, .official-compatibility-panel .tracker-panel-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+}
+.official-compatibility-panel .tracker-panel-body { padding: 16px; gap: 14px; }
+.official-compatibility-panel .tracker-panel-body > * { min-width: 0; }
+.official-compatibility-panel .table-scroll > .official-compatibility-table {
+  table-layout: fixed;
+  width: 100%;
+  min-width: 680px;
+}
+.official-compatibility-table th:first-child { width: 12%; }
+.official-compatibility-table th:nth-child(2), .official-compatibility-table th:nth-child(3) { width: 20%; }
+.official-compatibility-table td, .official-compatibility-table a, .official-compatibility-table code {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.official-compatibility-table td { vertical-align: top; }
+.official-compatibility-table pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.upgrade-official-cell { min-width: 13rem; max-width: 24rem; overflow-wrap: anywhere; }
+.upgrade-official-cell > div + div { margin-top: .65rem; padding-top: .65rem; border-top: 1px solid var(--border); }
+.upgrade-official-cell pre { white-space: pre-wrap; overflow-wrap: anywhere; }

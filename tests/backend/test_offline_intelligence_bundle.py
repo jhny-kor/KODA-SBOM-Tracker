@@ -139,6 +139,7 @@ def test_distribution_explicitly_ships_parser_and_helpers_run_without_apps(tmp_p
         (repo / directory).mkdir(parents=True)
     for name in ("LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md", "compose.yaml", "compose.airgap.yaml", "deploy/manifests/images.lock"):
         (repo / name).write_text("fixture\n")
+    shutil.copy2(ROOT / "compose.data-key.yaml", repo / "compose.data-key.yaml")
     (repo / ".env.example").write_text("\n".join(f"{key}={value}" for key, value in {
         "POSTGRES_IMAGE": "postgres:fixture", "NGINX_IMAGE": "nginx:fixture", "GRYPE_IMAGE": "grype:fixture", "CYCLONEDX_CLI_IMAGE": "cdx:fixture", "ALPINE_BASE_IMAGE": "alpine:fixture",
         "PORTAL_WEB_IMAGE": "web", "PORTAL_API_IMAGE": "api", "PORTAL_WORKER_IMAGE": "worker", "PORTAL_IMAGE_TAG": "fixture"}.items()) + "\n")
@@ -161,6 +162,7 @@ if args and args[0]=="save": Path(args[args.index("-o")+1]).write_bytes(b"image 
     installed = tmp_path / "installed"
     with tarfile.open(output) as archive:
         archive.extractall(installed, filter="data")
+    assert (installed / "compose.data-key.yaml").read_bytes() == (ROOT / "compose.data-key.yaml").read_bytes()
     identity = (installed / "config/release-images.env").read_text()
     assert "PORTAL_IMAGE_TAG=" in identity and "0123456789ab" in identity
     assert "PORTAL_IMAGE_TAG=fixture" not in (installed / "config/.env.example").read_text()

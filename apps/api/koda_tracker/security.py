@@ -100,15 +100,19 @@ def current_principal(
     raise HTTPException(401, "인증이 필요합니다")
 
 
+def has_any_permission(db: Session, user: User, *permissions: str) -> bool:
+    policy = db.get(RolePolicy, user.role)
+    granted = policy.permissions if policy else DEFAULT_ROLE_PERMISSIONS.get(user.role, ())
+    return not set(granted).isdisjoint(permissions)
+
+
 def require_permission(*permissions: str, allow_service_token: bool = False):
     def dependency(principal: User | ApiToken = Depends(current_principal), db: Session = Depends(get_db)):
         if isinstance(principal, ApiToken):
             if allow_service_token:
                 return principal
             raise HTTPException(403, "권한이 없습니다")
-        policy = db.get(RolePolicy, principal.role)
-        granted = set(policy.permissions if policy else DEFAULT_ROLE_PERMISSIONS.get(principal.role, ()))
-        if granted.isdisjoint(permissions):
+        if not has_any_permission(db, principal, *permissions):
             raise HTTPException(403, "권한이 없습니다")
         return principal
     return dependency

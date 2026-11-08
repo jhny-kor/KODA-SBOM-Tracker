@@ -42,6 +42,13 @@ def test_upload_limit_defaults_match_gateway_and_ui() -> None:
     assert "client_max_body_size 501m;" in (ROOT / "deploy/nginx/gateway.conf.template").read_text()
 
 
+def test_compatibility_and_review_imports_have_dedicated_gateway_limits() -> None:
+    gateway = (ROOT / "deploy/nginx/gateway.conf.template").read_text()
+    for endpoint, limit in (("compatibility-data/import", "16448k"), ("upgrade-batches/import", "1m")):
+        location = gateway.split(f"location = /api/v1/{endpoint} {{", 1)[1].split("}", 1)[0]
+        assert f"client_max_body_size {limit};" in location
+
+
 def test_bootstrap_example_is_not_a_known_credential_and_local_init_generates_secrets() -> None:
     example = (ROOT / ".env.example").read_text()
     initializer = (ROOT / "scripts/init-local-env.sh").read_text()

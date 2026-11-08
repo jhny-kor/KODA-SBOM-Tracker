@@ -114,19 +114,25 @@ def test_connected_entry_collects_core_data_without_runtime_http(monkeypatch, tm
 
 def test_linux_compose_consumers_get_registered_key_and_updater_original_store():
     import re
-    text = (ROOT / 'compose.yaml').read_text()
-    def service(name):
+    compose = (ROOT / 'compose.yaml').read_text()
+    data_key_override = (ROOT / 'compose.data-key.yaml').read_text()
+
+    def service(text, name):
         match = re.search(rf'(?ms)^  {name}:\n.*?(?=^  [a-z][a-z0-9-]*:\n|^volumes:|\Z)', text)
         assert match is not None
         return match.group()
+
     target = '/run/secrets/tracker-data-update-verify.pub'
     for name in ('portal-api', 'portal-worker', 'portal-data-updater'):
-        block = service(name)
+        assert 'TRACKER_DATA_UPDATE_VERIFY_KEY' not in service(compose, name)
+        block = service(data_key_override, name)
         assert 'TRACKER_DATA_UPDATE_VERIFY_KEY: ' + target in block
-        assert target + ':ro' in block
-    assert 'TRACKER_DATA_UPDATE_VERIFY_KEY' not in service('gateway')
-    assert 'TRACKER_ARTIFACT_DIR' in service('portal-data-updater')
-    assert 'tracker-artifacts:' in service('portal-data-updater')
+        assert 'target: ' + target in block
+        assert 'read_only: true' in block and 'create_host_path: false' in block
+    assert 'TRACKER_DATA_UPDATE_VERIFY_KEY' not in service(compose, 'gateway')
+    assert '  gateway:' not in data_key_override
+    assert 'TRACKER_ARTIFACT_DIR' in service(compose, 'portal-data-updater')
+    assert 'tracker-artifacts:' in service(compose, 'portal-data-updater')
 
 
 def test_publish_failure_leaves_no_partially_named_archive(tmp_path, monkeypatch):

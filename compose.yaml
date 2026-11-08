@@ -63,6 +63,8 @@ services:
     container_name: ${COMPOSE_PROJECT_NAME:-koda-sbom}-portal-api
     environment:
       TRACKER_OFFLINE_MODE: "true"
+      TRACKER_AI_BASE_URL: ${TRACKER_AI_BASE_URL:-}
+      TRACKER_AI_ENCRYPTION_KEY: ${TRACKER_AI_ENCRYPTION_KEY:-}
       TRACKER_EPSS_POLICY_MAX_AGE_DAYS: ${TRACKER_EPSS_POLICY_MAX_AGE_DAYS:-7}
       TRACKER_DATABASE_URL: ${TRACKER_DATABASE_URL}
       TRACKER_ARTIFACT_DIR: ${ARTIFACT_ROOT:-/var/lib/sbom-tracker/artifacts}
@@ -106,6 +108,7 @@ services:
       start_period: 20s
     networks:
       - app
+      - ai
     restart: unless-stopped
 
   portal-worker:
@@ -248,6 +251,10 @@ networks:
     ipam:
       config:
         - subnet: ${APP_NETWORK_SUBNET:-172.30.80.0/24}
+
+  ai:
+    name: ${COMPOSE_PROJECT_NAME:-koda-sbom}-ai
+    internal: true
 
 volumes:
   postgres-data:

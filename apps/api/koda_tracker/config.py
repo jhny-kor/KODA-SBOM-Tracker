@@ -4,7 +4,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field, field_validator
+from pydantic import Field, SecretStr, field_validator
 
 
 class Settings(BaseSettings):
@@ -61,6 +61,8 @@ class Settings(BaseSettings):
     # mount without acquiring write access to the data updater's staging area.
     nvd_cache_dir: Path | None = None
     koda_provisioning_token_file: Path | None = None
+    ai_base_url: str = ""
+    ai_encryption_key: SecretStr = SecretStr("")
 
     @field_validator("nvd_cache_dir", "data_update_verify_key", mode="before")
     @classmethod

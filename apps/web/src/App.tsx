@@ -25,6 +25,11 @@ import LibrariesPage from "./Libraries";
 import CveSearchPanel from "./CveSearch";
 import EnvironmentAdministrators from "./EnvironmentAdministrators";
 import RunMetadataEditor from "./RunMetadataEditor";
+import ExternalReadTokens from "./ExternalReadTokens";
+import JavaUpgradePanel from "./JavaUpgradePanel";
+import OfflineUpgradePanel from "./OfflineUpgradePanel";
+import OfficialCompatibilityData from "./OfficialCompatibilityData";
+import { SharedAISettingsPanel, TrackerAISummary } from "./SharedAI";
 import { analysisAvailable, analysisUnavailableReason } from "./analysisAvailability";
 import { canPage, dataAccess, hasPermissions, pageForPermissions, permissionSet, type Page } from "./permissions";
 import type { AnalysisRevisionSummary, AuditEvent, AuthUser, CatalogItem, Comparison, ComponentChange, ComponentSnapshot, LdapSettings, RecordChange, RolePolicy, SbomRun, SbomRunDetail, UserSummary, VulnerabilityBundle } from "./types";
@@ -37,7 +42,7 @@ const nav: { id: Page; label: string; icon: string }[] = [
   { id: "settings", label: "설정", icon: "settings" }];
 const guideNav = { id: "guide" as Page, label: "사용 가이드", icon: "guide" };
 
-type SettingsTab = "private-vulnerabilities" | "metadata" | "cve-search" | "environment-admins" | "projects" | "reanalysis" | "notifications" | "sbom-policies" | "users" | "roles" | "vulnerability" | "audit" | "integration" | "ldap" | "services";
+type SettingsTab = "private-vulnerabilities" | "metadata" | "cve-search" | "environment-admins" | "projects" | "reanalysis" | "notifications" | "sbom-policies" | "users" | "roles" | "vulnerability" | "audit" | "integration" | "shared-ai" | "compatibility-data" | "ldap" | "services";
 
 const ROLE_LABELS: Record<string, string> = {
   admin: "관리자",
@@ -828,6 +833,11 @@ function RunDetail({ run, onClose, onChanged, username, onOpenLibrary,
     {!analysisAvailable(current) && <p role="alert" className="drawer-error">{analysisUnavailableReason(current)}</p>}
     {current.note && <p className="preview-note">메모: {current.note}</p>}
     <RunMetadataEditor key={`metadata-${current.id}`} runId={current.id} onSaved={async () => { const refreshed = await fetchRun(current.id); setDetail(refreshed); onChanged(); }} />
+    {!previewMode && current.state === "completed" && can("runs.view") && <>
+      <JavaUpgradePanel key={`java-${current.id}`} runId={current.id} serviceId={current.service.id} canManage={can("catalog.manage")} />
+      <OfflineUpgradePanel key={`upgrade-${current.id}`} runId={current.id} canManage={can("catalog.manage")} />
+      {analysisAvailable(current) && <TrackerAISummary key={`ai-${current.id}`} runId={current.id} />}
+    </>}
     <NativePolicyResult result={current} runId={current.id} />
     <SbomQualityPanel runId={current.id} analysisId={latestAnalysisId} canRerun={can("analysis.create")} canViewProfiles={can("policies.view") || can("policies.manage")} canManage={can("policies.manage")} archived={current.state === "archived"} />
     <CpeCoverage analysis={latestAnalysis} loading={!detail} />
@@ -1135,10 +1145,12 @@ export function SettingsPage({ users, services, environments = [], tokens, ldapS
     if (isAdmin) tabs.push({ id: "environment-admins", label: "환경별 관리자", icon: "user" });
     if (canExternalData || canPrivateData || canMetadataData || canCveData) tabs.push({ id: "vulnerability", label: "취약점 데이터", icon: "vulnerability" });
     if (isAdmin && canAudit) tabs.push({ id: "audit", label: "감사 로그", icon: "audit" });
+    if (!previewMode && (canMetadata || canMetadataManage)) tabs.push({ id: "compatibility-data", label: "공식 호환성 자료", icon: "integration" });
     if (canServices && canTokens) tabs.push({ id: "integration", label: "연동 설정", icon: "integration" });
+    if (isAdmin && !previewMode) tabs.push({ id: "shared-ai", label: "공통 AI", icon: "integration" });
     if (isAdmin) tabs.push({ id: "ldap", label: "LDAP 로그인", icon: "lock" });
     return tabs;
-  }, [canExternalData, canPrivateData, canMetadataData, canCveData, canProjects, canReanalysis, canReanalysisManage, canNotifications, canNotificationManage, canSbomPolicies, canSbomPolicyManage, canAudit, canPolicyEdit, canRoles, canServices, canTokens, canUsers, isAdmin]);
+  }, [canExternalData, canPrivateData, canMetadata, canMetadataManage, canMetadataData, canCveData, canProjects, canReanalysis, canReanalysisManage, canNotifications, canNotificationManage, canSbomPolicies, canSbomPolicyManage, canAudit, canPolicyEdit, canRoles, canServices, canTokens, canUsers, isAdmin]);
   useEffect(
     () =>
       setPolicyDraft(
@@ -1202,12 +1214,15 @@ export function SettingsPage({ users, services, environments = [], tokens, ldapS
 
     {issuedToken && activeTab === "users" && (<div className="token-reveal"><strong>{issuedToken.name}</strong><code>{issuedToken.token}</code><span>서비스 ID <code>{issuedToken.serviceId}</code></span><button type="button" className="secondary compact" onClick={() => void copyOrShow("KODA 서비스 토큰", issuedToken.token)}>토큰 복사</button><button type="button" className="secondary compact" onClick={() => void copyOrShow("서비스 연동 ID", issuedToken.serviceId)}>서비스 ID 복사</button></div>)}
     {activeTab === "users" && canUsers && (<p className="form-message">가입 신청 계정은 승인 대기로 구분됩니다. 역할을 확인한 뒤 승인하세요.</p>)}
+    {activeTab === "compatibility-data" && !previewMode && (canMetadata || canMetadataManage) && <div id="settings-panel-compatibility-data" role="tabpanel" aria-labelledby="settings-tab-compatibility-data"><OfficialCompatibilityData canManage={canMetadataManage} /></div>}
     {activeTab === "integration" && (canServices && canTokens) && (<div className="settings-panel integration-settings-panel" id="settings-panel-integration" role="tabpanel" aria-labelledby="settings-tab-integration">
+      {!previewMode && <ExternalReadTokens services={services} environments={environments} />}
       {canServices && canTokens && (<>
         <div className="table-frame integration-status"><div className="settings-panel-heading"><div><h2 className="table-title">KODA GitLab 자동 연동</h2><p>GitLab 연결과 저장소 선택은 KODA에서만 설정합니다. Tracker는 KODA 요청을 받아 저장소별 서비스·환경·전송 토큰을 자동 생성하거나 재사용합니다.</p></div><span className={`user-status ${gitlabServices.length ? "active" : "inactive"}`}>{gitlabServices.length ? "저장소 연결됨" : "연결 대기"}</span></div><div className="integration-status-body"><p>GitLab 저장소 → KODA 점검·CycloneDX 생성 → Tracker 회차 수신·분석 → KODA가 GitLab 결과 MR·취약점 이슈 저장</p><p>{gitlabEnvironment ? "gitlab-source 환경이 자동 준비되었습니다." : "첫 저장소 연결 시 gitlab-source 환경이 자동 준비됩니다."}</p><div className="button-row"><button type="button" className="secondary" onClick={() => setActiveTab("services")}>자동 생성 항목 보기</button></div></div></div>
         <div className="table-frame"><h2 className="table-title">자동 생성된 저장소 서비스</h2><div className="table-scroll" role="region" aria-label="저장소 서비스 목록 가로 스크롤" tabIndex={0}><table className="gitlab-service-flow-table"><thead><tr><th>GitLab 저장소</th><th>Tracker 식별자</th><th>전송 토큰</th></tr></thead><tbody>{gitlabServices.length ? visibleGitlabServices.map((item) => { const tokenCount = tokens.filter((token) => token.active && token.serviceId === item.id).length; return (<tr key={item.id}><td><ScrollingText>{item.name}</ScrollingText></td><td className="mono"><ScrollingText>{item.slug}</ScrollingText></td><td>{tokenCount ? "활성" : "확인 필요"}</td></tr>);}) : (<tr><td colSpan={3}>KODA에서 연결한 GitLab 저장소가 없습니다.</td></tr>)}</tbody></table></div><DetailPagination total={gitlabServices.length} page={currentGitlabServicePage} pageSize={gitlabPageSize} label="GitLab 서비스 페이지당 행 수" onPage={setGitlabServicePage} onPageSize={(size) => { setGitlabPageSize(size); setGitlabServicePage(1); }} /></div>
       </>)}
     </div>)}
+    {activeTab === "shared-ai" && isAdmin && !previewMode && <div id="settings-panel-shared-ai" role="tabpanel" aria-labelledby="settings-tab-shared-ai"><SharedAISettingsPanel /></div>}
     {activeTab === "reanalysis" && (canReanalysis || canReanalysisManage) && <ReanalysisSchedulePanel canManage={canReanalysisManage} services={services} environments={environments} />}
     {activeTab === "notifications" && (canNotifications || canNotificationManage) && <NotificationsPanel canManage={canNotificationManage} />}
     {activeTab === "sbom-policies" && (canSbomPolicies || canSbomPolicyManage) && <SbomPoliciesPanel canManage={canSbomPolicyManage} services={services} environments={environments} />}

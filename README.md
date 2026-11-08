@@ -26,6 +26,16 @@
 
 기능과 화면을 더 자세히 보려면 [화면·기능 한눈에 보기](docs/koda-sbom-tracker-overview-ko.md)를 먼저 읽습니다.
 
+## 2026-11-08 변경사항
+
+| 기능 | 화면에서 확인하는 방법 |
+| --- | --- |
+| 외부 시스템 조회 API | **설정 → 연동 설정 → 외부 API 조회 토큰**에서 서비스·환경 범위를 정합니다. 외부 시스템은 회차·구성요소·취약점·회차 비교와 Java 후보 검토를 조회할 수 있습니다. [외부 API 가이드](docs/integrations-java-ai-ko.md#외부-사이트에서-tracker-조회) |
+| 버전 영향과 후보 일괄 검토 | **SBOM 회차 상세**에서 Java 배포 기준과 의존 경로를 확인합니다. 같은 서비스·환경의 Java/Maven, Python, Linux C/ELF 후보를 일괄 검토하면 조건 충족 최고 버전, 후보별 충돌 근거, 빌드·실행 기록이 구분됩니다. [후보 검토 가이드](docs/offline-upgrade-ko.md) |
+| 공식 호환성 자료 | **설정 → 공식 호환성 자료**에서 공개망 수집본을 반입합니다. 일치하는 후보 SBOM 행에 기관·선언 근거·원본 URL·SHA-256이 연결됩니다. [수집·반입 가이드](docs/official-compatibility-data-ko.md) |
+| KODA·Tracker 공통 AI | **설정 → 공통 AI**에서 사내 OpenAI 호환 모델과 API 키를 등록하고 연결을 시험합니다. KODA 점검 상세와 Tracker 회차 상세에서 요약을 생성합니다. [공통 AI 설정](docs/integrations-java-ai-ko.md#koda와-tracker-공통-ai) |
+| 폐쇄망 설치와 대용량 업로드 | 데이터 검증 키 등록 전에도 애플리케이션을 설치·업데이트할 수 있습니다. 서명 검증이 필요한 취약점 자료는 키를 등록한 뒤 적용합니다. 대용량 SBOM 검증 중에도 다른 API 요청을 처리합니다. [Linux 설치·업데이트](docs/linux-tracker-update-ko.md) |
+
 ## 구성
 
 | 구성요소 | 역할 | 기술 |
