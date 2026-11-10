@@ -64,11 +64,11 @@ def build(kind: str, source: Path, output: Path, version: str, data_date: str, *
                     raise ValueError('source requires nvd.json or nvd/nvdcve-2.0-*.json.gz')
                 # Year feeds first, then mutable feeds to retain the freshest record.
                 feeds.sort(key=lambda p: ('recent' in p.name or 'modified' in p.name, p.name))
-                subprocess.run(['python3', str(Path(__file__).with_name('nvd-alias-index.py')), '--output', str(root / 'nvd.json'), *map(str, feeds)], check=True)
+                subprocess.run([sys.executable, str(Path(__file__).with_name('nvd-alias-index.py')), '--output', str(root / 'nvd.json'), *map(str, feeds)], check=True)
             kev = source / 'kev.json'
             if not kev.is_file():
                 kev = source / 'known_exploited_vulnerabilities.json'
-            payload = json.loads(kev.read_text())
+            payload = json.loads(kev.read_text(encoding='utf-8'))
             if not isinstance(payload, dict) or not isinstance(payload.get('vulnerabilities'), list):
                 raise ValueError('invalid KEV catalog')
             shutil.copy2(kev, root / 'kev.json')

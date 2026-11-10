@@ -59,3 +59,21 @@ def test_nvd_metadata_keeps_offline_cvss_description_and_cpe(tmp_path: Path) -> 
     assert details["CVE-2024-12345"]["description"] == "Example vulnerability"
     assert details["CVE-2024-12345"]["cvss"]["cvssV3"]["baseScore"] == 8.8
     assert details["CVE-2024-12345"]["cpe"] == ["cpe:2.3:a:example:thing:*:*:*:*:*:*:*:*"]
+
+
+def test_nvd_metadata_keeps_latest_revision_when_feeds_overlap(tmp_path: Path) -> None:
+    identifier = "CVE-2024-12345"
+    feeds = []
+    for name, timestamp in [("modified", "2026-11-09T10:00:00.123"), ("recent", "2026-11-08T10:00:00.123")]:
+        feed = tmp_path / f"nvdcve-2.0-{name}.json"
+        feed.write_text(json.dumps({"vulnerabilities": [{"cve": {
+            "id": identifier,
+            "lastModified": timestamp,
+            "descriptions": [{"lang": "en", "value": name}],
+        }}]}), encoding="utf-8")
+        feeds.append(feed)
+
+    _, details, records = _module().build_metadata(feeds)
+
+    assert records == 2
+    assert details[identifier]["description"] == "modified"

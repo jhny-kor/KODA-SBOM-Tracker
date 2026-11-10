@@ -105,12 +105,9 @@ SBOM 원본과 분석 리비전의 기준일·정책 버전을 보존하고 현�
   레코드만 브라우저 메모리에서 표시하며 Grype·KODA 정책 분석과 영구 저장은
   하지 않습니다. 소스에서 바로 실행하는 개발용 경로는
   `.\scripts\start-windows-preview.ps1 -OpenBrowser`입니다.
-- 취약점 데이터만 따로 만들려면 `.\scripts\build-vuln-bundle.ps1`로 Grype DB·NVD·CISA
-  KEV bundle ZIP을 만듭니다. ZIP은 서버에서 압축 해제·manifest 검증 후 `vuln-data`
-  Docker named volume에 반입하며, 상세 명령은
-  [오프라인 번들 가이드](docs/offline-bundle-ko.md)의 Windows 절을 따릅니다.
-- 반입·롤백 후에는 포털의 `취약점 데이터` 화면에서 `반입 상태 동기화`를 실행해야
-  DB 감사 이력과 활성 기준일이 갱신됩니다.
+- Windows에서 `.\scripts\collect-unified-data.ps1`로 최신 Grype DB·NVD·CISA KEV·FIRST EPSS를
+  수집해 서명된 통합 압축파일과 SHA-256 체크섬을 만듭니다. 포털에서 압축파일을 그대로
+  업로드해 검증한 뒤 적용합니다. [Windows 수집 및 반입 절차](docs/unified-vulnerability-data-ko.md#windows에서-최신-자료-압축-만들기)
 
 ## 로그인과 권한
 

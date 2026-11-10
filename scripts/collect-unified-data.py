@@ -44,7 +44,7 @@ def digest(path):
     return value.hexdigest()
 
 
-def build(source, output, signing_key, *, version, data_date, grype_date=None, required_kinds=(), archive_format=None):
+def build(source, output, signing_key, *, version, data_date, grype_date=None, required_kinds=(), archive_format=None, openssl_binary='openssl'):
     source, output, signing_key = map(Path, (source, output, signing_key))
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,127}', version) or version in {'.', '..'}:
         raise ValueError('invalid version')
@@ -107,7 +107,7 @@ def build(source, output, signing_key, *, version, data_date, grype_date=None, r
         files = sorted(path for path in root.rglob('*') if path.is_file())
         manifest = root / 'manifest.sha256'
         manifest.write_text(''.join(f'{digest(path)}  {path.relative_to(root).as_posix()}\n' for path in files))
-        subprocess.run(['openssl', 'dgst', '-sha256', '-sign', str(signing_key), '-out', str(root / 'manifest.sha256.sig'), str(manifest)], check=True, capture_output=True)
+        subprocess.run([openssl_binary, 'dgst', '-sha256', '-sign', str(signing_key), '-out', str(root / 'manifest.sha256.sig'), str(manifest)], check=True, capture_output=True)
         create_archive(root, output, archive_format=selected_format)
     return output
 

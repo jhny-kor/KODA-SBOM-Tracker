@@ -322,7 +322,7 @@ def create_archive(root, output, *, archive_format=None):
                     archive.add(root / name, arcname=name, recursive=False)
         elif kind == "7z":
             _native("create7z", root, packed, files=files)
-        with packed.open("rb") as stream:
+        with packed.open("r+b") as stream:
             os.fsync(stream.fileno())
         os.link(packed, output)  # atomic, exclusive publication on this filesystem
     return output

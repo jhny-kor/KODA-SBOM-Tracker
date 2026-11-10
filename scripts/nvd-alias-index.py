@@ -128,6 +128,10 @@ def build_metadata(inputs: list[Path]) -> tuple[dict[str, str], dict[str, dict[s
             aliases[canonical] = canonical
             for alias in _identifiers(cve.get("references", [])):
                 aliases.setdefault(alias, canonical)
+            previous = details.get(canonical, {}).get("lastModified")
+            current = metadata.get("lastModified")
+            if isinstance(previous, str) and (not isinstance(current, str) or current < previous):
+                continue
             details[canonical] = metadata
     return dict(sorted(aliases.items())), dict(sorted(details.items())), records_seen
 
