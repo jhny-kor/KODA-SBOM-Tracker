@@ -499,6 +499,10 @@ export interface UnifiedVulnerabilityStatus {
 export function fetchUnifiedVulnerabilityStatus() {
   return request<UnifiedVulnerabilityStatus>("/api/v1/vulnerability-data-bundles/unified/status");
 }
+
+export function fetchActiveCveBaseline(signal: AbortSignal) {
+  return request<{ cveDataAsOf: string | null }>("/api/v1/vulnerability-data-bundles/active-baseline", { signal });
+}
 export function purgeUnifiedVulnerabilityData(expectedBaseVersion: string | null) {
   return request<VulnerabilityDataJob>("/api/v1/vulnerability-data-bundles/unified/purge", {
     method: "POST", headers: {"Content-Type": "application/json"},

@@ -1,6 +1,7 @@
 import { Fragment, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { demoMode, previewMode, standaloneMode, activateVulnerabilityBundle, approveUser, archiveRun, createApiToken, createAnalysis, createEnvironment, createService, createUser, deleteRun, deleteUser, fetchAuditEvents, fetchApiTokens, fetchCatalogs, fetchComparison, fetchJob, fetchLdapSettings, fetchRun, fetchRunComponents, fetchRunFindings, fetchRuns, fetchUsers, fetchVulnerabilityBundles, login, patchEnvironment, patchService, patchUser, logout, register, resumeSession, revokeApiToken, updateLdapSettings, uploadRun, syncVulnerabilityBundles, fetchRolePolicies, updateRolePolicies, setForbiddenHandler } from "./api";
 import { demoChanges, demoLdapSettings, demoRolePolicyCatalog, demoRuns } from "./demo";
+import { fetchActiveCveBaseline } from "./api";
 import { formatSeoulDateTime } from "./format";
 import { Icon } from "./icons";
 import { FlowSelect, ScrollingSelect } from "./ScrollingSelect";
@@ -191,7 +192,7 @@ function auditDetailLabel(detail?: Record<string, unknown>) {
   return detail ? JSON.stringify(redactSha256(detail)) : "-";
 }
 
-function Header({ collapsed, onToggle, onLogout, dataAsOf, search, onSearch, preview, user }: { collapsed: boolean; onToggle: () => void; onLogout: () => void; dataAsOf: string; search: string; onSearch: (value: string) => void; preview: boolean; user: AuthUser | null;}) {
+function Header({ collapsed, onToggle, onLogout, dataAsOf, search, onSearch, preview, user }: { collapsed: boolean; onToggle: () => void; onLogout: () => void; dataAsOf: string | null; search: string; onSearch: (value: string) => void; preview: boolean; user: AuthUser | null;}) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const menuButtonRef = useRef<HTMLButtonElement>(null);
@@ -228,7 +229,7 @@ function Header({ collapsed, onToggle, onLogout, dataAsOf, search, onSearch, pre
         <kbd>/</kbd>
       </label>
       <div className="topbar-spacer" />
-      <div className="freshness">CVE 기준일: {dataBaselineLabel(dataAsOf, "확인 필요")}</div>
+      <div className="freshness">{preview ? "CVE 기준일" : "활성 CVE 기준일"}: {dataBaselineLabel(dataAsOf, "확인 필요")}</div>
       <span className="divider" />
       <div className="account-menu" ref={menuRef}>
         <button
@@ -458,7 +459,7 @@ function RunsPage({ runs, services, environments, search, onUpload, onSelect,
             </button>)}
         </div>
         <div className="status-summary">
-          <span>최신 CVE 기준일 <strong>{dataBaselineLabel(dataAsOf, "CVE 기준일 확인 필요")}</strong></span>
+          <span>조회된 회차의 최신 CVE 기준일 <strong>{dataBaselineLabel(dataAsOf, "CVE 기준일 확인 필요")}</strong></span>
           <i />
           <span>대기 작업 <strong className="warning">{queued}건</strong></span>
           <i />
@@ -968,14 +969,14 @@ function ServicesPage({
                 </button><button className="primary" disabled={busy}>{busy ? "변경 중…" : "변경"}</button></footer></form></section></div>)}
   </section>);}
 
-function VulnerabilityPage({ bundles, onSync, canManage, embedded = false }: { bundles: VulnerabilityBundle[]; onSync: () => Promise<void>; onActivate: (version: string) => Promise<void>; canManage: boolean; embedded?: boolean; }) {
+function VulnerabilityPage({ bundles, onSync, onBaselineRefresh, canManage, embedded = false }: { bundles: VulnerabilityBundle[]; onSync: () => Promise<void>; onBaselineRefresh?: () => Promise<void>; onActivate: (version: string) => Promise<void>; canManage: boolean; embedded?: boolean; }) {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
   const currentPage = Math.min(page, Math.max(1, Math.ceil(bundles.length / pageSize)));
   const visibleBundles = bundles.slice((currentPage - 1) * pageSize, currentPage * pageSize);
   return <section className={embedded ? "settings-panel generic-page" : "page generic-page"}>
     {!embedded && <div className="page-heading"><h1>취약점 데이터</h1></div>}
-    <UnifiedVulnerabilityDataPanel canManage={canManage} onChanged={onSync} />
+    <UnifiedVulnerabilityDataPanel canManage={canManage} onChanged={onSync} onBaselineRefresh={onBaselineRefresh} />
     <details><summary>과거 반입 기록 ({bundles.length}개)</summary><p>과거 기록은 현재 파일의 존재·활성 상태를 보증하지 않습니다. 위 통합 자료 상태를 기준으로 확인하세요.</p>
       <div className="table-scroll"><table><thead><tr><th>기록된 번들</th><th>Grype 기준일</th><th>NVD 기준일</th><th>KEV 기준일</th><th>반입 시각</th></tr></thead><tbody>
         {visibleBundles.map(item => <tr key={item.id}><td>{item.version}</td><td>{item.dataAsOf || "미확인"}</td><td>{item.nvdDataAsOf || "미확인"}</td><td>{item.kevDataAsOf || "미확인"}</td><td>{formatSeoulDateTime(item.importedAt)}</td></tr>)}
@@ -1079,7 +1080,7 @@ function LdapSettingsPanel({ settings, onChanged }: { settings: LdapSettings | n
   </div>);
 }
 
-export function SettingsPage({ users, services, environments = [], tokens, ldapSettings, policies, roleCatalog, bundles, auditEvents, isAdmin, canVulnerability, canVulnerabilityManage, canAudit, canUsers, canTokens, canPolicyEdit, canRoles, canSbomPolicies = false, canSbomPolicyManage = false, canReanalysis = false, canReanalysisManage = false, canNotifications = false, canNotificationManage = false, canMetadata = false, canMetadataManage = false, canProjects = false, canServices = false, canCatalogManage = false, canProjectRuns = false, onOpenRun, initialTab, onSync, onActivate, onPolicyChanged, onLdapChanged, onChanged }: {
+export function SettingsPage({ users, services, environments = [], tokens, ldapSettings, policies, roleCatalog, bundles, auditEvents, isAdmin, canVulnerability, canVulnerabilityManage, canAudit, canUsers, canTokens, canPolicyEdit, canRoles, canSbomPolicies = false, canSbomPolicyManage = false, canReanalysis = false, canReanalysisManage = false, canNotifications = false, canNotificationManage = false, canMetadata = false, canMetadataManage = false, canProjects = false, canServices = false, canCatalogManage = false, canProjectRuns = false, onOpenRun, initialTab, onSync, onBaselineRefresh, onActivate, onPolicyChanged, onLdapChanged, onChanged }: {
   users: UserSummary[];
   services: CatalogItem[];
   environments?: CatalogItem[];
@@ -1107,6 +1108,7 @@ export function SettingsPage({ users, services, environments = [], tokens, ldapS
   onOpenRun?: (run: SbomRun) => void;
   initialTab?: SettingsTab;
   onSync: () => Promise<void>;
+  onBaselineRefresh?: () => Promise<void>;
   onActivate: (version: string) => Promise<void>;
   onPolicyChanged: (policies: RolePolicy[]) => Promise<void>;
   onLdapChanged: (settings: LdapSettings) => void;
@@ -1241,7 +1243,7 @@ export function SettingsPage({ users, services, environments = [], tokens, ldapS
         </div>
       </div>
       {activeVulnerabilityDataTab === "cve" && canCveData && <div id="vulnerability-data-panel-cve" role="tabpanel" aria-labelledby="vulnerability-data-tab-cve"><CveSearchPanel onOpenRun={canProjectRuns ? runId => { void fetchRun(runId).then(run => onOpenRun?.(run)).catch(cause => setMessage(cause instanceof Error ? cause.message : "연결된 회차를 열지 못했습니다.")); } : undefined} /></div>}
-      {activeVulnerabilityDataTab === "external" && canExternalData && <div id="vulnerability-data-panel-external" role="tabpanel" aria-labelledby="vulnerability-data-tab-external"><VulnerabilityPage embedded bundles={bundles} canManage={canVulnerabilityManage} onSync={onSync} onActivate={onActivate} /></div>}
+      {activeVulnerabilityDataTab === "external" && canExternalData && <div id="vulnerability-data-panel-external" role="tabpanel" aria-labelledby="vulnerability-data-tab-external"><VulnerabilityPage embedded bundles={bundles} canManage={canVulnerabilityManage} onSync={onSync} onBaselineRefresh={onBaselineRefresh} onActivate={onActivate} /></div>}
       {activeVulnerabilityDataTab === "private" && canPrivateData && <div id="vulnerability-data-panel-private" role="tabpanel" aria-labelledby="vulnerability-data-tab-private"><PrivateVulnerabilitiesPanel canManage={canMetadataManage}/></div>}
       {activeVulnerabilityDataTab === "metadata" && canMetadataData && <div id="vulnerability-data-panel-metadata" role="tabpanel" aria-labelledby="vulnerability-data-tab-metadata">
         <OfflineIntelligencePanel />
@@ -1352,6 +1354,8 @@ export default function App() {
   const [collapsed, setCollapsed] = useState(false);
   const [globalSearch, setGlobalSearch] = useState("");
   const [runs, setRuns] = useState<SbomRun[]>(previewMode ? demoRuns : []);
+  const [activeCveDate, setActiveCveDate] = useState<string | null>(null);
+  const baselineRequest = useRef<AbortController | null>(null);
   const [services, setServices] = useState<CatalogItem[]>(previewMode ? demoServices : []);
   const [environments, setEnvironments] = useState<CatalogItem[]>(previewMode ? demoEnvironments : []);
   const [authenticated, setAuthenticated] = useState<boolean | null>(previewMode ? true : null);
@@ -1398,6 +1402,21 @@ export default function App() {
   const can = useCallback(
     (permission: string) => permissions.has("*") || permissions.has(permission),
     [permissions]);
+  const canReadCveBaseline = ["dashboard.view", "runs.view", "vulnerability.view", "metadata.view"].some(can);
+  const refreshCveBaseline = useCallback(() => {
+    baselineRequest.current?.abort();
+    const request = new AbortController();
+    baselineRequest.current = request;
+    return fetchActiveCveBaseline(request.signal).then(
+      ({ cveDataAsOf }) => { if (!request.signal.aborted) setActiveCveDate(cveDataAsOf); },
+      () => { if (!request.signal.aborted) setActiveCveDate(null); },
+    );
+  }, []);
+  useEffect(() => {
+    if (previewMode || !authenticated || !canReadCveBaseline) return;
+    void refreshCveBaseline();
+    return () => baselineRequest.current?.abort();
+  }, [authenticated, canReadCveBaseline, refreshCveBaseline]);
   const canRunAction = useCallback(
     (permission: string) => can(permission) && (permission !== "sbom.delete" || authUser?.role === "admin"),
     [authUser?.role, can]);
@@ -1528,6 +1547,7 @@ export default function App() {
           canMetadata={can("metadata.view")} canMetadataManage={can("metadata.manage")} canProjects={can("catalog.manage")}
           initialTab={initialTab}
           onSync={async () => { const items = await syncVulnerabilityBundles(); setBundles(items);}}
+          onBaselineRefresh={canReadCveBaseline ? refreshCveBaseline : undefined}
           onActivate={async (version) => { await activateVulnerabilityBundle(version); const items = await fetchVulnerabilityBundles(); setBundles(items);}}
           onPolicyChanged={async (next) => {
             setRolePolicies(next);
@@ -1542,7 +1562,7 @@ export default function App() {
     if (page === "settings") return settingsContent(initialLink.settingsTab || undefined);
     return <GenericPage rows={genericRows.dashboard || []} />;}, [auditEvents, bundles, can, environments, genericRows, globalSearch, initialLink.settingsTab, ldapSettings, loadData, openRun, openRunById, libraryQuery, page, runs, services, tokens, users,
     rolePolicyCatalog,
-    rolePolicies, authUser, navigate, canUpload]);
+    rolePolicies, authUser, navigate, canUpload, canReadCveBaseline, refreshCveBaseline]);
   useEffect(() => {
     const nextPage = pageForPermissions(authUser, page);
     if (nextPage && nextPage !== page) queueMicrotask(() => navigate(nextPage));}, [authUser, navigate, page]);
@@ -1553,10 +1573,11 @@ export default function App() {
   if (permittedPage !== page) return null;
   return (<div className={`app-shell ${collapsed ? "is-collapsed" : ""}`}>
     <Sidebar page={page} collapsed={collapsed} onExpand={() => setCollapsed(false)} canNavigatePage={(next) => canPage(authUser, next)} onNavigate={(next) => canPage(authUser, next) && navigate(next)} />
-    <Header collapsed={collapsed} search={globalSearch} onSearch={(value) => { setGlobalSearch(value); if (value.trim() && page !== "runs" && can("runs.view")) navigate("runs"); }} dataAsOf={runs.map((run) => preferredCveDate(run.cveDataAsOf, run.dataAsOf)).filter((value): value is string => Boolean(value) && value !== "unknown").sort().at(-1) || ""} onToggle={() => setCollapsed((value) => !value)} onLogout={() => {
+    <Header collapsed={collapsed} search={globalSearch} onSearch={(value) => { setGlobalSearch(value); if (value.trim() && page !== "runs" && can("runs.view")) navigate("runs"); }} dataAsOf={previewMode ? runs.map((run) => preferredCveDate(run.cveDataAsOf, run.dataAsOf)).filter((value): value is string => Boolean(value) && value !== "unknown").sort().at(-1) || null : canReadCveBaseline ? activeCveDate : null} onToggle={() => setCollapsed((value) => !value)} onLogout={() => {
       void logout()
         .then(() => {
           setAuthUser(null);
+          setActiveCveDate(null);
           setSelectedRun(null);
           replacePortalLink({ runId: null });
           setAuthenticated(false);

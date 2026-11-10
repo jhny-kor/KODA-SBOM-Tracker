@@ -76,6 +76,7 @@ def unified(setup, tmp_path, monkeypatch):
     get_settings.cache_clear()
 
 HEADERS={'X-CSRF-Token':'csrf'}
+ACTIVE_BASELINE='/api/v1/vulnerability-data-bundles/active-baseline'
 
 def process(): assert asyncio.run(worker.process_data_update_one())
 
@@ -94,6 +95,7 @@ def apply(client, archive):
 def test_signed_single_archive_upload_validation_apply_status_and_source_proof(unified):
     db,client,run,revision,settings,archive=unified
     root=settings.grype_db_dir.parent.parent
+    assert client.get(ACTIVE_BASELINE).json()=={"cveDataAsOf":None}
     status=client.get('/api/v1/vulnerability-data-bundles/unified/status')
     assert status.status_code==200 and not status.json()['available']
     assert not root.exists() # read-only status creates no directory/lock
@@ -102,6 +104,11 @@ def test_signed_single_archive_upload_validation_apply_status_and_source_proof(u
     assert status['state']=='active' and status['available'] and status['currentVersion']=='bundle-1'
     assert {item['kind'] for item in status['datasets']}=={'grype-db','nvd','kev','epss'}
     assert all(item['status']=='available' for item in status['datasets'])
+    with_viewer={"Cookie":"koda_session=viewer"}
+    baseline=client.get(ACTIVE_BASELINE,headers=with_viewer)
+    assert baseline.json()=={"cveDataAsOf":"2026-10-19"}
+    assert baseline.headers["Cache-Control"]=="no-store"
+    assert client.get('/api/v1/vulnerability-data-bundles/unified/status',headers=with_viewer).status_code==403
     assert len(status['referenceSources'])==11
     assert db.scalar(select(func.count()).select_from(OfflineReferenceSnapshot))==11
     assert db.get(VulnerabilityIntelligence,'CVE-2026-12345').document['epss']==.8
@@ -110,6 +117,7 @@ def test_signed_single_archive_upload_validation_apply_status_and_source_proof(u
     (current/'nvd.json').write_text('{"vulnerabilities": [{"id":"changed"}]}')
     with pytest.raises(DataUpdateError,match='변경'):assert_approved_release(settings,current.resolve())
     assert not client.get('/api/v1/vulnerability-data-bundles/unified/status').json()['available']
+    assert client.get(ACTIVE_BASELINE).json()=={"cveDataAsOf":None}
 
 
 def test_missing_bad_signature_and_changed_bytes_never_activate(unified):

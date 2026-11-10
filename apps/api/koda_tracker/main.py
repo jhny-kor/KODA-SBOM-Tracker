@@ -2802,6 +2802,25 @@ def _running_data_readers(db):
     return bool(db.scalar(select(Job.id).where(Job.kind.in_(["analyze", "process_run"]), Job.state == JobState.RUNNING).limit(1)))
 
 
+@app.get("/api/v1/vulnerability-data-bundles/active-baseline")
+def active_cve_baseline(response: Response, _=Depends(require_permission("dashboard.view", "runs.view", "vulnerability.view", "metadata.view"))) -> dict:
+    from .data_updates import DataUpdateEngine, _metadata, assert_approved_release, managed_state, release_read_lease
+
+    response.headers["Cache-Control"] = "no-store"
+    settings = get_settings()
+    try:
+        with release_read_lease(settings):
+            current = DataUpdateEngine(settings, read_only=True).current()
+            if current and (managed_state(settings) or {}).get("state") == "active":
+                assert_approved_release(settings, current.path)
+                date = _metadata(current.path / "metadata.env").get("NVD_DATASET_DATE")
+                if date and date != "unknown":
+                    return {"cveDataAsOf": date}
+    except (OSError, ValueError):
+        pass
+    return {"cveDataAsOf": None}
+
+
 @app.get("/api/v1/vulnerability-data-bundles/unified/status")
 def unified_vulnerability_status(db: Session = Depends(get_db), _admin=Depends(require_admin), _permission=Depends(require_permission("vulnerability.manage"))):
     from .data_updates import DataUpdateEngine, managed_state, assert_approved_release, release_busy, release_read_lease, verification_status
