@@ -4,15 +4,15 @@ from pathlib import Path
 import re
 from xml.etree.ElementTree import ParseError
 
-from defusedxml import ElementTree as SafeET
 from defusedxml.common import DefusedXmlException
 
-from .sbom import SbomValidationError
+from .sbom import SbomValidationError, parse_bounded_xml
 
 
 WORKBOOK_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 MAX_WORKBOOK_BYTES = 10 * 1024**2
 MAX_WORKBOOK_ROWS = 5_000
+MAX_WORKBOOK_XML_NODES = 200_000
 METADATA_LABELS = ("솔루션명", "기준 버전", "운영 OS Platform", "작성일자", "대상 서버")
 _HEADERS = ("번호", "구분", "컴포넌트명", "버전", "라이선스 유형", "비고 / 상세 설명")
 _SS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
@@ -26,7 +26,9 @@ def _xml(path: Path, expected: str):
     if not path.is_file() or path.stat().st_size > 4 * 1024**2:
         raise SbomValidationError("Excel 필수 파일이 없거나 XML 크기 제한(4 MiB)을 초과했습니다")
     try:
-        root = SafeET.parse(path, forbid_dtd=True).getroot()
+        root = parse_bounded_xml(path, max_nodes=MAX_WORKBOOK_XML_NODES)
+    except SbomValidationError:
+        raise
     except (ParseError, DefusedXmlException, ValueError) as exc:
         raise SbomValidationError("Excel 내부 XML이 올바르지 않습니다") from exc
     if root.tag != expected:

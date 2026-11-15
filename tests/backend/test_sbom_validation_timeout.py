@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -39,7 +40,7 @@ def test_cli_validation_all_input_paths_allow_five_minutes(tmp_path, monkeypatch
         assert json.loads(candidate.read_text())["bomFormat"] == "CycloneDX"
         return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
-    monkeypatch.setattr(sbom.subprocess, "run", validate)
+    monkeypatch.setattr(sbom, "_run_cyclonedx", validate)
     source = tmp_path / "extensionless-upload"
     source.write_text(json.dumps(SPDX if kind == "spdx" else CDX))
     if kind == "raw":
@@ -50,7 +51,6 @@ def test_cli_validation_all_input_paths_allow_five_minutes(tmp_path, monkeypatch
     command, kwargs = calls[0]
     assert command[-2:] == ["--input-format", "json"]
     assert kwargs["timeout"] == 300
-    assert kwargs["check"] is False
 
 
 @pytest.mark.parametrize("kind", ["file", "raw"])
@@ -61,7 +61,7 @@ def test_cli_timeout_is_controlled_and_does_not_expose_process_details(tmp_path,
     def time_out(command, **kwargs):
         raise subprocess.TimeoutExpired(command, kwargs["timeout"], output="secret-output", stderr="secret-stderr")
 
-    monkeypatch.setattr(sbom.subprocess, "run", time_out)
+    monkeypatch.setattr(sbom, "_run_cyclonedx", time_out)
     with pytest.raises(sbom.SbomValidationError) as caught:
         if kind == "raw":
             sbom.validate_with_cyclonedx_cli(source.read_bytes(), "/private/validator")
@@ -83,7 +83,7 @@ def test_cli_schema_rejection_still_fails_closed(tmp_path, monkeypatch) -> None:
     source = tmp_path / "upload"
     source.write_text(json.dumps(CDX))
     monkeypatch.setattr(
-        sbom.subprocess, "run",
+        sbom, "_run_cyclonedx",
         lambda command, **kwargs: subprocess.CompletedProcess(command, 1, stdout="", stderr="invalid-schema"),
     )
     with pytest.raises(sbom.SbomValidationError, match="스키마 검증에 실패했습니다: invalid-schema"):
@@ -96,7 +96,7 @@ def test_cli_memory_exhaustion_is_identified_before_truncating_diagnostics(tmp_p
     diagnostics = ("System.OutOfMemoryException: allocation failed\n"
                    " at /private/validator/source.cs:123\n" + "irrelevant-stack-trace\n" * 200)
     monkeypatch.setattr(
-        sbom.subprocess, "run",
+        sbom, "_run_cyclonedx",
         lambda command, **kwargs: subprocess.CompletedProcess(command, 1, stdout="", stderr=diagnostics),
     )
     with pytest.raises(sbom.SbomValidationError) as caught:
@@ -112,7 +112,7 @@ def test_cli_forced_termination_does_not_guess_oom_or_reject_schema(tmp_path, mo
     source = tmp_path / "upload"
     source.write_text(json.dumps(CDX))
     monkeypatch.setattr(
-        sbom.subprocess, "run",
+        sbom, "_run_cyclonedx",
         lambda command, **kwargs: subprocess.CompletedProcess(command, returncode, stdout="", stderr=""),
     )
     with pytest.raises(sbom.SbomValidationError) as caught:
@@ -121,6 +121,24 @@ def test_cli_forced_termination_does_not_guess_oom_or_reject_schema(tmp_path, mo
     assert "종료" in message
     assert "메모리" not in message
     assert "스키마 검증에 실패했습니다" not in message
+
+
+def test_cli_diagnostics_remain_bounded_and_keep_memory_error_classification():
+    script = (
+        'import sys; sys.stderr.write("System.OutOfMemoryException\\n" + "e" * 12000); '
+        'sys.stdout.write("o" * 12000); raise SystemExit(1)'
+    )
+    command = [sys.executable, "-c", script]
+    result = sbom._run_cyclonedx(command, timeout=5)
+
+    assert result.returncode == 1
+    assert result.stdout == "o" * 4096
+    assert result.stderr == "System.OutOfMemoryException" + "e" * 4096
+
+
+def test_cli_deadline_also_applies_when_child_produces_no_diagnostics():
+    with pytest.raises(subprocess.TimeoutExpired):
+        sbom._run_cyclonedx([sys.executable, "-c", "import time; time.sleep(5)"], timeout=0.1)
 
 
 def _upload_context(client):

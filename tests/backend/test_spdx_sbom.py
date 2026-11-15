@@ -83,7 +83,7 @@ def test_optional_cyclonedx_validator_receives_normalized_view(tmp_path, monkeyp
         assert candidate["bomFormat"] == "CycloneDX"
         assert "--input-format" in command and command[-1] == "json"
         return SimpleNamespace(returncode=0, stdout="", stderr="")
-    monkeypatch.setattr(sbom.subprocess, "run", validate)
+    monkeypatch.setattr(sbom, "_run_cyclonedx", validate)
     validate_file_with_cyclonedx_cli(path, "validator", input_format="json")
     assert len(seen) == 1 and path.read_bytes() == original
 

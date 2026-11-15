@@ -62,7 +62,17 @@ from .models import (
     VulnerabilityDataBundle,
 )
 from .sbom_normalization import mark_current
-from .sbom import component_count, SbomValidationError, parse_sbom_file, sbom_document_path, sbom_upload_media_type, store_artifact_file, validate_component_count, validate_file_with_cyclonedx_cli
+from .sbom import (
+    MAX_UPLOAD_DOCUMENT_BYTES,
+    SbomValidationError,
+    component_count,
+    parse_sbom_upload_document,
+    sbom_document_path,
+    sbom_upload_media_type,
+    store_artifact_file,
+    validate_component_count,
+    validate_file_with_cyclonedx_cli,
+)
 from .collection_coverage import coverage_for_bom
 from .sbom_workbook import MAX_WORKBOOK_BYTES, METADATA_LABELS, WORKBOOK_MEDIA_TYPE
 from .security import (
@@ -776,7 +786,7 @@ def _consume_rate_limit(db: Session, kind: str, bucket: str, limit: int, window_
     db.commit()
 
 
-def _consume_login_rate_limit(db: Session, address: str, username: str) -> None:
+def _consume_login_address_rate_limit(db: Session, address: str) -> None:
     settings = get_settings()
     _consume_rate_limit(
         db,
@@ -785,17 +795,25 @@ def _consume_login_rate_limit(db: Session, address: str, username: str) -> None:
         settings.login_address_limit,
         settings.login_window_seconds,
     )
+
+
+def _consume_login_rate_limit(db: Session, address: str, username: str) -> None:
+    _consume_login_address_rate_limit(db, address)
+    settings = get_settings()
     _consume_rate_limit(
         db,
         "login-account",
-        f"{address}:{username.casefold()}",
+        username.strip().casefold(),
         settings.login_account_limit,
         settings.login_window_seconds,
     )
 
 
-def _clear_login_account_rate_limit(db: Session, address: str, username: str) -> None:
-    _clear_rate_limit(db, "login-account", f"{address}:{username.casefold()}")
+def _consume_ldap_account_rate_limit(db: Session, subject: str) -> None:
+    settings = get_settings()
+    _consume_rate_limit(
+        db, "login-ldap-subject", subject, settings.login_account_limit, settings.login_window_seconds
+    )
 
 
 def _clear_rate_limit(db: Session, kind: str, bucket: str) -> None:
@@ -1033,13 +1051,16 @@ def login(body: LoginRequest, request: Request, response: Response, db: Session 
         if not username or len(username) > 256:
             raise HTTPException(401, "사용자 이름 또는 비밀번호가 올바르지 않습니다")
         address = _client_address(request)
-        _consume_login_rate_limit(db, address, username)
+        _consume_login_address_rate_limit(db, address)
         row = db.get(LdapSettings, "default")
         if row is None or not row.enabled:
             return _ldap_error("ldap_not_configured", "LDAP 로그인이 구성되지 않았습니다")
         try:
             config = _ldap_row_config(row)
-            identity = authenticate_user(config, username, body.password)
+            identity = authenticate_user(
+                config, username, body.password,
+                before_bind=lambda subject: _consume_ldap_account_rate_limit(db, subject),
+            )
         except LdapInvalidCredentials:
             raise HTTPException(401, "사용자 이름 또는 비밀번호가 올바르지 않습니다")
         except (LdapConfigurationError, LdapUnavailable) as exc:
@@ -1048,28 +1069,10 @@ def login(body: LoginRequest, request: Request, response: Response, db: Session 
             local_username = _normalize_username(identity.username)
         except HTTPException:
             return _ldap_error("ldap_identity_invalid", "LDAP 사용자 식별자를 Tracker 계정으로 사용할 수 없습니다", 422)
-        user = db.scalar(select(User).where(User.ldap_subject == identity.subject))
+        user = db.scalar(select(User).where(User.auth_source == "ldap", User.ldap_subject == identity.subject))
         username_user = db.scalar(select(User).where(func.lower(User.username) == local_username))
-        if user is not None and username_user is not None and user.id != username_user.id:
+        if username_user is not None and (user is None or user.id != username_user.id):
             raise HTTPException(403, "LDAP 사용자 이름이 기존 Tracker 계정과 충돌합니다")
-        if user is None and username_user is not None:
-            user = username_user
-            if user.approval_state == "deleted":
-                raise HTTPException(403, "삭제된 Tracker 계정은 LDAP으로 로그인할 수 없습니다")
-            if user.auth_source != "ldap":
-                if not row.auto_provision:
-                    raise HTTPException(403, "기존 로컬 계정은 LDAP 계정으로 연결되지 않았습니다")
-                user.auth_source = "ldap"
-                user.ldap_subject = identity.subject
-                user.password_hash = hash_password(secrets.token_urlsafe(32))
-                user.role = _ldap_role(identity.groups, row.group_mappings, row.default_role)
-                user.active = False
-                user.approval_state = "pending"
-                audit(db, "ldap", "user.link", "user", user.id, {"username": user.username, "role": user.role.value})
-            elif user.ldap_subject and user.ldap_subject != identity.subject:
-                raise HTTPException(403, "LDAP 사용자 식별자가 기존 계정과 일치하지 않습니다")
-            else:
-                user.ldap_subject = identity.subject
         if user is None:
             if not row.auto_provision:
                 raise HTTPException(403, "LDAP 인증은 성공했지만 Tracker 사용자 승인이 필요합니다")
@@ -1089,15 +1092,13 @@ def login(body: LoginRequest, request: Request, response: Response, db: Session 
                 db.rollback()
                 raise HTTPException(409, "LDAP 사용자 계정을 생성하는 중 충돌이 발생했습니다") from exc
             audit(db, "ldap", "user.provision", "user", user.id, {"username": user.username, "role": user.role.value})
+        _clear_rate_limit(db, "login-ldap-subject", identity.subject)
         if user.approval_state == "pending":
-            _clear_login_account_rate_limit(db, address, username)
             db.commit()
             raise HTTPException(403, "계정이 관리자 승인 대기 중입니다")
         if not user.active or user.approval_state == "deleted":
-            _clear_login_account_rate_limit(db, address, username)
             db.commit()
             raise HTTPException(403, "비활성화된 계정입니다")
-        _clear_login_account_rate_limit(db, address, username)
         return _complete_login(db, response, user)
     try:
         username = _normalize_username(body.username)
@@ -1108,15 +1109,13 @@ def login(body: LoginRequest, request: Request, response: Response, db: Session 
     user = db.scalar(select(User).where(func.lower(User.username) == username))
     if not user or not verify_password(user.password_hash, body.password):
         raise HTTPException(401, "사용자 이름 또는 비밀번호가 올바르지 않습니다")
+    _clear_rate_limit(db, "login-account", username.strip().casefold())
     if user.approval_state == "pending":
-        _clear_login_account_rate_limit(db, address, username)
         db.commit()
         raise HTTPException(403, "계정이 관리자 승인 대기 중입니다")
     if not user.active:
-        _clear_login_account_rate_limit(db, address, username)
         db.commit()
         raise HTTPException(403, "비활성화된 계정입니다")
-    _clear_login_account_rate_limit(db, address, username)
     return _complete_login(db, response, user)
 
 
@@ -2054,48 +2053,50 @@ async def upload_sbom(
     staged_path, raw_sha256, size_bytes = await _stage_upload(
         sbom, min(max_bytes, MAX_WORKBOOK_BYTES) if workbook else max_bytes
     )
-    try:
-        try:
-            def validate_staged_upload():
-                settings = get_settings()
-                with sbom_document_path(staged_path, max_bytes=max_bytes, workbook=workbook) as document:
-                    payload, document_media_type = parse_sbom_file(document)
-                    validate_component_count(payload, settings.max_sbom_components)
-                    input_format = "json" if document_media_type.endswith("+json") else "xml"
-                    validate_file_with_cyclonedx_cli(
-                        document,
-                        settings.cyclonedx_cli_binary,
-                        input_format=input_format,
-                    )
-                    media_type = WORKBOOK_MEDIA_TYPE if workbook else sbom_upload_media_type(staged_path, document_media_type)
-                    return payload, media_type
 
-            payload, media_type = await run_in_threadpool(validate_staged_upload)
-        except SbomValidationError as exc:
-            raise HTTPException(422, str(exc)) from exc
+    def validate_and_persist():
+        settings = get_settings()
+        document_limit = min(max_bytes, MAX_UPLOAD_DOCUMENT_BYTES)
+        with sbom_document_path(staged_path, max_bytes=document_limit, workbook=workbook) as document:
+            payload, document_media_type = parse_sbom_upload_document(document)
+            validate_component_count(payload, settings.max_sbom_components)
+            input_format = "json" if document_media_type.endswith("+json") else "xml"
+            validate_file_with_cyclonedx_cli(
+                document,
+                settings.cyclonedx_cli_binary,
+                input_format=input_format,
+                parsed_document=(payload, document_media_type),
+            )
+            media_type = WORKBOOK_MEDIA_TYPE if workbook else sbom_upload_media_type(staged_path, document_media_type)
+        selected_environment = environment
         if source_value == "scheduled":
-            environment = _scheduled_environment(
+            selected_environment = _scheduled_environment(
                 db, service=service, requested=environment, metadata=parsed_source_metadata
             )
+        return _persist_run(
+            db,
+            principal=principal,
+            actor=actor,
+            service=service,
+            environment=selected_environment,
+            release_version=release_version,
+            staged_path=staged_path,
+            size_bytes=size_bytes,
+            payload=payload,
+            media_type=media_type,
+            filename=sbom.filename or "sbom",
+            note=note,
+            idempotency_key=idempotency_key,
+            raw_sha256=raw_sha256,
+            source=source_value,
+            source_metadata=parsed_source_metadata,
+        )
+
+    try:
         async with _upload_persist_lock:
-            return _persist_run(
-                db,
-                principal=principal,
-                actor=actor,
-                service=service,
-                environment=environment,
-                release_version=release_version,
-                staged_path=staged_path,
-                size_bytes=size_bytes,
-                payload=payload,
-                media_type=media_type,
-                filename=sbom.filename or "sbom",
-                note=note,
-                idempotency_key=idempotency_key,
-                raw_sha256=raw_sha256,
-                source=source_value,
-                source_metadata=parsed_source_metadata,
-            )
+            return await run_in_threadpool(validate_and_persist)
+    except SbomValidationError as exc:
+        raise HTTPException(422, str(exc)) from exc
     finally:
         staged_path.unlink(missing_ok=True)
 

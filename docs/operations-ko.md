@@ -101,7 +101,10 @@ KEV 정책을 켠 상태에서 CISA KEV 데이터가 없으면 비해당으로 �
   내부망 한정으로 사용하고 가능한 한 StartTLS/LDAPS로 전환합니다.
 - LDAP 자동 프로비저닝을 켜도 신규 LDAP 사용자는 항상 비활성 `승인 대기`로만
   생성됩니다. 인증 성공만으로 세션을 발급하지 않으며 관리자가 승인한 뒤 다시
-  로그인해야 합니다.
+  로그인해야 합니다. 기존 Tracker 계정과 사용자 이름이 같고 LDAP 주체가 다르거나
+  연결되어 있지 않으면 로그인 요청을 거절하며 기존 계정은 그대로 유지합니다.
+- 로그인 시도 제한은 출발지 주소와 계정에 각각 적용됩니다. 로컬 계정은 정규화된
+  사용자 이름, LDAP 계정은 디렉터리의 고유 주체 식별자를 기준으로 집계합니다.
 - 통합 KODA suite는 Tracker의 HttpOnly 세션을 gateway에서 검증한 뒤 KODA에 UUID,
   표시 이름, 만료 시각만 전달합니다. Tracker 승인 계정은 KODA에도 자동 활성화되고
   KODA 관리자는 프로젝트 권한만 별도로 부여합니다.
@@ -482,11 +485,19 @@ CEL은 별도 격리 프로세스에서 최대 10초 wall time/8초 CPU, Linux �
 ```dotenv
 TRACKER_NOTIFICATION_WEBHOOK_ENABLED=true
 TRACKER_NOTIFICATION_WEBHOOK_URL=https://alerts.example.internal/koda
-TRACKER_NOTIFICATION_ALLOWED_HOSTS=alerts.example.internal
+TRACKER_NOTIFICATION_ALLOWED_HOSTS=alerts.example.internal,10.20.30.40
 TRACKER_NOTIFICATION_WEBHOOK_SECRET=<별도 생성한 충분히 긴 비밀키>
 ```
 
-기본 Docker `app` 네트워크는 `internal: true`입니다. 같은 네트워크의 내부 수신기를 연결하거나 필요한 목적지로만 도달할 수 있는 별도 네트워크 구성을 운영자가 제공해야 합니다. URL 지정만으로 외부 통신이 열리지는 않습니다. HTTP는 명시적으로 허용한 내부 호스트에서만 사용할 수 있고, 리디렉션과 환경 proxy는 사용하지 않습니다. `X-KODA-Signature: sha256=<HMAC>`를 원본 요청 바이트로 검증하고 `Idempotency-Key`의 이벤트 ID를 중복 처리하지 않도록 저장합니다. 네트워크 오류에도 보관함 기록은 남습니다.
+기본 Docker `app` 네트워크는 `internal: true`이며, 오프라인 모드에서는 웹훅이
+꺼져 있습니다. 온라인 모드에서 수신기가 사설 IP를 사용하면 기존 허용 목록에 호스트
+이름과 수신기의 실제 사설 IP를 모두 적습니다. 예시의 `10.20.30.40`은 실제 수신기
+주소로 바꿉니다. A·AAAA 응답에 사설 주소가 여러 개면 각 주소를 명시합니다. Tracker는
+전송할 때마다 주소 전체를 검사하고 검증한 IP에 연결하며, HTTPS 인증서는 원래 호스트
+이름으로 검증합니다. HTTP는 명시적으로 허용한 내부 수신기로 제한되며 리디렉션과 환경
+프록시는 사용하지 않습니다. `X-KODA-Signature: sha256=<HMAC>`를 원본 요청 바이트로
+검증하고 `Idempotency-Key`의 이벤트 ID를 중복 처리하지 않도록 저장합니다. 네트워크
+오류에도 보관함 기록은 남습니다.
 
 ## 자체 프로젝트와 패키지 메타데이터
 

@@ -172,6 +172,21 @@ def test_raw_upload_and_expansion_limits_are_independent(context, monkeypatch):
     assert context.db.scalar(select(func.count()).select_from(SbomRun)) == 0
 
 
+def test_archive_document_budget_rejects_without_storing_run_or_artifact(context, monkeypatch):
+    raw = JSON + b" " * 512
+    compressed = archive_bytes("zip", [("bom.json", raw)])
+    assert len(compressed) < 256 < len(raw)
+    monkeypatch.setattr(main, "MAX_UPLOAD_DOCUMENT_BYTES", 256)
+    monkeypatch.setattr(sbom_module, "MAX_UPLOAD_DOCUMENT_BYTES", 256)
+
+    response = upload(context, compressed)
+
+    assert response.status_code == 422, response.text
+    assert context.db.scalar(select(func.count()).select_from(SbomRun)) == 0
+    assert context.db.scalar(select(func.count()).select_from(Job)) == 0
+    assert not list(context.settings.artifact_dir.iterdir())
+
+
 def test_archive_keeps_queue_component_and_idempotency_admission(context, monkeypatch):
     compressed = archive_bytes("zip", [("bom.json", JSON)])
     monkeypatch.setattr(context.settings, "max_queued_jobs", 0)
@@ -247,7 +262,7 @@ def test_spdx_validator_conversion_stays_beside_selected_artifact(context, monke
         seen.append(converted)
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr(sbom_module.subprocess, "run", validate)
+    monkeypatch.setattr(sbom_module, "_run_cyclonedx", validate)
     sbom_module.validate_file_with_cyclonedx_cli(source, "fixture-validator", input_format="json")
     assert seen and not seen[0].exists() and source.exists()
 

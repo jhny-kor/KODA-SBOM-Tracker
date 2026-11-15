@@ -4,9 +4,12 @@ import copy
 import hashlib
 import hmac
 import json
+import socket
+import ssl
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
+import httpcore
 import httpx
 import pytest
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -231,12 +234,26 @@ def test_notification_dedup_meaningful_change_and_per_user_read_receipts(setup):
     assert client.get("/api/v1/notification-deliveries", headers=headers("viewer")).status_code == 403
 
 
-def test_webhook_signed_bounded_retry_no_redirect_and_manual_retry(setup):
+def webhook_resolution(monkeypatch, expect_host, expect_port, addresses):
+    calls = []
+
+    def resolve(host, port, *, type):
+        calls.append((host, port))
+        assert (host, port, type) == (expect_host, expect_port, socket.SOCK_STREAM)
+        return [(socket.AF_INET6 if ":" in address else socket.AF_INET, type, socket.IPPROTO_TCP, "",
+                 (address, port, 0, 0) if ":" in address else (address, port)) for address in addresses]
+
+    monkeypatch.setattr(workflows.socket, "getaddrinfo", resolve)
+    return calls
+
+
+def test_webhook_signed_bounded_retry_no_redirect_and_manual_retry(setup, monkeypatch):
     settings = setup.settings
     settings.notification_webhook_enabled = True
-    settings.notification_webhook_url = "http://collector.internal/hook"
-    settings.notification_allowed_hosts = "collector.internal"
+    settings.notification_webhook_url = "http://collector.internal:8080/hook?message=a%20b"
+    settings.notification_allowed_hosts = "collector.internal,10.20.30.40"
     settings.notification_webhook_secret = "do-not-leak-this-secret"
+    resolutions = webhook_resolution(monkeypatch, "collector.internal", 8080, ["10.20.30.40"])
     event = workflows.notify_analysis(setup.db, setup.run, setup.run.analyses[0])
     setup.db.commit()
     deliveries = setup.db.scalars(select(NotificationDelivery)).all()
@@ -244,6 +261,10 @@ def test_webhook_signed_bounded_retry_no_redirect_and_manual_retry(setup):
     requests = []
     def collector(request):
         requests.append(request)
+        assert request.url.host == "10.20.30.40"
+        assert request.url.port == 8080
+        assert request.url.raw_path == b"/hook?message=a%20b"
+        assert request.headers["Host"] == "collector.internal:8080"
         expected = hmac.new(settings.notification_webhook_secret.encode(), request.content, hashlib.sha256).hexdigest()
         assert request.headers["X-KODA-Signature"] == "sha256=" + expected
         assert request.headers["Idempotency-Key"] == event.id
@@ -267,6 +288,7 @@ def test_webhook_signed_bounded_retry_no_redirect_and_manual_retry(setup):
     assert workflows.deliver_notifications(setup.db, transport=httpx.MockTransport(lambda request: httpx.Response(204))) == 1
     assert row.status == "delivered"
     assert workflows.deliver_notifications(setup.db, transport=transport) == 0
+    assert len(resolutions) == 6
     config = setup.client.get("/api/v1/notification-settings", headers=headers()).json()
     assert config["webhookConfigured"] is True and "secret" not in json.dumps(config).lower().replace("secretconfigured", "")
 
@@ -288,6 +310,87 @@ def test_webhook_destination_rejection_never_uses_transport(setup, url, allowed)
         pytest.fail("unsafe destination attempted network I/O")
     assert workflows.deliver_notifications(setup.db, transport=httpx.MockTransport(forbidden)) == 0
     assert not workflows.webhook_settings()[-1]
+
+
+def test_webhook_https_keeps_original_tls_name_on_validated_addresses(setup, monkeypatch):
+    setup.settings.notification_webhook_enabled = True
+    setup.settings.notification_webhook_url = "https://collector.example:8443/hook"
+    setup.settings.notification_allowed_hosts = "collector.example,fd12::1"
+    setup.settings.notification_webhook_secret = "secret"
+    resolutions = webhook_resolution(monkeypatch, "collector.example", 8443, ["fd12::1", "93.184.216.34"])
+    workflows.notify_analysis(setup.db, setup.run, setup.run.analyses[0])
+    setup.db.commit()
+    attempted = []
+    sent = []
+
+    class TLSStream(httpcore.MockStream):
+        def start_tls(self, ssl_context, server_hostname=None, timeout=None):
+            assert server_hostname == "collector.example"
+            assert ssl_context.verify_mode == ssl.CERT_REQUIRED and ssl_context.check_hostname
+            return self
+
+        def write(self, buffer, timeout=None):
+            sent.append(buffer)
+
+    def connect_tcp(self, host, port, **kwargs):
+        attempted.append((host, port))
+        if len(attempted) == 1:
+            raise httpcore.ConnectError("fixture connection unavailable")
+        return TLSStream([b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n"])
+
+    monkeypatch.setattr(httpcore.SyncBackend, "connect_tcp", connect_tcp)
+    assert workflows.deliver_notifications(setup.db) == 1
+    assert attempted == [("fd12::1", 8443), ("93.184.216.34", 8443)]
+    assert resolutions == [("collector.example", 8443)]
+    assert b"\r\nhost: collector.example:8443\r\n" in b"".join(sent).lower()
+
+
+@pytest.mark.parametrize(("scheme", "address"), [("https", address) for address in (
+    "10.20.30.41", "::ffff:127.0.0.1", "fe80::1", "::", "224.0.0.1", "240.0.0.1",
+    "64:ff9b::c000:201", "64:ff9b:1::c000:201", "2002:c000:201::1", "2001:0:c000:201::1",
+)] + [("http", "93.184.216.34")])
+def test_webhook_rejects_mixed_dns_before_transport(setup, monkeypatch, scheme, address):
+    setup.settings.notification_webhook_enabled = True
+    setup.settings.notification_webhook_url = f"{scheme}://collector.internal/hook"
+    setup.settings.notification_allowed_hosts = "collector.internal,10.20.30.40"
+    setup.settings.notification_webhook_secret = "secret"
+    port = 443 if scheme == "https" else 80
+    resolutions = webhook_resolution(monkeypatch, "collector.internal", port, ["10.20.30.40", address])
+    workflows.notify_analysis(setup.db, setup.run, setup.run.analyses[0])
+    setup.db.commit()
+
+    def forbidden(request):
+        pytest.fail("address policy must reject the entire DNS answer before HTTP")
+
+    assert workflows.deliver_notifications(setup.db, transport=httpx.MockTransport(forbidden)) == 0
+    assert resolutions == [("collector.internal", port)]
+    delivery = setup.db.scalar(select(NotificationDelivery))
+    assert delivery.status == "pending" and delivery.last_error == "Webhook connection failed"
+
+
+def test_webhook_private_literal_and_offline_mode_do_not_resolve(setup, monkeypatch):
+    setup.settings.notification_webhook_enabled = True
+    setup.settings.notification_webhook_url = "http://[fd12::1]/hook"
+    setup.settings.notification_allowed_hosts = "fd12:0:0:0:0:0:0:1"
+    setup.settings.notification_webhook_secret = "secret"
+    workflows.notify_analysis(setup.db, setup.run, setup.run.analyses[0])
+    setup.db.commit()
+
+    def no_dns(*args, **kwargs):
+        pytest.fail("numeric destinations and offline mode need no DNS")
+
+    def collector(request):
+        assert not setup.settings.offline_mode
+        assert request.url.host == "fd12::1"
+        assert request.headers["Host"] == "[fd12::1]"
+        return httpx.Response(204)
+
+    monkeypatch.setattr(workflows.socket, "getaddrinfo", no_dns)
+    setup.settings.offline_mode = True
+    assert workflows.deliver_notifications(setup.db, transport=httpx.MockTransport(collector)) == 0
+    assert setup.db.scalar(select(NotificationDelivery)).attempts == 0
+    setup.settings.offline_mode = False
+    assert workflows.deliver_notifications(setup.db, transport=httpx.MockTransport(collector)) == 1
 
 
 def test_review_carries_to_new_run_only_in_same_service_environment_and_component_version(setup):

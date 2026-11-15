@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
+from koda_tracker import sbom as sbom_module
 from koda_tracker.sbom import (
     SbomValidationError,
     normalized_identity,
@@ -109,3 +110,83 @@ def test_component_count_is_bounded_before_rows_are_created() -> None:
     payload = {"bomFormat": "CycloneDX", "specVersion": "1.6", "components": [{}, {}]}
     with pytest.raises(SbomValidationError, match="구성요소"):
         validate_component_count(payload, 1)
+
+
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-16-le", "utf-32-le"])
+def test_upload_json_keeps_escaped_text_across_preflight_chunks(tmp_path, monkeypatch, encoding):
+    prefix = '{"bomFormat":"CycloneDX","specVersion":"1.6","components":[],"metadata":{"note":'
+    note = "x" * (64 * 1024 - 2 - len(prefix)) + '"{[},:' * 20 + "예제"
+    source = tmp_path / "sbom.json"
+    source.write_bytes((prefix + json.dumps(note, ensure_ascii=False) + "}}").encode(encoding))
+    monkeypatch.setattr(sbom_module, "MAX_UPLOAD_JSON_MARKS", 16)
+
+    payload, _ = sbom_module.parse_sbom_upload_document(source)
+
+    assert payload["metadata"]["note"] == note
+
+
+@pytest.mark.parametrize(
+    ("setting", "limit", "message"),
+    [("MAX_UPLOAD_DOCUMENT_BYTES", 10, "파싱 크기"),
+     ("MAX_UPLOAD_DOCUMENT_DEPTH", 1, "중첩 깊이"),
+     ("MAX_UPLOAD_JSON_MARKS", 5, "구조 복잡도")],
+)
+def test_upload_json_checks_document_budget_before_decoding(tmp_path, monkeypatch, setting, limit, message):
+    source = tmp_path / "sbom.json"
+    source.write_text('{"bomFormat":"CycloneDX","specVersion":"1.6","components":[]}', encoding="utf-8")
+    monkeypatch.setattr(sbom_module, setting, limit)
+
+    def should_not_decode(_source):
+        pytest.fail("Out-of-budget JSON reached the whole-document decoder")
+
+    monkeypatch.setattr(sbom_module.json, "load", should_not_decode)
+    with pytest.raises(SbomValidationError, match=message):
+        sbom_module.parse_sbom_upload_document(source)
+
+
+@pytest.mark.parametrize(
+    ("setting", "limit", "message"),
+    [("MAX_UPLOAD_DOCUMENT_DEPTH", 2, "중첩 깊이"),
+     ("MAX_UPLOAD_XML_NODES", 4, "구조 복잡도"),
+     ("MAX_UPLOAD_XML_CHARS", 16, "구조 복잡도")],
+)
+def test_upload_xml_checks_tree_budget_before_normalization(tmp_path, monkeypatch, setting, limit, message):
+    source = tmp_path / "sbom.xml"
+    source.write_text('<bom version="1.6"><components><component type="library"/></components></bom>', encoding="utf-8")
+    monkeypatch.setattr(sbom_module, setting, limit)
+
+    def should_not_normalize(_source):
+        pytest.fail("Out-of-budget XML reached normalization")
+
+    monkeypatch.setattr(sbom_module, "_xml_payload", should_not_normalize)
+    with pytest.raises(SbomValidationError, match=message):
+        sbom_module.parse_sbom_upload_document(source)
+
+
+def test_upload_json_accounts_for_widened_source_before_decoding(tmp_path, monkeypatch):
+    source = tmp_path / "sbom.json"
+    document = {"bomFormat": "CycloneDX", "specVersion": "1.6", "components": [], "metadata": {"description": "Example"}}
+    control = json.dumps(document, ensure_ascii=False)
+    monkeypatch.setattr(sbom_module, "MAX_UPLOAD_JSON_DECODED_BYTES", len(control) + 10)
+    source.write_text(control, encoding="utf-8")
+    assert sbom_module.parse_sbom_upload_document(source)[0] == document
+
+    source.write_text(control.replace("Example", "Sample 🎻"), encoding="utf-8")
+    with pytest.raises(SbomValidationError, match="디코딩 크기"):
+        sbom_module.parse_sbom_upload_document(source)
+
+
+@pytest.mark.parametrize("binary", ["", "configured-validator"])
+def test_upload_spdx_conversion_keeps_its_budget_without_reparsing(tmp_path, monkeypatch, binary):
+    source = tmp_path / "spdx.json"
+    source.write_text("{}", encoding="utf-8")
+    document = {"bomFormat": "CycloneDX", "specVersion": "1.6", "components": []}
+    monkeypatch.setattr(sbom_module, "MAX_UPLOAD_DOCUMENT_BYTES", 10)
+
+    def unexpected_cli(*_args, **_kwargs):
+        pytest.fail("Out-of-budget SPDX conversion reached the CLI")
+
+    monkeypatch.setattr(sbom_module, "_run_cyclonedx", unexpected_cli)
+    with pytest.raises(SbomValidationError, match="파싱 크기"):
+        validate_file_with_cyclonedx_cli(source, binary, parsed_document=(document, "application/spdx+json"))
+    assert list(tmp_path.iterdir()) == [source]

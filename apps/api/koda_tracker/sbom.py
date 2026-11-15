@@ -1,16 +1,22 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
+import os
 import re
+import selectors
 import shutil
 import subprocess
 import tempfile
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import unquote
+from xml.etree.ElementTree import TreeBuilder
 
 from defusedxml import ElementTree as SafeET
+from defusedxml.common import DefusedXmlException
 from .archive_formats import MEDIA_TYPES as SBOM_ARCHIVE_MEDIA_TYPES
 from .oracle_evidence import oracle_listener_identity
 
@@ -18,10 +24,119 @@ from .oracle_evidence import oracle_listener_identity
 # Large host inventories can exceed 30 seconds on offline server hardware.
 # Keep validation bounded and within the upload gateway's 600-second window.
 CYCLONEDX_VALIDATION_TIMEOUT_SECONDS = 300
+_CYCLONEDX_DIAGNOSTIC_BYTES = 4096
+_CYCLONEDX_OUT_OF_MEMORY = b"System.OutOfMemoryException"
+MAX_UPLOAD_DOCUMENT_BYTES = 128 * 1024**2
+MAX_UPLOAD_DOCUMENT_DEPTH = 128
+MAX_UPLOAD_JSON_MARKS = 4_000_000
+MAX_UPLOAD_JSON_DECODED_BYTES = 192 * 1024**2
+MAX_UPLOAD_XML_NODES = 1_000_000
+MAX_UPLOAD_XML_CHARS = 64 * 1024**2
+_JSON_STRUCTURE = re.compile(r'["{}\[\],:]')
+_JSON_STRING = re.compile(r'["\\]')
+_JSON_WIDE = re.compile(r'[\u0100-\uffff]')
+_JSON_ASTRAL = re.compile(r'[\U00010000-\U0010ffff]')
 
 
 class SbomValidationError(ValueError):
     pass
+
+
+def _check_upload_document_size(size: int) -> None:
+    if size > MAX_UPLOAD_DOCUMENT_BYTES:
+        raise SbomValidationError(f"SBOM 문서가 파싱 크기 제한({MAX_UPLOAD_DOCUMENT_BYTES:,}바이트)을 초과했습니다")
+
+
+def _check_upload_json_structure(source, prefix: bytes) -> None:
+    # Match json.loads(bytes), including the UTF-16/32 variants it already accepts.
+    # The real decoder still validates JSON syntax and decodes all field values.
+    reader = io.TextIOWrapper(source, encoding=json.detect_encoding(prefix), errors="surrogatepass", newline="")
+    try:
+        depth = marks = characters = 0
+        character_width = 1
+        in_string = escaped = False
+        while chunk := reader.read(64 * 1024):
+            # Python can widen the entire decoded source when one character
+            # requires more than one byte in its internal representation.
+            characters += len(chunk)
+            if character_width < 4 and not chunk.isascii():
+                if _JSON_ASTRAL.search(chunk):
+                    character_width = 4
+                elif character_width == 1 and _JSON_WIDE.search(chunk):
+                    character_width = 2
+            if characters * character_width > MAX_UPLOAD_JSON_DECODED_BYTES:
+                raise SbomValidationError("SBOM JSON 문서의 디코딩 크기 제한을 초과했습니다")
+            position = int(escaped)
+            escaped = False
+            while position < len(chunk):
+                pattern = _JSON_STRING if in_string else _JSON_STRUCTURE
+                match = pattern.search(chunk, position)
+                if match is None:
+                    break
+                position = match.end()
+                token = match[0]
+                if token == '"':
+                    in_string = not in_string
+                elif in_string:
+                    escaped = position == len(chunk)
+                    position += 1
+                else:
+                    marks += 1
+                    if token in "{[":
+                        depth += 1
+                    elif token in "}]":
+                        depth -= 1
+                        if depth < 0:
+                            raise SbomValidationError("유효한 JSON 문서가 아닙니다")
+                    if depth > MAX_UPLOAD_DOCUMENT_DEPTH:
+                        raise SbomValidationError("SBOM JSON 문서의 중첩 깊이 제한을 초과했습니다")
+                    if marks > MAX_UPLOAD_JSON_MARKS:
+                        raise SbomValidationError("SBOM JSON 문서의 구조 복잡도 제한을 초과했습니다")
+    finally:
+        reader.detach()
+    source.seek(0)
+
+
+class _BudgetedXmlTreeBuilder(TreeBuilder):
+    def __init__(self, max_nodes: int):
+        super().__init__()
+        self.depth = 0
+        self.remaining_nodes = max_nodes
+        self.remaining_chars = MAX_UPLOAD_XML_CHARS
+
+    def _consume(self, nodes: int, characters: int) -> None:
+        self.remaining_nodes -= nodes
+        self.remaining_chars -= characters
+        if self.remaining_nodes < 0 or self.remaining_chars < 0:
+            raise SbomValidationError("SBOM XML 문서의 구조 복잡도 제한을 초과했습니다")
+
+    def start_ns(self, prefix, uri) -> None:
+        if len(uri) > 1024:
+            raise SbomValidationError("SBOM XML 네임스페이스 길이 제한을 초과했습니다")
+        self._consume(1, len(prefix) + len(uri))
+
+    def start(self, tag, attributes):
+        self.depth += 1
+        if self.depth > MAX_UPLOAD_DOCUMENT_DEPTH:
+            raise SbomValidationError("SBOM XML 문서의 중첩 깊이 제한을 초과했습니다")
+        self._consume(1 + len(attributes), len(tag) + sum(len(key) + len(value) for key, value in attributes.items()))
+        return super().start(tag, attributes)
+
+    def end(self, tag):
+        self.depth -= 1
+        return super().end(tag)
+
+    def data(self, data):
+        self._consume(0, len(data))
+        return super().data(data)
+
+
+def parse_bounded_xml(source, *, max_nodes: int | None = None):
+    parser = SafeET.DefusedXMLParser(
+        target=_BudgetedXmlTreeBuilder(MAX_UPLOAD_XML_NODES if max_nodes is None else max_nodes),
+        forbid_dtd=True,
+    )
+    return SafeET.parse(source, parser=parser).getroot()
 
 
 def sbom_upload_media_type(path: Path, document_media_type: str) -> str:
@@ -59,7 +174,8 @@ def sbom_document_path(path: Path, *, max_bytes: int | None = None, workbook: bo
                 extract_archive(path, root, max_members=256, max_unpacked_bytes=workbook_limit,
                                 max_member_bytes=workbook_limit)
                 document = Path(temporary) / "inventory.cdx.json"
-                document.write_text(json.dumps(read_workbook(root), ensure_ascii=False), encoding="utf-8")
+                with document.open("w", encoding="utf-8") as output:
+                    json.dump(read_workbook(root), output, ensure_ascii=False)
                 if document.stat().st_size > limit:
                     raise SbomValidationError("변환된 Excel SBOM이 문서 크기 제한을 초과했습니다")
                 yield document
@@ -162,17 +278,28 @@ def parse_sbom_file(path: Path, *, workbook: bool = False) -> tuple[dict, str]:
         return _parse_sbom_document_file(document)
 
 
-def _parse_sbom_document_file(path: Path) -> tuple[dict, str]:
+def parse_sbom_upload_document(path: Path) -> tuple[dict, str]:
+    """Parse the already selected document within the upload resource limits."""
+    return _parse_sbom_document_file(path, bounded=True)
+
+
+def _parse_sbom_document_file(path: Path, *, bounded: bool = False) -> tuple[dict, str]:
     with path.open("rb") as candidate:
-        prefix = candidate.read(4096).lstrip()
+        if bounded:
+            _check_upload_document_size(os.fstat(candidate.fileno()).st_size)
+        prefix = candidate.read(4096)
         candidate.seek(0)
-        if prefix.startswith((b"{", b"[")):
+        if prefix.lstrip().startswith((b"{", b"[")):
             try:
+                if bounded:
+                    _check_upload_json_structure(candidate, prefix)
                 payload = json.load(candidate)
-            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            except SbomValidationError:
+                raise
+            except (ValueError, RecursionError) as exc:
                 raise SbomValidationError("유효한 JSON 문서가 아닙니다") from exc
             payload, media = _normalize_json(payload)
-        elif prefix.startswith(b"<"):
+        elif prefix.lstrip().startswith(b"<"):
             carry = b""
             while chunk := candidate.read(1024 * 1024):
                 upper = (carry + chunk).upper()
@@ -181,7 +308,11 @@ def _parse_sbom_document_file(path: Path) -> tuple[dict, str]:
                 carry = upper[-16:]
             candidate.seek(0)
             try:
-                root = SafeET.parse(candidate).getroot()
+                root = parse_bounded_xml(candidate) if bounded else SafeET.parse(candidate).getroot()
+            except SbomValidationError:
+                raise
+            except DefusedXmlException as exc:
+                raise SbomValidationError("DTD와 외부 엔티티는 허용되지 않습니다") from exc
             except Exception as exc:
                 raise SbomValidationError("유효한 XML 문서가 아닙니다") from exc
             payload = _xml_payload(root)
@@ -207,36 +338,100 @@ def validate_with_cyclonedx_cli(raw: bytes, binary: str) -> None:
         raise SbomValidationError("CycloneDX CLI 검증기를 찾을 수 없습니다. Tracker API 설치 상태를 확인하세요.") from exc
 
 
-def validate_file_with_cyclonedx_cli(path: Path, binary: str, *, input_format: str | None = None) -> None:
-    if not binary:
+def validate_file_with_cyclonedx_cli(
+    path: Path, binary: str, *, input_format: str | None = None,
+    parsed_document: tuple[dict, str] | None = None,
+) -> None:
+    if not binary and parsed_document is None:
         return
     # SPDX's original file is retained as the uploaded artifact. Validate the
     # normalized CycloneDX view with this optional CycloneDX-only validator.
-    with path.open("rb") as source:
-        prefix = source.read(4096).lstrip()
-        if prefix.startswith((b"{", b"[")):
-            source.seek(0)
-            try:
-                candidate = json.load(source)
-            except (UnicodeError, json.JSONDecodeError) as exc:
-                raise SbomValidationError("유효한 JSON 문서가 아닙니다") from exc
-            if isinstance(candidate, dict) and "spdxVersion" in candidate:
-                normalized, _ = _normalize_json(candidate)
-                with tempfile.NamedTemporaryFile("w", suffix=".json", encoding="utf-8", dir=path.parent) as converted:
-                    json.dump(normalized, converted, ensure_ascii=False)
-                    converted.flush()
-                    return validate_file_with_cyclonedx_cli(Path(converted.name), binary, input_format="json")
+    normalized = None
+    if parsed_document is not None:
+        payload, media_type = parsed_document
+        if media_type == "application/spdx+json":
+            normalized = payload
+    else:
+        with path.open("rb") as source:
+            prefix = source.read(4096).lstrip()
+            if prefix.startswith((b"{", b"[")):
+                source.seek(0)
+                try:
+                    candidate = json.load(source)
+                except (UnicodeError, json.JSONDecodeError) as exc:
+                    raise SbomValidationError("유효한 JSON 문서가 아닙니다") from exc
+                if isinstance(candidate, dict) and "spdxVersion" in candidate:
+                    normalized, _ = _normalize_json(candidate)
+    if normalized is None:
+        if binary:
+            _validate_cyclonedx_file(path, binary, input_format)
+        return
+
+    if not binary:
+        _write_bounded_spdx(normalized)
+        return
+    with tempfile.NamedTemporaryFile("w", suffix=".json", encoding="utf-8", dir=path.parent) as converted:
+        if parsed_document is None:
+            json.dump(normalized, converted, ensure_ascii=False)
+        else:
+            _write_bounded_spdx(normalized, converted)
+        converted.flush()
+        _validate_cyclonedx_file(Path(converted.name), binary, "json")
+
+
+def _write_bounded_spdx(payload: dict, output=None) -> None:
+    size = 0
+    try:
+        for chunk in json.JSONEncoder(ensure_ascii=False).iterencode(payload):
+            size += len(chunk.encode("utf-8"))
+            _check_upload_document_size(size)
+            if output is not None:
+                output.write(chunk)
+    except UnicodeError as exc:
+        raise SbomValidationError("변환된 SPDX 문서의 문자 인코딩이 올바르지 않습니다") from exc
+
+
+def _run_cyclonedx(command: list[str], *, timeout: int) -> subprocess.CompletedProcess[str]:
+    """Drain both diagnostic streams within the deadline and keep only their tails."""
+    tails = {"stdout": b"", "stderr": b""}
+    out_of_memory = False
+    with (
+        subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as process,
+        selectors.DefaultSelector() as ready,
+    ):
+        deadline = time.monotonic() + timeout
+        try:
+            ready.register(process.stdout, selectors.EVENT_READ, "stdout")
+            ready.register(process.stderr, selectors.EVENT_READ, "stderr")
+            while ready.get_map():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(command, timeout)
+                for key, _ in ready.select(remaining):
+                    chunk = os.read(key.fd, 64 * 1024)
+                    if not chunk:
+                        ready.unregister(key.fileobj)
+                        continue
+                    recent = tails[key.data] + chunk
+                    out_of_memory = out_of_memory or _CYCLONEDX_OUT_OF_MEMORY in recent
+                    tails[key.data] = recent[-_CYCLONEDX_DIAGNOSTIC_BYTES:]
+            returncode = process.wait(timeout=max(0, deadline - time.monotonic()))
+        except BaseException:
+            process.kill()
+            raise
+    stdout = tails["stdout"].decode("utf-8", errors="replace")
+    stderr = tails["stderr"].decode("utf-8", errors="replace")
+    if out_of_memory:
+        stderr = _CYCLONEDX_OUT_OF_MEMORY.decode("ascii") + stderr
+    return subprocess.CompletedProcess(command, returncode, stdout=stdout, stderr=stderr)
+
+
+def _validate_cyclonedx_file(path: Path, binary: str, input_format: str | None) -> None:
     command = [binary, "validate", "--input-file", str(path)]
     if input_format:
         command.extend(["--input-format", input_format])
     try:
-        process = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=CYCLONEDX_VALIDATION_TIMEOUT_SECONDS,
-            check=False,
-        )
+        process = _run_cyclonedx(command, timeout=CYCLONEDX_VALIDATION_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired as exc:
         raise SbomValidationError(
             f"CycloneDX 스키마 검증 시간이 {CYCLONEDX_VALIDATION_TIMEOUT_SECONDS}초 제한을 초과했습니다. "
@@ -246,7 +441,7 @@ def validate_file_with_cyclonedx_cli(path: Path, binary: str, *, input_format: s
     except FileNotFoundError as exc:
         raise SbomValidationError("CycloneDX CLI 검증기를 찾을 수 없습니다. Tracker API 설치 상태를 확인하세요.") from exc
     if process.returncode != 0:
-        if "System.OutOfMemoryException" in (process.stderr or "") + (process.stdout or ""):
+        if _CYCLONEDX_OUT_OF_MEMORY.decode("ascii") in (process.stderr or "") + (process.stdout or ""):
             raise SbomValidationError(
                 "CycloneDX 검증기의 메모리가 부족해 검증을 완료하지 못했습니다. "
                 "업로드를 저장하지 않았습니다. Tracker API 서버와 컨테이너의 메모리 한도를 확인하세요."
@@ -256,7 +451,7 @@ def validate_file_with_cyclonedx_cli(path: Path, binary: str, *, input_format: s
                 "CycloneDX 검증기가 강제로 종료되어 검증을 완료하지 못했습니다. "
                 "업로드를 저장하지 않았습니다. Tracker API 서버의 자원 상태와 종료 원인을 확인하세요."
             )
-        message = (process.stderr or process.stdout or "스키마 검증 실패").strip()
+        message = (process.stderr or "").strip() or (process.stdout or "").strip() or "스키마 검증 실패"
         raise SbomValidationError(f"CycloneDX 스키마 검증에 실패했습니다: {message[-1000:]}")
 
 

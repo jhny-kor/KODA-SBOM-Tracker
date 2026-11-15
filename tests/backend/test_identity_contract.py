@@ -250,6 +250,25 @@ def test_login_address_limit_cannot_be_evaded_by_rotating_usernames(monkeypatch)
             db.commit()
 
 
+def test_login_account_limit_is_shared_across_addresses(monkeypatch) -> None:
+    settings = get_settings()
+    monkeypatch.setattr(settings, "login_address_limit", 10)
+    monkeypatch.setattr(settings, "login_account_limit", 2)
+    username = f"account-{uuid.uuid4().hex[:12]}"
+    try:
+        with SessionLocal() as db:
+            _consume_login_rate_limit(db, "192.0.2.1", username)
+            _consume_login_rate_limit(db, "192.0.2.2", username.upper())
+            with pytest.raises(HTTPException) as blocked:
+                _consume_login_rate_limit(db, "192.0.2.3", f" {username} ")
+            assert blocked.value.status_code == 429
+            _consume_login_rate_limit(db, "192.0.2.3", username + "-other")
+    finally:
+        with SessionLocal() as db:
+            db.execute(delete(AuthAttempt).where(AuthAttempt.kind.in_(("login-address", "login-account"))))
+            db.commit()
+
+
 def test_oversized_unauthenticated_json_is_rejected_before_validation() -> None:
     with TestClient(app) as client:
         response = client.post(

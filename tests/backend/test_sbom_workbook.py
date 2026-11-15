@@ -9,7 +9,7 @@ import zipfile
 import pytest
 from sqlalchemy import func, select
 
-from koda_tracker import main, services
+from koda_tracker import main, sbom_workbook, services
 from koda_tracker.models import Job, JobState, SbomRun
 from koda_tracker.sbom_workbook import WORKBOOK_MEDIA_TYPE
 from test_sbom_archives import context  # noqa: F401 - shared authenticated upload fixture
@@ -122,13 +122,17 @@ def test_workbook_upload_preserves_original_and_uses_same_normalized_document_fo
     assert selected_paths and all(not path.exists() for path in selected_paths)
 
 
-@pytest.mark.parametrize("invalid", ["missing version", "formula", "relationship", "upload size"])
+@pytest.mark.parametrize("invalid", ["missing version", "formula", "relationship", "upload size", "XML structure"])
 def test_invalid_workbook_creates_no_run_or_job(context, monkeypatch, invalid):
     raw = workbook_bytes(invalid=invalid)
     if invalid == "upload size":
         monkeypatch.setattr(main, "MAX_WORKBOOK_BYTES", len(raw) - 1)
+    if invalid == "XML structure":
+        monkeypatch.setattr(sbom_workbook, "MAX_WORKBOOK_XML_NODES", 15)
     response = upload_workbook(context, raw)
     assert response.status_code == (413 if invalid == "upload size" else 422), response.text
+    if invalid == "XML structure":
+        assert "구조 복잡도" in response.json()["detail"]
     assert context.db.scalar(select(func.count()).select_from(SbomRun)) == 0
     assert context.db.scalar(select(func.count()).select_from(Job)) == 0
     assert not list(context.settings.artifact_dir.iterdir())

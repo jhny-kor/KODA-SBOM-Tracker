@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import pytest
 from fastapi.testclient import TestClient
 from koda_tracker import ldap_auth
+from koda_tracker.config import get_settings
 from koda_tracker.db import SessionLocal
 from koda_tracker.ldap_auth import (
     LdapConfig,
@@ -14,7 +15,7 @@ from koda_tracker.ldap_auth import (
     authenticate_user,
 )
 from koda_tracker.main import app
-from koda_tracker.models import LdapSettings, SbomRun, User, UserSession
+from koda_tracker.models import AuthAttempt, LdapSettings, SbomRun, User, UserSession
 from sqlalchemy import delete
 
 
@@ -74,7 +75,7 @@ def test_ldap_settings_encrypt_bind_password_and_provision_session(monkeypatch: 
 
             monkeypatch.setattr(
                 "koda_tracker.main.authenticate_user",
-                lambda config, supplied_username, password: LdapIdentity(
+                lambda config, supplied_username, password, **kwargs: LdapIdentity(
                     username=username,
                     subject="directory-subject-1",
                     groups=("CN=KODA-Admins,DC=example,DC=test",),
@@ -131,7 +132,7 @@ def test_ldap_never_falls_back_to_local_password(monkeypatch: pytest.MonkeyPatch
             assert created.status_code == 201
             assert client.put("/api/v1/settings/ldap", json=_ldap_body(), headers=headers).status_code == 200
 
-            def reject(config: LdapConfig, supplied_username: str, password: str) -> LdapIdentity:
+            def reject(config: LdapConfig, supplied_username: str, password: str, **kwargs) -> LdapIdentity:
                 raise LdapInvalidCredentials
 
             monkeypatch.setattr("koda_tracker.main.authenticate_user", reject)
@@ -142,6 +143,70 @@ def test_ldap_never_falls_back_to_local_password(monkeypatch: pytest.MonkeyPatch
             assert response.status_code == 401
     finally:
         _cleanup(username)
+
+
+def test_ldap_provisioning_preserves_the_existing_local_account(monkeypatch) -> None:
+    username = "ldap-existing-local"
+    password = "long-enough-password"
+
+    def directory_identity(config, supplied_username, supplied_password, *, before_bind):
+        before_bind("directory-collision-subject")
+        return LdapIdentity(username, "directory-collision-subject", ())
+
+    monkeypatch.setattr("koda_tracker.main.authenticate_user", directory_identity)
+    try:
+        with TestClient(app) as client:
+            headers = _admin(client)
+            created = client.post(
+                "/api/v1/users", json={"username": username, "password": password, "role": "viewer"},
+                headers=headers,
+            )
+            assert created.status_code == 201
+            user_id = created.json()["id"]
+            assert client.put("/api/v1/settings/ldap", json=_ldap_body(), headers=headers).status_code == 200
+
+            response = client.post(
+                "/api/v1/auth/login",
+                json={"username": username, "password": "directory-password", "useLdap": True},
+            )
+            assert response.status_code == 403
+            assert "충돌" in response.json()["detail"]
+            with SessionLocal() as db:
+                user = db.get(User, user_id)
+                assert user.auth_source == "local"
+                assert user.ldap_subject is None
+                assert user.active and user.approval_state == "approved"
+                assert user.role.value == "viewer"
+            local = client.post("/api/v1/auth/login", json={"username": username, "password": password})
+            assert local.status_code == 200
+            assert local.json()["user"]["id"] == user_id
+    finally:
+        _cleanup(username)
+
+
+def test_ldap_account_limit_checks_directory_subject_before_password_bind(monkeypatch) -> None:
+    monkeypatch.setattr(get_settings(), "login_account_limit", 2)
+    password_checks = []
+
+    def mock_directory(config, username, password, *, before_bind):
+        before_bind("stable-directory-test-subject")
+        password_checks.append(username)
+        raise LdapInvalidCredentials
+
+    monkeypatch.setattr("koda_tracker.main.authenticate_user", mock_directory)
+    try:
+        with TestClient(app) as client:
+            headers = _admin(client)
+            assert client.put("/api/v1/settings/ldap", json=_ldap_body(), headers=headers).status_code == 200
+            for index, expected_status in enumerate((401, 401, 429)):
+                body = {"username": f"directory-alias-{index}", "password": "wrong", "useLdap": True}
+                assert client.post("/api/v1/auth/login", json=body).status_code == expected_status
+            assert len(password_checks) == 2
+    finally:
+        _cleanup()
+        with SessionLocal() as db:
+            db.execute(delete(AuthAttempt).where(AuthAttempt.kind == "login-ldap-subject"))
+            db.commit()
 
 
 def test_ldap_enabled_requires_certificate_verification() -> None:
@@ -320,7 +385,11 @@ def test_ldap_filter_escapes_input_and_requires_one_directory_entry(monkeypatch:
         user_filter="(sAMAccountName={username})",
         group_attribute="memberOf",
     )
-    identity = authenticate_user(config, "a*)(uid=*)", "password")
+    def check_account_limit(subject: str) -> None:
+        assert calls == ["svc@example.test"]
+        assert subject == "AQI"
+
+    identity = authenticate_user(config, "a*)(uid=*)", "password", before_bind=check_account_limit)
     assert identity.username == "ldap-user"
     assert identity.subject == base64.urlsafe_b64encode(b"\x01\x02").rstrip(b"=").decode()
     assert "\\2a" in filters[0] and "\\29" in filters[0]
@@ -329,3 +398,11 @@ def test_ldap_filter_escapes_input_and_requires_one_directory_entry(monkeypatch:
     monkeypatch.setattr(ldap_auth, "_bind", lambda config, user, password: _Connection([entry, entry], []))
     with pytest.raises(LdapInvalidCredentials):
         authenticate_user(config, "one", "password")
+
+    monkeypatch.setattr(ldap_auth, "_bind", fake_bind)
+    for invalid_subject in ([], None, [b"first", b"second"]):
+        entry.entry_attributes_as_dict["objectGUID"] = invalid_subject
+        calls.clear()
+        with pytest.raises(LdapInvalidCredentials):
+            authenticate_user(config, "one", "password")
+        assert calls == ["svc@example.test"]

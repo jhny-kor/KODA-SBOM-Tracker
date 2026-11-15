@@ -9,8 +9,9 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import socket
+import time
 from datetime import UTC, datetime, timedelta
-from urllib.parse import urlsplit
 
 import httpx
 from fastapi import HTTPException
@@ -286,27 +287,109 @@ def import_vex(db, run, author, document):
     return [create_review(db, run, author, body, imported=True) for body in requests]
 
 
+_WEBHOOK_PRIVATE_NETWORKS = tuple(ipaddress.ip_network(network) for network in (
+    "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7",
+))
+_WEBHOOK_GLOBAL_IPV6 = ipaddress.IPv6Network("2000::/3")
+_WEBHOOK_TIMEOUT_SECONDS = 5.0
+
+
+def _webhook_ip(value):
+    address = ipaddress.ip_address(value)
+    if isinstance(address, ipaddress.IPv6Address):
+        if address.scope_id is not None:
+            raise ValueError("Scoped webhook address")
+        return address.ipv4_mapped or address
+    return address
+
+
+def _webhook_allowed_hosts(settings):
+    allowed = set()
+    for entry in (getattr(settings, "notification_allowed_hosts", "") or "").split(","):
+        host = entry.strip().lower()
+        if host:
+            try:
+                host = str(_webhook_ip(host))
+            except ValueError:
+                pass
+            allowed.add(host)
+    return allowed
+
+
+def _webhook_address_allowed(address, scheme, allowed):
+    if (address.is_unspecified or address.is_loopback or address.is_link_local or address.is_multicast
+            or address.is_reserved or getattr(address, "is_site_local", False)):
+        return False
+    if any(address in network for network in _WEBHOOK_PRIVATE_NETWORKS):
+        return str(address) in allowed
+    if isinstance(address, ipaddress.IPv6Address) and (
+        address not in _WEBHOOK_GLOBAL_IPV6 or address.sixtofour is not None or address.teredo is not None
+    ):
+        # Exclude well-known translation and transition ranges independent of ipaddress version.
+        return False
+    return scheme == "https" and address.is_global
+
+
 def webhook_settings(settings=None):
     settings = settings or get_settings()
     from .network_policy import offline_mode
     enabled = not offline_mode(settings) and bool(getattr(settings, "notification_webhook_enabled", False))
     url = getattr(settings, "notification_webhook_url", "") or ""
     secret = getattr(settings, "notification_webhook_secret", "") or ""
-    allowed = {h.strip().lower() for h in (getattr(settings, "notification_allowed_hosts", "") or "").split(",") if h.strip()}
+    allowed = _webhook_allowed_hosts(settings)
     try:
-        parsed = urlsplit(url)
-        host = (parsed.hostname or "").lower()
-        parsed.port  # Validate a malformed port before attempting network I/O.
-    except ValueError:
-        return settings, enabled, url, secret, "", False
-    valid = bool(host and host in allowed and parsed.scheme in {"https", "http"} and not parsed.username and not parsed.password and not parsed.fragment)
-    if parsed.scheme == "http":
+        parsed = httpx.URL(url)
+        host = parsed.host
+        ascii_host = parsed.raw_host.decode("ascii")
+    except (httpx.InvalidURL, ValueError):
+        return settings, enabled, None, secret, "", False
+    valid = (bool(host) and "%" not in ascii_host and parsed.scheme in {"https", "http"}
+             and not parsed.userinfo and not parsed.fragment and (parsed.port is None or 0 < parsed.port <= 65535))
+    if valid:
         try:
-            internal = ipaddress.ip_address(host).is_private or ipaddress.ip_address(host).is_loopback
+            address = _webhook_ip(ascii_host)
         except ValueError:
-            internal = host == "localhost" or "." not in host or host.endswith((".internal", ".local", ".test"))
-        valid = valid and internal
-    return settings, enabled, url, secret, host, valid
+            valid = host in allowed or ascii_host in allowed
+            if parsed.scheme == "http":
+                valid = valid and ("." not in ascii_host or ascii_host.endswith((".internal", ".local", ".test")))
+        else:
+            valid = str(address) in allowed and _webhook_address_allowed(address, parsed.scheme, allowed)
+    return settings, enabled, parsed, secret, host, valid
+
+
+def _webhook_addresses(url, allowed):
+    host = url.raw_host.decode("ascii")
+    try:
+        addresses = [_webhook_ip(host)]
+    except ValueError:
+        port = url.port or (443 if url.scheme == "https" else 80)
+        records = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+        addresses = list(dict.fromkeys(_webhook_ip(record[4][0]) for record in records))
+    if not addresses or any(not _webhook_address_allowed(address, url.scheme, allowed) for address in addresses):
+        raise ValueError("Unapproved webhook address")
+    return addresses
+
+
+def _webhook_status(url, allowed, payload, signature, event_id, transport):
+    addresses = _webhook_addresses(url, allowed)
+    headers = {"Host": url.netloc.decode("ascii"), "Content-Type": "application/json",
+               "X-KODA-Signature": "sha256=" + signature, "Idempotency-Key": event_id}
+    # HTTPX uses the numeric URL for TCP and the original authority for HTTP and TLS verification.
+    extensions = {"sni_hostname": url.raw_host.decode("ascii")}
+    deadline = time.monotonic() + _WEBHOOK_TIMEOUT_SECONDS
+    with httpx.Client(follow_redirects=False, trust_env=False, transport=transport) as client:
+        for address in addresses:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                with client.stream("POST", url.copy_with(host=str(address)), content=payload, headers=headers,
+                                   extensions=extensions, timeout=httpx.Timeout(_WEBHOOK_TIMEOUT_SECONDS, connect=remaining)) as response:
+                    return response.status_code
+            except (httpx.ConnectError, httpx.ConnectTimeout):
+                # Only try another validated address if no HTTP request could be sent.
+                continue
+    raise httpx.ConnectError("No approved webhook address could be reached")
 
 
 def emit_notification(db, dedupe_key, kind, title, message, run_id, revision_id, payload):
@@ -361,9 +444,10 @@ def delivery_dict(row):
 
 def deliver_notifications(db, limit=1, *, transport=None):
     """Bounded leased outbox tick. No redirect, proxy environment, or unapproved host."""
-    _, enabled, url, secret, _, valid = webhook_settings()
+    settings, enabled, url, secret, _, valid = webhook_settings()
     if not enabled:
         return 0
+    allowed = _webhook_allowed_hosts(settings)
     timestamp = now()
     rows = db.scalars(select(NotificationDelivery).where(NotificationDelivery.status.in_(["pending", "sending"]),
                       NotificationDelivery.next_attempt_at <= timestamp).order_by(NotificationDelivery.created_at).limit(min(limit, 10))).all()
@@ -388,11 +472,10 @@ def deliver_notifications(db, limit=1, *, transport=None):
                                   "createdAt": iso(event.created_at), "payload": event.payload}, sort_keys=True, separators=(",", ":")).encode()
             signature = hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest()
             try:
-                with httpx.Client(timeout=httpx.Timeout(5.0), follow_redirects=False, trust_env=False, transport=transport) as client:
-                    with client.stream("POST", url, content=payload, headers={"Content-Type": "application/json", "X-KODA-Signature": "sha256=" + signature, "Idempotency-Key": event.id}) as response:
-                        if not 200 <= response.status_code < 300:
-                            error = f"Webhook HTTP status {response.status_code}"
-            except (httpx.HTTPError, ValueError):
+                status = _webhook_status(url, allowed, payload, signature, event.id, transport)
+                if not 200 <= status < 300:
+                    error = f"Webhook HTTP status {status}"
+            except (httpx.HTTPError, httpx.InvalidURL, OSError, ValueError):
                 # Exception text may contain credentials, URL, or secrets; expose a fixed category only.
                 error = "Webhook connection failed"
         if error:

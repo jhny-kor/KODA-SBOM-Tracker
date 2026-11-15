@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import ssl
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from ldap3 import NONE, Connection, Server, Tls
@@ -58,15 +59,16 @@ def _attribute(entry, name: str) -> str:
         value = values[0] if values else ""
     else:
         value = values
-    return str(value).strip()
+    return str(value).strip() if value is not None else ""
 
 
 def _subject(entry, name: str) -> str:
-    values = entry.entry_attributes_as_dict.get(name, [])
-    value = values[0] if isinstance(values, (list, tuple)) and values else values
+    value = entry.entry_attributes_as_dict.get(name)
+    if isinstance(value, (list, tuple)):
+        value = value[0] if len(value) == 1 else None
     if isinstance(value, bytes):
         return base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
-    return str(value).strip()
+    return str(value).strip() if value is not None else ""
 
 
 def _attributes(entry, name: str) -> tuple[str, ...]:
@@ -122,7 +124,13 @@ def _bind(config: LdapConfig, user: str, password: str) -> Connection:
         raise LdapUnavailable("LDAP 서버에 연결할 수 없습니다") from exc
 
 
-def authenticate_user(config: LdapConfig, username: str, password: str) -> LdapIdentity:
+def authenticate_user(
+    config: LdapConfig,
+    username: str,
+    password: str,
+    *,
+    before_bind: Callable[[str], None] | None = None,
+) -> LdapIdentity:
     if not config.host or not config.bind_dn or not config.bind_password or not config.base_dn:
         raise LdapConfigurationError("LDAP 연결 정보가 완전하지 않습니다")
     if "{username}" not in config.user_filter:
@@ -151,6 +159,8 @@ def authenticate_user(config: LdapConfig, username: str, password: str) -> LdapI
     finally:
         _unbind(service)
 
+    if before_bind is not None:
+        before_bind(identity_subject)
     user_connection = _bind(config, user_dn, password)
     try:
         return LdapIdentity(username=identity_username, subject=identity_subject, groups=groups)
