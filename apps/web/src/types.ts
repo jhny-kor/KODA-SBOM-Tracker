@@ -76,6 +76,21 @@ export interface SbomRun extends NativePolicyFields {
   note?: string;
 }
 
+export interface CoverageReasonCount {
+  code: string;
+  count: number;
+}
+
+export interface SbomCollectionCoverage {
+  status: "completed" | "partial";
+  sourceType: "filesystem" | "image-archive" | "aix-evidence";
+  componentCount: number;
+  excludedDirectoryCount: number;
+  excludedPatternCount?: number;
+  issueCounts: CoverageReasonCount[];
+  omittedIssueCount?: number;
+}
+
 export interface CpeApplicabilitySummary {
   version?: string;
   status?: string;
@@ -86,15 +101,23 @@ export interface CpeApplicabilitySummary {
   evaluatedCves?: number;
   unknownCves?: number;
   indexIncompleteCves?: number;
-  unresolved?: { id: string; reason: string }[];
+  unresolved?: { id: string; reason: string; oracleHomeId?: string }[];
   affectedCves?: number;
   addedFindings?: number;
   matchedExisting?: number;
   legacyDetailsOnly?: number;
   inventoryComplete?: boolean;
+  componentCoverage?: {
+    evaluated: number;
+    inconclusive: number;
+    notEvaluated: number;
+    reasons: CoverageReasonCount[];
+  };
 }
 export interface AnalysisDataSources extends Record<string, unknown> {
   cpeApplicability?: CpeApplicabilitySummary;
+  collectionCoverage?: SbomCollectionCoverage;
+  collectionCoverageState?: "invalid";
 }
 
 export interface AnalysisRevisionSummary extends NativePolicyFields {
@@ -115,6 +138,8 @@ export interface AnalysisRevisionSummary extends NativePolicyFields {
 export interface SbomRunDetail extends SbomRun {
   analyses: AnalysisRevisionSummary[];
   components: ComponentSnapshot[];
+  collectionCoverage?: SbomCollectionCoverage;
+  collectionCoverageState?: "invalid";
   workbookMetadata?: Record<string, string>;
 }
 

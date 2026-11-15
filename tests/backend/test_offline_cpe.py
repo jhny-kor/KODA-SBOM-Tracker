@@ -114,8 +114,106 @@ def test_truncated_and_malformed_index_records_prevent_false_complete_coverage()
         assert summary["indexIncompleteCves"] == 1
         assert summary["unknownCves"] == 1
         assert summary["unresolved"][0]["id"] == "CVE-2026-54321"
+        assert summary["componentCoverage"] == {
+            "evaluated": 0, "inconclusive": 1, "notEvaluated": 0,
+            "reasons": [{"code": "unresolved_applicability", "count": 1}],
+        }
 
 
+
+
+def test_component_coverage_partitions_nested_rows_and_duplicate_instances():
+    record = {"configurations": [{"nodes": [{"cpeMatch": [{
+        "criteria": "cpe:2.3:a:acme:widget:*:*:*:*:*:*:*:*", "vulnerable": True, "versionEndExcluding": "2.0",
+    }]}]}]}
+    components = [
+        {"name": "home 1", "cpe": APP, "components": [{"name": "home 2", "cpe": APP}]},
+        {"name": "nonmatching version", "cpe": APP.replace("1.2.0", "2.0")},
+        {"name": "unresolved version", "cpe": APP.replace("1.2.0", "1.3rc1")},
+        {"name": "version unknown", "cpe": APP.replace("1.2.0", "*")},
+        {"name": "unindexed", "cpe": OS},
+        {"name": "invalid", "cpe": "cpe:/a:acme:widget:1.2"},
+        {"name": "PURL only", "purl": "pkg:npm/jquery@1.0.0"},
+    ]
+    findings, summary = enrich_cpe_findings(components, context(record), [])
+    assert {item["component"] for item in findings} == {"home 1", "home 2"}
+    assert summary["componentCoverage"] == {
+        "evaluated": 3, "inconclusive": 1, "notEvaluated": 4,
+        "reasons": [
+            {"code": "invalid_cpe", "count": 1},
+            {"code": "missing_cpe", "count": 1},
+            {"code": "no_indexed_product", "count": 1},
+            {"code": "nonconcrete_version", "count": 1},
+            {"code": "unresolved_applicability", "count": 1},
+        ],
+    }
+
+
+def test_component_coverage_distinguishes_unavailable_and_unindexed_data():
+    components = [{"cpe": APP}]
+    unavailable = VulnerabilityContext(None, {}, {}, {}, {})
+    assert enrich_cpe_findings(components, unavailable, [])[1]["componentCoverage"] == {
+        "evaluated": 0, "inconclusive": 0, "notEvaluated": 1,
+        "reasons": [{"code": "nvd_unavailable", "count": 1}],
+    }
+    rejected = {"vulnStatus": "Rejected", "configurations": tree()}
+    assert enrich_cpe_findings(components, context(rejected), [])[1]["componentCoverage"] == {
+        "evaluated": 0, "inconclusive": 0, "notEvaluated": 1,
+        "reasons": [{"code": "no_indexed_product", "count": 1}],
+    }
+
+
+def test_component_coverage_does_not_drop_same_product_environment():
+    conditions = tree()
+    # The already matched version also serves as the environment predicate.
+    # Filtering it out to recheck the release candidate would make AND false
+    # and incorrectly count the unsupported version comparison as resolved.
+    conditions[0]["nodes"][1]["cpeMatch"][0]["criteria"] = APP
+    components = [{"cpe": APP, "name": "released"}, {"cpe": APP.replace("1.2.0", "1.3rc1"), "name": "preview"}]
+    findings, summary = enrich_cpe_findings(components, context({"configurations": conditions}), [])
+    assert len(findings) == 1
+    assert summary["componentCoverage"] == {
+        "evaluated": 1, "inconclusive": 1, "notEvaluated": 0,
+        "reasons": [{"code": "unresolved_applicability", "count": 1}],
+    }
+
+
+def test_component_coverage_checks_global_candidates_for_each_indexed_identity():
+    record = {"configurations": [{"cpeMatch": [{"criteria": APP, "vulnerable": True}]}]}
+    value = context(record)
+    value.nvd["CVE-2026-54321"] = {"configurations": [{"cpeMatch": [{
+        "criteria": "cpe:2.3:a:acme:*:*:*:*:*:*:*:*:*", "vulnerable": True, "versionEndExcluding": "3.0",
+    }]}]}
+    components = [
+        {"name": "widget preview", "cpe": APP.replace("1.2.0", "1.3rc1")},
+        {"name": "another product", "cpe": APP.replace("widget", "other")},
+    ]
+    findings, summary = enrich_cpe_findings(components, value, [])
+    assert len(findings) == 1 and findings[0]["component"] == "another product"
+    assert summary["componentCoverage"] == {
+        "evaluated": 0, "inconclusive": 1, "notEvaluated": 1,
+        "reasons": [
+            {"code": "no_indexed_product", "count": 1},
+            {"code": "unresolved_applicability", "count": 1},
+        ],
+    }
+
+
+def test_component_coverage_marks_missing_environment_and_recheck_limit(monkeypatch):
+    assert enrich_cpe_findings([{"cpe": APP}], context({"configurations": tree()}), [])[1]["componentCoverage"] == {
+        "evaluated": 0, "inconclusive": 1, "notEvaluated": 0,
+        "reasons": [{"code": "unresolved_applicability", "count": 1}],
+    }
+    from koda_tracker import cpe_analysis
+    monkeypatch.setattr(cpe_analysis, "MAX_IDENTITY_RECHECKS", 0)
+    record = {"configurations": [{"cpeMatch": [{"criteria": APP, "vulnerable": True}]}]}
+    components = [{"cpe": APP, "name": "one"}, {"cpe": APP.replace("1.2.0", "2.0"), "name": "two"}]
+    findings, summary = enrich_cpe_findings(components, context(record), [])
+    assert len(findings) == 1
+    assert summary["componentCoverage"] == {
+        "evaluated": 1, "inconclusive": 1, "notEvaluated": 0,
+        "reasons": [{"code": "coverage_limit", "count": 1}],
+    }
 
 
 def test_standard_tracker_analysis_runs_local_cpe_and_persists_evidence(tmp_path, monkeypatch):
@@ -154,5 +252,9 @@ def test_standard_tracker_analysis_runs_local_cpe_and_persists_evidence(tmp_path
         db.commit()
         db.refresh(revision)
         assert revision.data_sources["cpeApplicability"]["version"] == "koda-offline-cpe-v1"
+        assert revision.data_sources["cpeApplicability"]["componentCoverage"] == {
+            "evaluated": 1, "inconclusive": 0, "notEvaluated": 1,
+            "reasons": [{"code": "no_indexed_product", "count": 1}],
+        }
         assert revision.findings[0]["cpeEvidence"][0]["dataAsOf"] == "2026-10-19"
     engine.dispose()

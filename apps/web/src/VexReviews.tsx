@@ -49,7 +49,9 @@ export function VexReviewsPanel({ runId, findings, username, canManage, canAppro
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); const form = event.currentTarget; const values = new FormData(form); const finding = choices[Number(values.get("finding"))];
     if (!finding || !editable) return;
-    const body: VexReviewInput = { component:String(finding.component), vulnerabilityId:String(finding.canonicalId || finding.id), state, detail:String(values.get("detail")), justification:String(values.get("justification") || ""), response:String(values.get("response") || "").split(",").map((value) => value.trim()).filter(Boolean) };
+    const version = String(finding.version || "");
+    const component = String(finding.component) + (finding.oracleHomeEvidence && version ? `@${version}` : "");
+    const body: VexReviewInput = { component, vulnerabilityId:String(finding.canonicalId || finding.id), state, detail:String(values.get("detail")), justification:String(values.get("justification") || ""), response:String(values.get("response") || "").split(",").map((value) => value.trim()).filter(Boolean) };
     const expiry = String(values.get("expiresAt") || "");
     if (expiry) { const date = new Date(expiry); if (!Number.isFinite(date.getTime()) || date.getTime() <= Date.now()) { setMessage("만료 시각은 미래여야 합니다."); return; } body.expiresAt = date.toISOString(); }
     setBusy(true); setMessage("");

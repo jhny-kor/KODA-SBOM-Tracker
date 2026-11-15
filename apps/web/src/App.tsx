@@ -17,6 +17,7 @@ import { OfflineIntelligencePanel, OfflineRunEvidence } from "./OfflineIntellige
 import { SsvcAssessmentsPanel } from "./SsvcAssessments";
 import { EpssEvidence } from "./EpssEvidence";
 import { CpeCoverage } from "./CpeCoverage";
+import { OracleHomeEvidence } from "./OracleHomeEvidence";
 import { latestAnalysisRevision } from "./analysisRevision";
 import { SbomQualityPanel } from "./SbomQuality";
 import { SbomPoliciesPanel } from "./SbomPolicies";
@@ -841,12 +842,12 @@ function RunDetail({ run, onClose, onChanged, username, onOpenLibrary,
     </>}
     <NativePolicyResult result={current} runId={current.id} />
     <SbomQualityPanel runId={current.id} analysisId={latestAnalysisId} canRerun={can("analysis.create")} canViewProfiles={can("policies.view") || can("policies.manage")} canManage={can("policies.manage")} archived={current.state === "archived"} />
-    <CpeCoverage analysis={latestAnalysis} loading={!detail} />
+    <CpeCoverage analysis={latestAnalysis} loading={!detail} collectionCoverage={detail?.collectionCoverage} collectionCoverageState={detail?.collectionCoverageState} />
     <h3>분석 리비전</h3><ul className="paths">{detail?.analyses?.length ? (detail.analyses.map((analysis) => (<li key={analysis.id}>r{analysis.sequence} · {jobStateLabel(analysis.state)} ·{" "}
                 {dataBaselineLabel(preferredCveDate(analysis.cveDataAsOf, analysis.dataAsOf), "CVE 기준일 확인 필요")}{analysis.error ? ` · ${analysis.error}` : ""} · 정책 {analysis.policyVersion ? `v${analysis.policyVersion}` : "-"} · {analysis.policyState === "completed" ? "평가 완료" : analysis.policyState === "failed" ? "평가 실패" : "미평가"}{analysis.policyError ? ` · ${analysis.policyError}` : ""}<AnalysisPolicyHistory analysis={analysis} runId={current.id} /></li>) )
           ): (<li>상세를 불러오는 중이거나 분석 리비전이 없습니다.</li>)}</ul>
     <div className="detail-table-heading"><h3>구성요소 검사기 ({componentResult.total.toLocaleString()})</h3><label className="detail-search"><Icon name="search" /><input aria-label="구성요소 검색" value={componentQuery} onChange={(event) => { setComponentQuery(event.target.value); setComponentPage(1); }} placeholder="이름, 버전, PURL 검색" /></label></div><div className="table-scroll"><table className="component-inspector-table"><thead><tr><th>이름</th><th>버전</th><th>{workbookMetadata ? "구분 · 비고" : "PURL"}</th><th>라이선스</th></tr></thead><tbody>{components.map((component) => (<tr key={component.identityKey}><td>{onOpenLibrary ? <button className="environment-row-button" onClick={() => onOpenLibrary(component.name)}><ScrollingText focusable={false}>{component.name}</ScrollingText></button> : <ScrollingText>{component.name}</ScrollingText>}</td><td><ScrollingText>{component.version || "-"}</ScrollingText></td><td className="mono"><ScrollingText>{workbookMetadata ? workbookComponentNotes(component) : component.purl || component.bomRef || "-"}</ScrollingText></td><td>{component.licenses?.length ? component.licenses.map((license) => typeof license === "string" ? license : String((license as { license?: { id?: string; name?: string };}).license?.id || (license as { license?: { id?: string; name?: string;};}).license?.name || "식별 불가")).join(", ") : "-"}</td></tr>))}{!components.length && (<tr><td colSpan={4}>{deferredComponentQuery ? "검색 조건에 맞는 구성요소가 없습니다." : "구성요소 상세가 없습니다."}</td></tr>)}</tbody></table></div><DetailPagination total={componentResult.total} page={currentComponentPage} pageSize={componentPageSize} onPage={setComponentPage} onPageSize={(size) => { setComponentPageSize(size); setComponentPage(1); }} />
-    <h3>취약점 검사기 ({analysisAvailable(current) ? findingResult.total.toLocaleString() : "미평가"})</h3><div className="table-scroll"><table className="finding-inspector-table"><thead><tr><th>취약점 ID</th><th>심각도</th><th>구성요소</th><th>CVSS</th><th>KEV</th><th>CWE / EPSS</th><th>제안 버전</th><th>VEX 검토</th></tr></thead><tbody>{findings.map((finding, index) => { const severity = String(finding.severity || "unknown"); return (<tr key={`${String(finding.canonicalId || finding.id || "finding")}-${(currentFindingPage - 1) * findingPageSize + index}`}><td className="mono">{String(finding.canonicalId || finding.id || "식별자 없음")}{finding.sourceKind === "private_vulnerability" && <small className="workflow-id">사내 취약점 · {String(finding.title || "")}<br/>{String(finding.description || "")}</small>}</td><td><span className={`severity-pill ${severityClass(severity)}`}>{severityLabel(severity)}</span></td><td className="mono"><ScrollingText>{String(finding.component || "-")}</ScrollingText></td><td>{cvssScore(finding)}</td><td>{finding.kev ? "KEV" : "-"}</td><td>{Array.isArray(finding.cwes) && finding.cwes.length ? finding.cwes.map(value=>`CWE-${value}`).join(", ") : "CWE 확인 안 됨"}<br/><EpssEvidence finding={finding} /></td><td><ScrollingText>{fixedInLabel(finding)}</ScrollingText></td><td>{finding.vex && typeof finding.vex === "object" ? <span title={String((finding.vex as Record<string, unknown>).detail || "")}>{(finding.vex as Record<string, unknown>).suppressed ? "승인된 영향 없음·오탐 (원시 발견 보존)" : `승인된 ${String((finding.vex as Record<string, unknown>).state || "검토")}`}</span> : "미검토"}</td></tr>);})}{!findings.length && (<tr><td colSpan={8}>{analysisAvailable(current) ? "취약점 결과가 없습니다." : analysisUnavailableReason(current)}</td></tr>)}</tbody></table></div><DetailPagination total={findingResult.total} page={currentFindingPage} pageSize={findingPageSize} onPage={setFindingPage} onPageSize={(size) => { setFindingPageSize(size); setFindingPage(1); }} />
+    <h3>취약점 검사기 ({analysisAvailable(current) ? findingResult.total.toLocaleString() : "미평가"})</h3><div className="table-scroll"><table className="finding-inspector-table"><thead><tr><th>취약점 ID</th><th>심각도</th><th>구성요소</th><th>CVSS</th><th>KEV</th><th>CWE / EPSS</th><th>제안 버전</th><th>VEX 검토</th></tr></thead><tbody>{findings.map((finding, index) => { const severity = String(finding.severity || "unknown"); return (<tr key={`${String(finding.canonicalId || finding.id || "finding")}-${(currentFindingPage - 1) * findingPageSize + index}`}><td className="mono">{String(finding.canonicalId || finding.id || "식별자 없음")}{finding.sourceKind === "private_vulnerability" && <small className="workflow-id">사내 취약점 · {String(finding.title || "")}<br/>{String(finding.description || "")}</small>}</td><td><span className={`severity-pill ${severityClass(severity)}`}>{severityLabel(severity)}</span></td><td className="mono"><ScrollingText>{String(finding.componentName || finding.component || "-")}</ScrollingText><OracleHomeEvidence value={finding.oracleHomeEvidence} /></td><td>{cvssScore(finding)}</td><td>{finding.kev ? "KEV" : "-"}</td><td>{Array.isArray(finding.cwes) && finding.cwes.length ? finding.cwes.map(value=>`CWE-${value}`).join(", ") : "CWE 확인 안 됨"}<br/><EpssEvidence finding={finding} /></td><td><ScrollingText>{fixedInLabel(finding)}</ScrollingText></td><td>{finding.vex && typeof finding.vex === "object" ? <span title={String((finding.vex as Record<string, unknown>).detail || "")}>{(finding.vex as Record<string, unknown>).suppressed ? "승인된 영향 없음·오탐 (원시 발견 보존)" : `승인된 ${String((finding.vex as Record<string, unknown>).state || "검토")}`}</span> : "미검토"}</td></tr>);})}{!findings.length && (<tr><td colSpan={8}>{analysisAvailable(current) ? "취약점 결과가 없습니다." : analysisUnavailableReason(current)}</td></tr>)}</tbody></table></div><DetailPagination total={findingResult.total} page={currentFindingPage} pageSize={findingPageSize} onPage={setFindingPage} onPageSize={(size) => { setFindingPageSize(size); setFindingPage(1); }} />
               {(can("metadata.view") || can("metadata.manage")) && <PackageMetadataPanel runId={current.id} canManage={can("metadata.manage")} />}
     {can("metadata.view") && <OfflineRunEvidence key={`offline-${current.id}`} runId={current.id} canRespond={can("vex.manage")} canViewResponses={can("vex.view")} />}
     {(can("ssvc.view") || can("ssvc.manage")) && <SsvcAssessmentsPanel key={`ssvc-${current.id}`} runId={current.id} findings={findings} canManage={can("ssvc.manage")} />}
@@ -1061,7 +1062,7 @@ function LdapSettingsPanel({ settings, onChanged }: { settings: LdapSettings | n
         <label className="login-checkbox"><input type="checkbox" checked={form.enabled} onChange={(event) => setForm((current) => current ? { ...current, enabled: event.target.checked, verifyCertificate: true } : current)} /> LDAP 로그인 사용</label>
         <h3>연결</h3>
         <div className="form-row"><label>LDAP 서버<input value={form.host} onChange={(event) => change("host", event.target.value)} placeholder="ldap.example.or.kr" required={form.enabled} /></label><label>포트<input type="number" min={1} max={65535} value={form.port} onChange={(event) => change("port", Number(event.target.value))} /></label><label>TLS 방식<select value={form.tlsMode} onChange={(event) => change("tlsMode", event.target.value as LdapForm["tlsMode"])}><option value="starttls">StartTLS (389)</option><option value="ldaps">LDAPS (636)</option><option value="plain">LDAP 평문 (389, 현재 AI 호환)</option></select></label></div>
-        <div className="form-row"><label>Bind DN / UPN<input value={form.bindDn} onChange={(event) => change("bindDn", event.target.value)} placeholder="ssisadm@ssis-g.or.kr" required={form.enabled} /></label><label>Bind 비밀번호<input type="password" value={form.bindPassword} onChange={(event) => change("bindPassword", event.target.value)} placeholder={form.hasBindPassword ? "기존 값 유지" : "입력 필요"} autoComplete="new-password" required={form.enabled && !form.hasBindPassword} /></label></div>
+        <div className="form-row"><label>Bind DN / UPN<input value={form.bindDn} onChange={(event) => change("bindDn", event.target.value)} placeholder="admin@example.or.kr" required={form.enabled} /></label><label>Bind 비밀번호<input type="password" value={form.bindPassword} onChange={(event) => change("bindPassword", event.target.value)} placeholder={form.hasBindPassword ? "기존 값 유지" : "입력 필요"} autoComplete="new-password" required={form.enabled && !form.hasBindPassword} /></label></div>
         <h3>사용자 식별</h3>
         <div className="form-row"><label>검색 기준 DN<input value={form.baseDn} onChange={(event) => change("baseDn", event.target.value)} placeholder="DC=example,DC=or,DC=kr" required={form.enabled} /></label><label>CA 인증서 경로<input value={form.caCertPath} onChange={(event) => change("caCertPath", event.target.value)} placeholder="/run/secrets/ldap-ca.crt" /></label></div>
         <div className="form-row"><label>로그인 속성<input value={form.loginAttribute} onChange={(event) => change("loginAttribute", event.target.value)} /></label><label>Tracker 사용자 ID 속성<input value={form.usernameAttribute} onChange={(event) => change("usernameAttribute", event.target.value)} /></label><label>고유 식별자 속성<input value={form.subjectAttribute} onChange={(event) => change("subjectAttribute", event.target.value)} /><small>AD는 objectGUID, OpenLDAP은 entryUUID를 사용합니다.</small></label><label>그룹 속성<input value={form.groupAttribute} onChange={(event) => change("groupAttribute", event.target.value)} /></label></div>
@@ -1270,16 +1271,16 @@ function GuidePage() {
       <ol className="guide-flow">
         <li><strong>서비스·환경 준비</strong><span>설정에서 SBOM을 구분할 서비스와 운영 환경을 확인합니다.</span></li>
         <li><strong>SBOM 업로드</strong><span>서비스, 환경, 릴리스를 선택하고 CycloneDX 1.4~1.7 JSON/XML, SPDX 2.3 JSON 또는 구성요소 목록 Excel(.xlsx)을 등록합니다. ZIP, TAR.GZ/TGZ, TAR, 7Z 압축파일에는 지원 JSON/XML 문서가 정확히 1개 있어야 합니다.</span></li>
-        <li><strong>분석 결과 확인</strong><span>회차 상세에서 구성요소, CVE, CVSS, KEV, 제안 버전을 검토합니다.</span></li>
-        <li><strong>변경 추적</strong><span>회차 비교에서 구성요소·취약점·정책 결과의 추가, 제거, 변경을 확인합니다.</span></li>
+        <li><strong>분석 결과 확인</strong><span>회차 상세에서 분석 상태와 자료 기준일을 확인합니다. 취약점의 CVSS, KEV, EPSS와 제안 버전을 살펴보고, 필요하면 VEX 검토와 SSVC 평가를 진행합니다.</span></li>
+        <li><strong>변경 추적</strong><span>회차 비교에서 구성요소·취약점·정책 결과의 변화를 확인합니다. 같은 SBOM이라도 분석에 사용한 취약점 자료 기준일이 다르면 결과가 달라질 수 있습니다.</span></li>
       </ol>
     </section>
     <section className="guide-section" aria-labelledby="guide-features-title">
       <h2 id="guide-features-title">주요 기능</h2>
       <div className="guide-card-grid">
-        <article><h3>대시보드</h3><p>최신 SBOM의 구성요소 유형과 수, 취약 구성요소 추이, 심각도 및 KEV 현황을 한눈에 보여줍니다.</p></article>
-        <article><h3>SBOM 회차</h3><p>서비스·환경·릴리스별 업로드 이력과 분석 상태를 관리하고 회차 상세 결과를 조회합니다.</p></article>
-        <article><h3>취약점 분석</h3><p>CVE로 정규화된 결과를 기준으로 심각도, CVSS 점수, KEV 여부와 수정 가능한 제안 버전을 제공합니다.</p></article>
+        <article><h3>대시보드</h3><p>등록된 SBOM을 기준으로 구성요소 수, 취약 구성요소 추이, 심각도와 KEV 현황을 확인합니다. 실제 서버에 배포된 버전은 배포 기록과 함께 확인합니다.</p></article>
+        <article><h3>SBOM 회차</h3><p>서비스·환경·릴리스별 원본과 분석 이력을 확인합니다. 분석 대기나 실패가 표시되면 회차 상세에서 상태와 원인을 확인합니다.</p></article>
+        <article><h3>취약점 분석</h3><p>취약점에 해당하는 구성요소와 버전을 확인하고, 자료가 있으면 CVSS·KEV·EPSS·CWE와 수정 버전 후보를 검토합니다.</p></article>
         <article><h3>회차 비교</h3><p>두 회차 사이의 구성요소, CVE 취약점과 정책 결과 차이를 비교합니다.</p></article>
         <article><h3>운영 설정</h3><p>서비스·환경, 사용자 승인, 역할별 권한, 취약점 데이터, 감사 로그와 외부 연동을 관리합니다.</p></article>
         <article><h3>감사와 이력</h3><p>업로드, 분석, 로그인, 관리 작업을 감사 로그로 확인하고 권한이 있는 관리자는 Excel 호환 CSV로 내려받을 수 있습니다.</p></article>
@@ -1288,16 +1289,24 @@ function GuidePage() {
     <section className="guide-section" aria-labelledby="guide-terms-title">
       <h2 id="guide-terms-title">용어 설명</h2>
       <dl className="guide-glossary">
-        <div><dt>SBOM (Software Bill of Materials)</dt><dd>소프트웨어를 구성하는 라이브러리, 패키지와 버전 등의 명세입니다.</dd></div>
-        <div><dt>CycloneDX</dt><dd>Tracker는 CycloneDX 1.4·1.5·1.6·1.7의 JSON과 XML 업로드를 지원합니다.</dd></div>
-        <div><dt>SPDX</dt><dd>SPDX 2.3 JSON 업로드를 지원합니다. 원본을 보존하고 분석용 공통 형식으로 변환합니다.</dd></div>
-        <div><dt>구성요소</dt><dd>SBOM에 포함된 라이브러리, 프레임워크, 애플리케이션 등의 개별 항목입니다.</dd></div>
-        <div><dt>회차</dt><dd>서비스·환경·릴리스 조합에 업로드된 SBOM 한 건과 그 분석 이력입니다.</dd></div>
-        <div><dt>CVE (Common Vulnerabilities and Exposures)</dt><dd>공개적으로 식별된 보안 취약점에 부여되는 표준 식별자입니다.</dd></div>
-        <div><dt>CVSS (Common Vulnerability Scoring System)</dt><dd>취약점의 기술적 심각도를 점수로 표현하는 국제 표준입니다.</dd></div>
-        <div><dt>NVD (National Vulnerability Database)</dt><dd>CVE 상세 정보와 CVSS 데이터를 제공하는 미국 국가 취약점 데이터베이스입니다.</dd></div>
-        <div><dt>KEV (Known Exploited Vulnerabilities)</dt><dd>실제 악용이 확인되어 우선 대응이 필요한 CISA(Cybersecurity and Infrastructure Security Agency)의 취약점 목록입니다.</dd></div>
-        <div><dt>제안 버전</dt><dd>현재 취약점이 수정된 것으로 확인된 업그레이드 후보 버전 전체입니다.</dd></div>
+        <div><dt>SBOM (Software Bill of Materials)</dt><dd>특정 산출물을 구성하는 라이브러리·패키지와 버전 등을 기록한 명세입니다. 의존성 관계가 기록되어 있으면 구성요소가 포함된 경로도 확인할 수 있습니다.</dd></div>
+        <div><dt>CycloneDX</dt><dd>구성요소와 의존성 관계 등을 담을 수 있는 SBOM 표준입니다. Tracker는 1.4·1.5·1.6·1.7의 JSON과 XML 업로드를 지원합니다.</dd></div>
+        <div><dt>SPDX</dt><dd>소프트웨어 구성요소와 라이선스 정보 등을 교환하는 표준입니다. Tracker는 2.3 JSON 원본을 보존하고 분석용 공통 형식으로 변환합니다.</dd></div>
+        <div><dt>구성요소</dt><dd>SBOM에 기록된 라이브러리, 프레임워크, 애플리케이션 등의 개별 항목입니다. 이름이 같은 항목은 생태계, PURL, 버전도 함께 비교합니다.</dd></div>
+        <div><dt>PURL (Package URL)</dt><dd>생태계, 패키지 이름, 버전 등으로 소프트웨어 패키지를 식별하는 표준입니다. 예를 들어 <code>pkg:maven/com.example/library@1.2.3</code>은 Maven 패키지와 버전을 가리킵니다.</dd></div>
+        <div><dt>CPE (Common Platform Enumeration)</dt><dd>공급사·제품·버전 등의 속성으로 애플리케이션, 운영체제, 하드웨어를 식별하는 표준입니다. NVD의 제품 및 버전 조건을 대조할 때 사용하며, 실제 영향은 해당 조건과 구성요소 정보를 함께 확인합니다.</dd></div>
+        <div><dt>직접·전이 의존성</dt><dd>프로젝트가 직접 추가한 패키지를 직접 의존성, 다른 패키지를 통해 함께 포함된 패키지를 전이 의존성이라고 합니다. 프로젝트 → A → B에서 A는 직접, B는 전이 의존성입니다. SBOM에 의존성 관계가 없으면 경로를 확인하기 어렵습니다.</dd></div>
+        <div><dt>회차</dt><dd>서비스·환경·릴리스에 등록한 SBOM 한 건입니다. 같은 원본을 재분석하면 회차에 분석 이력이 추가되므로 결과를 비교할 때 분석 시점과 자료 기준일도 확인합니다.</dd></div>
+        <div><dt>CVE (Common Vulnerabilities and Exposures)</dt><dd>개별 보안 취약점을 참조하는 공개 식별자입니다. 내 환경의 영향 여부는 CVE에 해당하는 패키지·버전과 적용 조건을 확인해 판단합니다.</dd></div>
+        <div><dt>CWE (Common Weakness Enumeration)</dt><dd>취약점의 원인이 될 수 있는 설계·구현상 약점 유형을 분류합니다. 여러 CVE가 같은 CWE에 연결될 수 있어 반복되는 원인을 파악하는 데 도움이 됩니다.</dd></div>
+        <div><dt>NVD (National Vulnerability Database)</dt><dd>CVE에 대한 설명, CVSS, 영향 제품과 버전 조건 등을 제공하는 미국 국가 취약점 데이터베이스입니다. 폐쇄망에서는 반입한 자료의 기준일과 제공 범위를 함께 확인합니다.</dd></div>
+        <div><dt>CVSS (Common Vulnerability Scoring System)</dt><dd>취약점의 기술적 심각도를 0~10점으로 표현하는 표준입니다. 대응 순서는 KEV·EPSS와 실제 서비스 노출 및 업무 영향도 함께 보고 정합니다.</dd></div>
+        <div><dt>EPSS (Exploit Prediction Scoring System)</dt><dd>공개 CVE의 실제 악용 활동이 점수 기준일로부터 30일 안에 관측될 확률을 추정합니다. 백분위는 다른 CVE와 비교한 순위입니다. 폐쇄망에서는 점수 기준일을 확인하세요. 미수집이면 활용할 점수가 없습니다.</dd></div>
+        <div><dt>KEV (Known Exploited Vulnerabilities)</dt><dd>미국 사이버보안·인프라보안국(CISA)이 실제 악용을 확인한 취약점 목록입니다. 등재된 항목은 우선 검토하고, 미등재 항목은 다른 악용 근거와 환경 정보를 함께 확인합니다.</dd></div>
+        <div><dt>VEX (Vulnerability Exploitability eXchange)</dt><dd>특정 제품·버전에 취약점이 영향을 주는지와 그 근거를 기록하는 방식입니다. Tracker에서 영향 없음·오탐을 적용하려면 근거와 별도 승인자가 필요합니다. 승인 결과는 다음 재분석부터 반영되며 원시 발견은 보존됩니다.</dd></div>
+        <div><dt>SSVC (Stakeholder-Specific Vulnerability Categorization)</dt><dd>악용 상태, 서비스 노출, 악용 자동화 가능성, 업무·안전 영향을 바탕으로 조치 우선순위를 정하는 방법입니다. Tracker는 보류·정기 조치·일정 외 우선 조치·즉시 대응을 제시하며, 확인되지 않은 필수 입력이 있으면 미평가로 표시합니다.</dd></div>
+        <div><dt>OVAL (Open Vulnerability and Assessment Language)</dt><dd>취약점과 패치 조건을 도구가 읽을 수 있게 표현하는 언어입니다. Tracker는 지원하는 Ubuntu OVAL 조건을 정확한 Ubuntu 릴리스와 패키지 버전에 대조합니다. 결과는 검토 참고이며, 정보가 부족하거나 조건을 지원하지 않으면 판정 불가로 표시합니다.</dd></div>
+        <div><dt>제안 버전</dt><dd>취약점 자료에 기록된 수정 버전 후보입니다. 적용 전에 의존성 호환성을 확인하고, 적용 후 새 SBOM을 등록해 실제 버전과 재분석 결과를 확인합니다.</dd></div>
       </dl>
     </section>
   </section>);

@@ -32,7 +32,7 @@ from starlette.concurrency import run_in_threadpool
 
 from .external_api import router as external_router
 from .java_impact import router as java_impact_router
-from .shared_ai import KodaSummaryFacts, router as ai_router, summarize_koda_facts
+from .shared_ai import KodaFindingReviewRequest, KodaSummaryFacts, review_koda_finding, router as ai_router, summarize_koda_facts
 from .upgrade_batches import router as upgrade_batches_router
 from .compatibility_data import router as compatibility_data_router
 from .compatibility_sources import MAX_ARCHIVE_BYTES as MAX_COMPATIBILITY_ARCHIVE_BYTES
@@ -63,6 +63,7 @@ from .models import (
 )
 from .sbom_normalization import mark_current
 from .sbom import component_count, SbomValidationError, parse_sbom_file, sbom_document_path, sbom_upload_media_type, store_artifact_file, validate_component_count, validate_file_with_cyclonedx_cli
+from .collection_coverage import coverage_for_bom
 from .sbom_workbook import MAX_WORKBOOK_BYTES, METADATA_LABELS, WORKBOOK_MEDIA_TYPE
 from .security import (
     current_principal,
@@ -912,6 +913,8 @@ async def http_problem(request: Request, exc: HTTPException):
 
 @app.exception_handler(RequestValidationError)
 async def validation_problem(request: Request, exc: RequestValidationError):
+    if request.url.path == "/api/v1/integrations/koda/ai-finding-review":
+        return problem(422, "입력값 검증 실패", "AI 검토 자료의 필드 형식과 길이를 확인하세요", request)
     if request.url.path == "/api/v1/upgrade-batches/import":
         errors = exc.errors()
         if errors:
@@ -1840,6 +1843,12 @@ def koda_ai_summary(body: KodaSummaryFacts, db: Session = Depends(get_db)):
     return summarize_koda_facts(db, body)
 
 
+@app.post("/api/v1/integrations/koda/ai-finding-review", dependencies=[Depends(_require_koda_provisioning)])
+def koda_ai_finding_review(body: KodaFindingReviewRequest, response: Response, db: Session = Depends(get_db)):
+    response.headers["Cache-Control"] = "no-store"
+    return review_koda_finding(db, body)
+
+
 @app.get("/api/v1/integrations/koda/users")
 def list_koda_users(
     db: Session = Depends(get_db),
@@ -2327,6 +2336,8 @@ def get_run(
         select(func.count()).select_from(RunComponent).where(RunComponent.run_id == run_id)
     ) or 0
     payload = {**_run_payload(item, component_count=component_count, native_reanalysis_pending=bool(db.scalar(select(NativeReanalysisPending.run_id).where(NativeReanalysisPending.run_id == run_id).limit(1)))), **_native_policy_result(max(item.analyses, key=lambda value: value.sequence, default=None), include_evidence=True)}
+    coverage, _ = coverage_for_bom(item.normalized_bom or {})
+    payload.update(coverage)
     payload["components"] = []
     if item.media_type == WORKBOOK_MEDIA_TYPE:
         properties = item.normalized_bom["metadata"]["properties"]

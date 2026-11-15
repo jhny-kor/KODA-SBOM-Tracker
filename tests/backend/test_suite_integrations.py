@@ -247,3 +247,83 @@ def test_shared_private_ai_provider_for_koda_and_tracker(monkeypatch):
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
+
+
+def test_koda_finding_review_uses_private_provider_and_validates_advice(monkeypatch):
+    calls = []
+    review = {
+        "verdict": "needs_review",
+        "reasoning": "호출 조건을 확인할 근거가 부족합니다.",
+        "impact": "점검에 포함된 파일과 구성요소만 확인했습니다.",
+        "remediation": "확인된 입력 검증을 유지하고 검사 범위를 확인하세요.",
+        "retest": "정상 입력의 회귀 테스트와 KODA 재점검을 수행하세요.",
+    }
+    reply = json.dumps(review)
+
+    class Model(BaseHTTPRequestHandler):
+        def do_POST(self):
+            calls.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(json.dumps({"choices": [{"message": {"content": reply}}]}).encode())
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Model)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with TestClient(app) as client:
+            path = "/api/v1/integrations/koda/ai-finding-review"
+            headers = {"Authorization": "Bearer test-koda-provisioning-secret"}
+            source = {"kind": "source", "facts": {"ruleId": "code.example", "severity": "high", "title": "검증 누락",
+                      "sourceContext": 'token = "fixture-must-stay-private"\nvalidate(value)',
+                      "trace": "app.py:18", "package": "not-relevant"}}
+            assert client.post(path, json=source).status_code == 401
+            assert client.post(path, json=source, headers=headers).status_code == 503
+            oversized = "fixture-must-stay-private" * 400
+            invalid = client.post(path, headers=headers, json={**source, "facts": {**source["facts"], "sourceContext": oversized}})
+            assert invalid.status_code == 422 and "fixture-must-stay-private" not in invalid.text
+            assert client.post(path, headers=headers, json={**source, "rawFiles": []}).status_code == 422
+            assert not calls
+
+            csrf = _login(client)
+            configured = client.put(AI + "/settings", headers=csrf, json={
+                "baseUrl": f"http://127.0.0.1:{server.server_port}/v1", "model": "internal-model",
+            })
+            assert configured.status_code == 200, configured.text
+            response = client.post(path, json=source, headers=headers)
+            assert response.status_code == 200, response.text
+            assert response.headers["Cache-Control"] == "no-store"
+            assert response.json() == {"model": "internal-model", "review": review, "advisory": True}
+            assert set(calls[0]) == {"model", "max_tokens", "stream", "messages"}
+            payload = json.loads(calls[0]["messages"][1]["content"])
+            assert payload["kind"] == "source"
+            assert payload["facts"]["sourceContext"] == "[REDACTED]\nvalidate(value)"
+            assert "package" not in payload["facts"]
+
+            library = {"kind": "library", "facts": {"ruleId": "dependency.example", "severity": "high",
+                       "package": "pkg:pypi/demo@1.0", "vulnerabilityId": "CVE-2025-30301", "fixedVersions": "1.1",
+                       "sourceContext": "must-not-leave"}}
+            assert client.post(path, json=library, headers=headers).status_code == 200
+            payload = json.loads(calls[1]["messages"][1]["content"])
+            assert payload == {"kind": "library", "facts": {k: v for k, v in library["facts"].items() if k != "sourceContext"}}
+
+            secret = {**source, "facts": {**source["facts"], "ruleId": "secret.private-key", "evidence": "opaque"}}
+            assert client.post(path, json=secret, headers=headers).status_code == 200
+            assert json.loads(calls[2]["messages"][1]["content"])["facts"] == {"ruleId": "secret.private-key", "severity": "high"}
+
+            for invalid_review in ({**review, "verdict": "confirmed"}, {**review, "impact": "  "},
+                                   {**review, "steps": []}, {**review, "retest": "```unstructured```"}):
+                reply = json.dumps(invalid_review)
+                response = client.post(path, json=source, headers=headers)
+                assert response.status_code == 502
+                assert "unstructured" not in response.text
+            reply = json.dumps({**review, "impact": "password='model-fixture-secret'"})
+            response = client.post(path, json=source, headers=headers)
+            assert response.json()["review"]["impact"] == "[REDACTED]"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)

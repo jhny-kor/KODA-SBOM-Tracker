@@ -143,7 +143,7 @@ HTTPS `TRACKER_PUBLIC_ORIGIN`과 `TRACKER_SECURE_COOKIES=true`가 아니면 기�
 | `/data/docker_data/volumes/nginx/ssl` | `/etc/nginx/ssl` | 인증서·개인키 |
 
 KODA vhost는 현재 main config의 `http {}` 안에 직접 두며, `server_name`은
-`koda.ssis.or.kr`, backend는 `http://10.95.58.147:8088`로 지정합니다. 인증서와
+`koda.example.internal`, backend는 `http://10.0.0.10:8088`로 지정합니다. 인증서와
 개인키 원문은 문서·로그에 남기지 않습니다. `conf.d` 방식을 사용할 때는 main
 config의 `http {}` 안에만 다음 include를 한 번 넣고, 같은 vhost를 main config와
 중복해서 두지 않습니다.
@@ -155,15 +155,15 @@ include /etc/nginx/conf.d/*.conf;
 Suite 환경 파일(`~/koda-suite/tracker/.env`)에는 외부 origin을 맞춥니다.
 
 ```dotenv
-GATEWAY_SERVER_NAME=koda.ssis.or.kr
+GATEWAY_SERVER_NAME=koda.example.internal
 GATEWAY_PUBLIC_SCHEME=https
-TRACKER_PUBLIC_ORIGIN=https://koda.ssis.or.kr
+TRACKER_PUBLIC_ORIGIN=https://koda.example.internal
 TRACKER_SECURE_COOKIES=true
-KODA_SSBOM_TRACKER_URL=https://koda.ssis.or.kr/
+KODA_SSBOM_TRACKER_URL=https://koda.example.internal/
 ```
 
 내부 gateway는 HTTP `:8080`에서 동작하므로 인증되지 않은 `/koda/` 요청의
-`Location`을 `http://koda.ssis.or.kr:8080/koda/login`으로 만들 수 있습니다. 외부
+`Location`을 `http://koda.example.internal:8080/koda/login`으로 만들 수 있습니다. 외부
 TLS vhost에서 `/koda`의 슬래시와 이 redirect를 보정합니다.
 
 ```nginx
@@ -172,8 +172,8 @@ location = /koda {
 }
 
 location / {
-    proxy_pass http://10.95.58.147:8088;
-    proxy_redirect http://koda.ssis.or.kr:8080/ https://koda.ssis.or.kr/;
+    proxy_pass http://10.0.0.10:8088;
+    proxy_redirect http://koda.example.internal:8080/ https://koda.example.internal/;
     proxy_set_header Host $host;
     proxy_set_header X-Forwarded-Proto https;
     proxy_set_header X-Forwarded-Host $host;
@@ -192,10 +192,10 @@ Tracker의 CSRF 토큰은 브라우저가 `X-CSRF-Token` 요청 헤더로 전송
 
 ```bash
 docker exec nginx nginx -t && docker exec nginx nginx -s reload
-curl --resolve koda.ssis.or.kr:443:10.95.58.147 -sSI \
-  https://koda.ssis.or.kr/koda/
-curl --resolve koda.ssis.or.kr:443:10.95.58.147 -fsS \
-  https://koda.ssis.or.kr/koda/live
+curl --resolve koda.example.internal:443:10.0.0.10 -sSI \
+  https://koda.example.internal/koda/
+curl --resolve koda.example.internal:443:10.0.0.10 -fsS \
+  https://koda.example.internal/koda/live
 ```
 
 변경·컨테이너 교체 전후에는 마운트와 active config를 먼저 확인합니다. 상위
@@ -213,8 +213,8 @@ docker exec nginx nginx -t
 docker exec nginx nginx -s reload
 
 curl -fsS http://127.0.0.1:8088/healthz
-curl --resolve koda.ssis.or.kr:443:10.95.58.147 \
-  -fsS https://koda.ssis.or.kr/healthz
+curl --resolve koda.example.internal:443:10.0.0.10 \
+  -fsS https://koda.example.internal/healthz
 ```
 
 개별 파일을 `vi`로 저장하면 단일 파일 bind mount의 inode가 교체되어 컨테이너가
@@ -250,28 +250,17 @@ gateway는 브라우저가 보낸 신원 헤더를 제거한 뒤 Tracker가 반�
 상세 경계와 장애 동작은 [KODA 통합 인증·운영 계약](koda-integration-ko.md)을
 따릅니다.
 
-반입 후 관리자가 포털의 `취약점 데이터` 화면에서 `반입 상태 동기화`를 실행합니다.
-이 작업은 `releases/<version>/metadata.env`와 manifest를 포털 DB에 불변 등록하고,
-현재 `current` 링크와 일치하는 버전만 활성으로 기록합니다. 파일 반입·롤백은
-호스트에서 `scripts/import-vuln-bundle.sh` 또는 `scripts/rollback-vuln-bundle.sh`로
-수행한 뒤 다시 동기화합니다. 활성 bundle에는 선택적으로 `alias-index.json`과
-`kev.json`(또는 `ALIAS_INDEX`, `KEV_CATALOG`로 지정한 파일)을 포함할 수 있으며,
-원본 분석 결과에는 CVE/GHSA 식별자와 alias, CISA KEV 여부와 기준일이 보존됩니다.
-화면·집계·회차 비교에는 CVE로 직접 또는 alias를 통해 연결되는 결과만 사용하며,
-CVE에 연결되지 않는 결과는 원본 분석 기록에서 삭제하지 않습니다. CVE 기준일은
-NVD 기준일을 우선하고 없으면 분석 데이터 기준일을 사용합니다.
+관리자로 **설정 → 취약점 데이터 → 통합 압축파일 업로드·검증**을 엽니다.
+서명된 통합 파일의 검증이 완료되면 **검증한 통합 자료 적용**을 누르고 활성
+릴리스와 자료별 기준일을 확인합니다. 데이터 적용에는 API나 분석 워커의 이미지
+재빌드가 필요하지 않습니다. 수집 장비의 Windows PowerShell에서는
+`scripts/collect-unified-data.ps1`로 서명된 통합 파일과 운반용 SHA-256을 만들 수 있습니다.
+[서명된 통합 자료 수집·반입](unified-vulnerability-data-ko.md)
 
-Windows에서 만든 `koda-vuln-bundle-<version>.zip`은 서버에서 먼저 임시
-디렉터리에 압축 해제하고 `verify-vuln-bundle.sh`로 manifest를 확인한 뒤
-`import-vuln-bundle.sh`로 `VULN_DATA_VOLUME_NAME` named volume에 반입합니다.
-취약점 데이터는 API/worker 이미지에 굽지 않고 두 컨테이너가 읽는 volume에
-마운트되므로 이미지 재빌드는 필요하지 않습니다. 전체 절차와 Docker volume
-확인 명령은 [오프라인 bundle 가이드](offline-bundle-ko.md)의
-`Windows에서 취약점 bundle을 만들고 ZIP으로 반입하기`를 따릅니다.
-
-동일 작업을 자동화할 때는 관리자 세션의 CSRF 보호를 유지하면서
-`POST /api/v1/vulnerability-data-bundles/sync`를 호출하고, 현재 파일시스템 버전의
-기록 확인에는 `GET /api/v1/vulnerability-data-bundles`를 사용합니다.
+상단 **활성 CVE 기준일**은 현재 승인된 NVD 자료의 기준일입니다. 활성 자료나
+기준일을 확인할 수 없을 때는 **확인 필요**로 표시됩니다. 과거 회차의 상세·비교에는
+해당 분석 리비전의 기준일이 기록되며 NVD 기준일과 분석 데이터 기준일 순으로 사용합니다.
+최신 자료로 기존 SBOM을 평가하려면 회차 상세에서 **새 분석 리비전**을 실행합니다.
 
 ## 4. 상태 확인
 
@@ -309,7 +298,7 @@ ENV_FILE="$ENV_FILE" BACKUP_ROOT=/media/koda-backup/tracker \
   KODA_BACKUP_SIGNING_KEY="$BACKUP_SIGNING_KEY" \
   ./scripts/backup-system.sh
 ENV_FILE="$ENV_FILE" \
-  ./scripts/verify-backup.sh /media/koda-backup/tracker/<출력된-UTC-시각> \
+  ./scripts/verify-backup.sh "/media/koda-backup/tracker/<출력된-UTC-시각>" \
   --public-key "$BACKUP_VERIFY_KEY"
 
 ./scripts/start-airgap.sh "$ENV_FILE"
@@ -337,7 +326,7 @@ ENV_FILE="$ENV_FILE" \
 ENV_FILE="$ENV_FILE" BACKUP_ROOT=/media/koda-backup/tracker \
   KODA_ALLOW_UNSIGNED_ARTIFACTS=1 ./scripts/backup-system.sh
 ENV_FILE="$ENV_FILE" KODA_ALLOW_UNSIGNED_ARTIFACTS=1 \
-  ./scripts/verify-backup.sh /media/koda-backup/tracker/<출력된-UTC-시각>
+  ./scripts/verify-backup.sh "/media/koda-backup/tracker/<출력된-UTC-시각>"
 ```
 
 복원은 현재 데이터를 교체하므로 검증된 백업과 그 백업을 만든 당시의 `.env` 및
@@ -346,7 +335,7 @@ ENV_FILE="$ENV_FILE" KODA_ALLOW_UNSIGNED_ARTIFACTS=1 \
 
 ```bash
 ENV_FILE=/opt/koda-sbom/.env
-BACKUP=/media/koda-backup/tracker/<UTC-시각>
+BACKUP="/media/koda-backup/tracker/<UTC-시각>"
 
 ENV_FILE="$ENV_FILE" ./scripts/verify-backup.sh "$BACKUP" \
   --public-key /etc/koda/trust/backup-public.pem
@@ -378,8 +367,8 @@ PostgreSQL만 기동한 상태로 끝납니다. 따라서 마지막 `start-airga
 - 계정·역할·회차·감사 기록은 `sbom_tracker` DB, 업로드 원문은
   `tracker-artifacts` volume에 있으므로 관리자 대량 변경 전 전체 백업을 만듭니다.
 - 정책 버전·VEX 검토·알림·재분석 일정도 `sbom_tracker` DB에 포함됩니다.
-- Grype/NVD/KEV만 바꿀 때는 이미지를 다시 설치하지 않고
-  `verify-vuln-bundle.sh` → `import-vuln-bundle.sh` → 포털 동기화 순서로 반입합니다.
+- Grype·NVD·KEV·EPSS 자료만 갱신할 때는 포털에서 서명된 통합 자료를 검증한 뒤
+  적용합니다. [통합 취약점 자료 운영](unified-vulnerability-data-ko.md)
 - `.env`, TLS 인증서, 외부 reverse proxy 설정은 릴리스에 포함되지 않습니다. 변경
   전 별도 백업하고 `preflight-airgap.sh`를 통과시킨 뒤 서비스를 재기동합니다.
 
@@ -390,7 +379,7 @@ DB와 artifact volume을 함께 백업합니다.
 Tracker 단독 설치를 같은 디렉터리에서 갱신하는 예시는 다음과 같습니다.
 
 ```bash
-RELEASE=/media/koda-release/koda-sbom-airgap-<버전>.tar.gz
+RELEASE="/media/koda-release/koda-sbom-airgap-<버전>.tar.gz"
 PREFIX=/opt/koda-sbom
 RELEASE_VERIFY_KEY=/etc/koda/trust/release-public.pem
 BACKUP_SIGNING_KEY=/etc/koda/keys/backup-signing.pem
@@ -404,7 +393,7 @@ ENV_FILE="$PREFIX/.env" BACKUP_ROOT=/media/koda-backup/tracker \
   KODA_BACKUP_SIGNING_KEY="$BACKUP_SIGNING_KEY" \
   "$PREFIX/scripts/backup-system.sh"
 ENV_FILE="$PREFIX/.env" \
-  "$PREFIX/scripts/verify-backup.sh" /media/koda-backup/tracker/<출력된-UTC-시각> \
+  "$PREFIX/scripts/verify-backup.sh" "/media/koda-backup/tracker/<출력된-UTC-시각>" \
   --public-key "$BACKUP_VERIFY_KEY"
 "$PREFIX/scripts/install-airgap.sh" "$RELEASE" "$PREFIX" \
   --public-key "$RELEASE_VERIFY_KEY" --signature "${RELEASE}.sig" \
@@ -431,7 +420,7 @@ ENV_FILE="$PREFIX/.env" \
 ```bash
 KODA_TRACKER_URL=http://tracker.internal \
 KODA_TRACKER_TOKEN='서비스 범위 토큰' \
-./scripts/upload-sbom.sh <service-id> <environment-id> <release> <sbom-file> <idempotency-key>
+./scripts/upload-sbom.sh '<service-id>' '<environment-id>' '<release>' '<sbom-file>' '<idempotency-key>'
 ```
 
 동일 `Idempotency-Key` 재전송은 같은 회차를 반환하고, 다른 키로 같은 파일을

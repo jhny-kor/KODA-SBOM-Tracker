@@ -12,6 +12,7 @@ from urllib.parse import unquote
 
 from defusedxml import ElementTree as SafeET
 from .archive_formats import MEDIA_TYPES as SBOM_ARCHIVE_MEDIA_TYPES
+from .oracle_evidence import oracle_listener_identity
 
 
 # Large host inventories can exceed 30 seconds on offline server hardware.
@@ -473,6 +474,8 @@ def store_artifact_file(base: Path, source: Path, *, digest: str) -> tuple[str, 
 
 
 def normalized_identity(component: dict) -> tuple[str, str]:
+    if oracle_listener := oracle_listener_identity(component):
+        return f"oracle-listener:{oracle_listener}", "identified"
     purl = str(component.get("purl") or "")
     if purl:
         # A literal @ following the final slash separates the version. Decode

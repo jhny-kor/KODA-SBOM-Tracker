@@ -12,6 +12,8 @@ import uuid
 from datetime import datetime
 from urllib.parse import urlsplit
 
+from .collection_coverage import spdx_coverage_properties
+
 _ID = re.compile(r"^SPDXRef-[A-Za-z0-9.-]+$")
 _CHECKSUMS = {"SHA1": ("SHA-1", 40), "SHA224": ("SHA-224", 56), "SHA256": ("SHA-256", 64),
               "SHA384": ("SHA-384", 96), "SHA512": ("SHA-512", 128), "MD5": ("MD5", 32),
@@ -169,6 +171,7 @@ def to_cyclonedx(document: dict) -> dict:
             "metadata": {"timestamp": creation["created"], "properties": [
                 {"name": "koda:source-format", "value": "SPDX-2.3"},
                 {"name": "koda:spdx:document", "value": _json(original_metadata)},
-                {"name": "koda:spdx:relationships", "value": _json(relationships)}]},
+                {"name": "koda:spdx:relationships", "value": _json(relationships)},
+                *spdx_coverage_properties(document)]},
             "components": components,
             "dependencies": [{"ref": key, "dependsOn": sorted(values)} for key, values in dependencies.items()]}

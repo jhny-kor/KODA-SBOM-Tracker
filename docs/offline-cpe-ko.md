@@ -23,3 +23,26 @@ CPE 근거를 추가합니다. 분석 리비전의 `dataSources.cpeApplicability
 
 공식 기준: [NVD CPE Match Criteria](https://nvd.nist.gov/developers/products),
 [CPE 2.3 이름·매칭·적용 언어](https://nvd.nist.gov/general/faq-sections/cpe-faqs).
+
+## 수집 범위와 구성요소별 대조 결과
+
+**SBOM 회차 상세 → 오프라인 CPE 평가 범위**의 **SBOM 수집 범위**에서 KODA 수집기가 보고한
+수집 대상, 지정 범위의 완료·부분 수집 상태, 수집 구성요소 수, 제외 디렉터리, 부분 수집 사유를 확인합니다.
+CycloneDX와 SPDX 2.3의 KODA 수집 근거 중 형식과 개수 검사를 통과한 항목을 표시합니다.
+근거가 없거나 형식이 잘못된 파일은 화면에 각각 미제공 또는 확인 불가로 표시됩니다.
+
+**NVD 구성요소 대조 결과**에는 제출된 구성요소별 CPE 조건의 평가, 판정 보류, 미평가 개수와
+사유가 나옵니다. 예를 들어 CPE나 구체 버전이 없으면 미평가이며, 환경 근거가 부족하면 판정을
+보류할 수 있습니다. Grype의 PURL 기반 매칭 결과는 취약점 목록에서 확인합니다.
+
+## IBM AIX Oracle Home 근거
+
+KODA AIX 수집기의 CycloneDX 또는 SPDX 2.3에 Oracle 증적이 있으면, 해당 발견의
+**Oracle Home 증거**에서 Home ID, 확인된 Release Update, RU 확인에 사용한 패치 ID,
+OPatch 인벤토리 패치 ID, 근거 파일과 SHA-256을 확인할 수 있습니다.
+같은 제품·버전의 Listener가 여러 Oracle Home에 있어도 Home별 CPE와 조건을 대조하고,
+발견 및 VEX 근거를 Home에 연결합니다. Listener의 실행 파일이 관찰됐지만 버전을 확인하지
+못하면 해당 Home의 Listener를 미평가로 표시합니다.
+
+OPatch 패치 목록은 설치 인벤토리의 관측값입니다. 개별 CVE의 수정 패치 적용 여부는
+**미확인**으로 표시하며, 원본 설치 증적과 Oracle 공지에서 적용 여부를 검토합니다.

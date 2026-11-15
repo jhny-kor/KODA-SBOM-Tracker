@@ -56,4 +56,5 @@ def evidence_snapshot(run, revision, finding: dict) -> dict:
                 "id", "canonicalId", "aliases", "component", "version", "severity", "cvss", "kev",
                 "kevDateAdded", "kevDueDate", "epssEvidence", "epssStatus", "epssScore", "epssDate", "fixedIn",
                 "offlineReference", "source", "sourceKind", "cpeEvidence", "nvdCvss", "cwes", "cweStatus",
+                "oracleHomeEvidence", "bomRef",
             ) if key in finding}}

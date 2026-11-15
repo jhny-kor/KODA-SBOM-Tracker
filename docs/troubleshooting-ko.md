@@ -33,7 +33,7 @@ TRACKER_ROOT=/opt/koda-sbom
 COMPOSE_FILES=(-f compose.yaml -f compose.airgap.yaml)
 
 # KODA 통합 Suite. compose.integration.yaml은 Suite 압축파일에만 들어 있습니다.
-TRACKER_ROOT=/home/user0/koda-suite/tracker
+TRACKER_ROOT=/opt/koda-suite/tracker
 COMPOSE_FILES=(-f compose.yaml -f compose.airgap.yaml -f compose.integration.yaml)
 ```
 
@@ -65,10 +65,16 @@ docker compose --env-file .env "${COMPOSE_FILES[@]}" exec -T portal-worker grype
 docker compose --env-file .env "${COMPOSE_FILES[@]}" exec -T portal-worker grype db status
 ```
 
-분석은 `GRYPE_DB_AUTO_UPDATE=false`로 실행하므로 폐쇄망에서 인터넷 다운로드를
-시도하지 않습니다. 검증된 Grype/NVD/KEV 번들을 [반입 절차](offline-bundle-ko.md)에
-따라 volume에 넣고, 활성 버전·manifest·기준일을 확인한 뒤 새 분석 리비전을 실행합니다.
-파일을 넣었다는 사실만으로 API/worker가 같은 DB를 읽는다고 가정하지 않습니다.
+폐쇄망 분석은 `GRYPE_DB_AUTO_UPDATE=false`로 실행됩니다.
+**설정 → 취약점 데이터**에서 통합 자료 검증·적용 완료와 활성 릴리스·자료별 기준일을 확인한 뒤
+회차 상세에서 **새 분석 리비전**을 실행합니다. [통합 취약점 자료 반입](unified-vulnerability-data-ko.md)
+
+`NVD temporary index changed; retry from the approved release`는 승인 원본을 읽는 데
+쓰는 임시 SQLite 색인의 파일 상태가 달라져 발생합니다. 활성 릴리스를 확인하고
+**새 분석 리비전**을 한 번 실행한 뒤 **완료** 상태와 취약점·정책 평가 결과를 확인합니다.
+같은 오류가 반복되면 분석 워커에서 `TRACKER_NVD_CACHE_DIR`의 쓰기 권한·디스크 여유와
+백업·정리 작업의 실행 시간을 확인하고, 진행 중인 분석이 없는 시간에 분석 워커를 재시작한 뒤
+다시 분석합니다. [전체 NVD 자료 처리](linux-tracker-update-ko.md#전체-nvd-자료-처리)
 
 ## 3. 정책 평가 상태
 
@@ -133,32 +139,32 @@ manifest를 검증해 설치하거나, 통합 Suite라면 새 Suite 압축파일
 > [운영 가이드](operations-ko.md#2-2-koda-suite-외부-tls-reverse-proxy)에 있습니다.
 
 `DNS_PROBE_FINISHED_NXDOMAIN`은 Docker·Nginx에 도달하기 전에 DNS가
-`koda.ssis.or.kr` 레코드를 찾지 못했다는 뜻입니다. 서버에서 다음 명령으로
+`koda.example.internal` 레코드를 찾지 못했다는 뜻입니다. 서버에서 다음 명령으로
 확인합니다.
 
 ```bash
-nslookup koda.ssis.or.kr
+nslookup koda.example.internal
 ```
 
 사내 DNS의 `example.internal` zone에 다음 A 레코드를 추가합니다. 사설 IP이므로 외부
 공개 DNS에 넣을지 여부는 네트워크 정책에 따릅니다.
 
 ```text
-koda.ssis.or.kr.  A  10.95.58.147
+koda.example.internal.  A  10.0.0.10
 ```
 
 DNS 반영 전 Windows 브라우저에서만 임시 확인할 때는 관리자 권한으로
 `C:\Windows\System32\drivers\etc\hosts`에 다음 줄을 넣고 DNS 캐시를 비웁니다.
 
 ```text
-10.95.58.147  koda.ssis.or.kr
+10.0.0.10  koda.example.internal
 ```
 
 ```cmd
 ipconfig /flushdns
 ```
 
-`curl --resolve koda.ssis.or.kr:443:10.95.58.147 ...`는 DNS를 우회하는 테스트라서,
+`curl --resolve koda.example.internal:443:10.0.0.10 ...`는 DNS를 우회하는 테스트라서,
 이 명령이 성공해도 브라우저의 DNS 레코드가 자동으로 만들어지는 것은 아닙니다.
 
 ## 6-2. 단일 파일 bind mount가 이전 inode를 가리킴
@@ -202,13 +208,13 @@ docker exec nginx nginx -s reload
 ```nginx
 location = /koda { return 308 /koda/; }
 location / {
-    proxy_pass http://10.95.58.147:8088;
-    proxy_redirect http://koda.ssis.or.kr:8080/ https://koda.ssis.or.kr/;
+    proxy_pass http://10.0.0.10:8088;
+    proxy_redirect http://koda.example.internal:8080/ https://koda.example.internal/;
 }
 ```
 
 기존 `proxy_set_header`와 timeout 설정은 삭제하지 않습니다. `nginx -t` 후 reload하고,
-`curl -sSI https://koda.ssis.or.kr/koda/`의 `Location`이 `https://koda.ssis.or.kr`
+`curl -sSI https://koda.example.internal/koda/`의 `Location`이 `https://koda.example.internal`
 또는 상대 경로 `/koda/login`인지 확인합니다. `http://...:8080`이 남으면 실제 active
 설정에 `proxy_redirect`가 포함됐는지 `nginx -T`로 확인합니다.
 
@@ -247,9 +253,14 @@ docker exec koda-sbom-portal-api sh -c \
 
 출력이 없으면 `./koda-suite start`만 다시 실행해도 기존 이미지를 계속 사용하므로,
 수정이 포함된 새 Suite 이미지/압축파일로 `portal-api`를 교체해야 합니다. 출력이
-있는데도 실패하면 업로드 파일이 CycloneDX JSON/XML인지, 최상위 `bomFormat`이
-`CycloneDX`인지, `specVersion`이 1.4~1.7인지 확인합니다. `package-lock.json`,
-SPDX JSON, 일반 Syft JSON은 그대로 올리지 말고 CycloneDX JSON/XML로 변환합니다.
+있는데도 실패하면 업로드한 CycloneDX JSON/XML의 `bomFormat`과 `specVersion`을
+확인합니다. SPDX 2.3 JSON도 별도 지원 형식입니다. `package-lock.json`이나 Syft
+전용 JSON은 생성 도구에서 지원 형식의 SBOM으로 내보냅니다.
+
+등록은 됐지만 분석 리비전에 `sbom format not recognized`가 표시되면, 2절의
+`grype version`으로 분석 워커의 버전을 확인합니다. Grype 0.109.1을 사용하는
+워커에 CycloneDX 1.7을 등록했다면 생성 도구에서 CycloneDX 1.6 JSON으로 다시
+내보내 등록합니다. [Grype 0.115.0의 CycloneDX 1.7 읽기 지원](https://github.com/anchore/grype/releases/tag/v0.115.0)
 
 ## 6-6. 신규 LDAP 사용자가 승인 대기임
 

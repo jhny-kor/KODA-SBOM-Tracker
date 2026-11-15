@@ -11,6 +11,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from .config import get_settings
+from .collection_coverage import coverage_for_bom
 from .models import (
     AnalysisRevision,
     AuditEvent,
@@ -31,6 +32,7 @@ from .policies import evaluate_revision
 from .quality import evaluate_quality, revision_payload as quality_payload
 from .vulnerability import active_bundle, load_context, normalize_finding
 from .cpe_analysis import enrich_cpe_findings
+from .oracle_evidence import ORACLE_COMPONENT_REF
 
 
 def create_components(db: Session, run: SbomRun, *, refresh: bool = False) -> None:
@@ -88,20 +90,28 @@ def _analyze_offline(db: Session, run: SbomRun) -> AnalysisRevision:
     revision = AnalysisRevision(run_id=run.id, sequence=sequence, state=JobState.RUNNING)
     db.add(revision)
     db.flush()
+    collection_evidence = {}
+    components_for_cpe = []
     if isinstance(run, SbomRun):
-        enqueue_components(db, list(iter_components((run.normalized_bom or {}).get("components", []))))
+        bom = run.normalized_bom or {}
+        raw_components = bom.get("components", [])
+        collection_evidence, source_root = coverage_for_bom(bom)
+        enqueue_components(db, list(iter_components(raw_components)))
+        components_for_cpe = raw_components if source_root is None else [
+            component for component in raw_components if component.get("bom-ref") != source_root
+        ]
     findings: list[dict] = []
     quality = quality_payload(evaluate_quality(db, run, actor="worker", force=True))
     quality_evidence = {**quality["summary"], "state": quality["state"], "revisionId": quality["id"],
                         "profileSnapshot": quality["profileSnapshot"], "originalSha256": quality["originalSha256"]}
-    revision.data_sources = {"sbomQuality": quality_evidence}
+    revision.data_sources = {"sbomQuality": quality_evidence, **collection_evidence}
     try:
         settings = get_settings()
         initial_bundle = active_bundle(settings)
         from .data_updates import assert_approved_release
         assert_approved_release(settings, initial_bundle.path if initial_bundle else None)
         context = load_context(settings, release_path=initial_bundle.path) if initial_bundle else load_context(settings)
-        revision.data_sources = {**context.sources, "sbomNormalization": {"version": 2}, "sbomQuality": quality_evidence}
+        revision.data_sources = {**context.sources, "sbomNormalization": {"version": 2}, "sbomQuality": quality_evidence, **collection_evidence}
         revision.data_as_of = context.bundle.data_as_of if context.bundle else "unknown"
         if context.bundle is None:
             metadata_path = settings.grype_db_dir.parent / "metadata.env"
@@ -137,6 +147,7 @@ def _analyze_offline(db: Session, run: SbomRun) -> AnalysisRevision:
             for match in payload.get("matches", []):
                 vuln = match.get("vulnerability", {})
                 artifact = match.get("artifact", {})
+                oracle_ref = artifact.get("id")
                 findings.append(
                     {
                         # Grype emits CVE aliases next to ``vulnerability``
@@ -151,6 +162,10 @@ def _analyze_offline(db: Session, run: SbomRun) -> AnalysisRevision:
                         }, context),
                         "component": artifact.get("purl") or artifact.get("name"),
                         "version": artifact.get("version"),
+                        # Preserve only an exact KODA Oracle reference. Package
+                        # names/versions cannot bind a result to one Home.
+                        **({"bomRef": oracle_ref} if isinstance(oracle_ref, str)
+                           and ORACLE_COMPONENT_REF.fullmatch(oracle_ref) else {}),
                         "fixedIn": [
                             str(item.get("version") if isinstance(item, dict) else item)
                             for item in vuln.get("fix", {}).get("versions", [])
@@ -160,7 +175,7 @@ def _analyze_offline(db: Session, run: SbomRun) -> AnalysisRevision:
                 )
             if isinstance(run, SbomRun):
                 findings, cpe_evidence = enrich_cpe_findings(
-                    (run.normalized_bom or {}).get("components", []), context, findings
+                    components_for_cpe, context, findings
                 )
                 revision.data_sources = {**revision.data_sources, "cpeApplicability": cpe_evidence}
                 private_findings, private_snapshot = match_private_vulnerabilities(

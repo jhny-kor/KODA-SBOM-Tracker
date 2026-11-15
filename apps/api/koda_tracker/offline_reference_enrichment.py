@@ -170,7 +170,8 @@ def enrich_reference_context(components, findings, document, *, at=None):
     flat_inventory = list(iter_components(components))
     for finding in findings:
         ids = {str(value).upper() for value in (finding.get("id"), finding.get("canonicalId"), *(finding.get("aliases") or [])) if value}
-        component = component_map.get((str(finding.get("component") or ""), str(finding.get("version") or ""))) or {}
+        identity = finding.get("bomRef") if finding.get("oracleHomeEvidence") else finding.get("component")
+        component = component_map.get((str(identity or ""), str(finding.get("version") or ""))) or {}
         ref = {"vulnrichment": [], "supplierVex": [], "cwe": [], "supplierVexConflict": False}
         entries = [item for identifier in sorted(ids) for item in per_cve.get(identifier, [])]
         ref["evidenceTruncated"] = len(entries) > 200

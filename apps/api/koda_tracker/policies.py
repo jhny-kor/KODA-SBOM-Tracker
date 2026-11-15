@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from .cel_executor import CelPolicyError, execute_cel, validate_expression
 from .models import AnalysisRevision, JobState, SbomPolicyRevision, SbomRun
+from .oracle_evidence import oracle_listener_identity
 from .sbom import iter_components
 from .vulnerability import cvss_score, project_cve_findings
 from .vulnerability_intelligence import enrich_findings, enqueue_findings
@@ -281,9 +282,10 @@ def _licenses(component: dict, denied: set[str]) -> tuple[bool, bool]:
 
 
 def component_identity(component: dict) -> str:
-    name = str(component.get("name") or component.get("bom-ref") or "unknown")
+    listener = oracle_listener_identity(component)
+    name = listener or str(component.get("name") or component.get("bom-ref") or "unknown")
     version = str(component.get("version") or "")
-    return str(component.get("purl") or (f"{name}@{version}" if version else name))
+    return str((component.get("purl") if listener is None else None) or (f"{name}@{version}" if version else name))
 
 
 def validate_policy_expressions(document: PolicyDocument) -> None:
@@ -384,12 +386,14 @@ def build_cel_contexts(components: list[dict], findings: list[dict], project_con
     targets = targets or {"component", "vulnerability", "project"}
     result = {target: [] for target in targets}
     indexed = {}
+    scoped_components = {}
     for component in components:
         value = _cel_component(component, at)
         value["vulnerabilities"] = []
-        identity = component_identity(component)
-        indexed[identity] = value
+        indexed[component_identity(component)] = value
         name, version = str(component.get("name") or ""), str(component.get("version") or "")
+        if ref := component.get("bom-ref"):
+            scoped_components[str(ref)] = value
         indexed[f"{name}@{version}"] = value
         if not version:
             indexed[name] = value
@@ -399,7 +403,8 @@ def build_cel_contexts(components: list[dict], findings: list[dict], project_con
         result["project"] = [dict(base)]
     for finding in findings:
         name, version = str(finding.get("component") or ""), str(finding.get("version") or "")
-        component = indexed.get(name) or indexed.get(f"{name}@{version}")
+        component = scoped_components.get(finding["bomRef"]) if finding.get("oracleHomeEvidence") and isinstance(finding.get("bomRef"), str) else None
+        component = component or indexed.get(name) or indexed.get(f"{name}@{version}")
         if component is None:
             component = {"name": name, "version": version, "purl": name} if name.startswith("pkg:") else {"name": name, "version": version}
         vulnerability = {key: finding[key] for key in ("id", "severity", "kev", "fixedIn", "cwes", "cweStatus", "epssScore", "epssPercentile", "epssDate", "epssStatus", "legacyCwesNull") if finding.get(key) is not None}

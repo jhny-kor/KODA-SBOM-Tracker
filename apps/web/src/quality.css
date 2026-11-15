@@ -59,7 +59,9 @@
 
 /* CPE evidence uses the same table treatment as the surrounding run details. */
 .cpe-coverage { font-size: 13px; }
-.cpe-coverage h3, .cpe-coverage p { margin: 0; }
+.cpe-coverage h3, .cpe-coverage h4, .cpe-coverage p { margin: 0; }
+.cpe-coverage .coverage-stage { display: grid; gap: 8px; min-width: 0; }
+.cpe-coverage .coverage-stage .paths { overflow-wrap: anywhere; }
 .cpe-coverage p { line-height: 1.75; word-break: keep-all; }
 .cpe-coverage .cpe-coverage-table { width: 100%; table-layout: fixed; border: 1px solid var(--border, #d8e0e5); border-collapse: collapse; font-size: 12px; }
 .cpe-coverage-table th, .cpe-coverage-table td { height: auto; padding: 13px 16px; white-space: normal; word-break: keep-all; overflow-wrap: break-word; text-align: left; vertical-align: middle; line-height: 1.6; }

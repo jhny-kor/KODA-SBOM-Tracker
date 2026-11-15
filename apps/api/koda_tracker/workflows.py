@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 
 from .config import get_settings
 from .models import AnalysisRevision, AuditEvent, JobState, SbomRun, User, now
+from .oracle_evidence import oracle_listener_identity
 from .workflow_models import FindingReview, NotificationDelivery, NotificationEvent, ReviewEvent
 from .vulnerability import project_cve_findings
 from .sbom import iter_components
@@ -192,7 +193,7 @@ def bom_targets(run):
     def visit(components):
         for component in iter_components(components or []):
             ref = component.get("bom-ref")
-            name = component.get("purl") or component.get("name") or ""
+            name = oracle_listener_identity(component) or component.get("purl") or component.get("name") or ""
             version = str(component.get("version") or "")
             key = name if name.startswith("pkg:") or not version else name + "@" + version
             if ref:
@@ -244,7 +245,16 @@ def import_vex(db, run, author, document):
         if not isinstance(name, str):
             raise HTTPException(422, "VEX 구성요소 식별자가 유효하지 않습니다")
         name = name if name.startswith("pkg:") or not version else name + "@" + version
-        if ref not in refs or refs[ref][:2] != (name, version) or (ref in seen and seen[ref] != (name, version)):
+        if ref not in refs:
+            raise HTTPException(422, "VEX 구성요소가 현재 SBOM의 bom-ref와 일치하지 않습니다")
+        matched_key, matched_version, original = refs[ref]
+        if oracle_listener_identity(original):
+            display = str(original.get("name") or "")
+            if matched_version:
+                display += "@" + matched_version
+            if name == display:
+                name = matched_key
+        if (matched_key, matched_version) != (name, version) or (ref in seen and seen[ref] != (name, version)):
             raise HTTPException(422, "VEX 구성요소가 현재 SBOM의 bom-ref와 일치하지 않습니다")
         seen[ref] = (name, version)
     vulnerabilities = document.get("vulnerabilities")
