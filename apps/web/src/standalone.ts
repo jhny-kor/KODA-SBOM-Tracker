@@ -145,8 +145,8 @@ function vulnerabilityFromXml(element: Element): Record<string, unknown> {
   const id = element.getAttribute("id") || childText(element, "id");
   const rating = child(child(element, "ratings") || element, "rating");
   const severity = rating ? childText(rating, "severity") : "UNKNOWN";
-  const target = descendants(element, "target")[0];
-  return { id, canonicalId: id, severity: severity || "UNKNOWN", component: target?.getAttribute("ref") || "", kev: false };
+  const affects = descendants(element, "target").map((target) => ({ ref: target.getAttribute("ref") || childText(target, "ref") }));
+  return { id, canonicalId: id, severity: severity || "UNKNOWN", component: affects[0]?.ref || "", affects, kev: false };
 }
 
 function parseBom(raw: string): { specVersion: string; dataAsOf: string; components: ComponentSnapshot[]; vulnerabilities: Record<string, unknown>[] } {
@@ -214,6 +214,12 @@ export async function parseStandaloneSbom(raw: string, filename: string, release
     counts[severity] = (counts[severity] || 0) + 1;
     return counts;
   }, {});
+  const affectedRefs = new Set(findings.flatMap((finding) => {
+    const refs = list(finding.affects).map((target) => text(object(target).ref)).filter(Boolean);
+    return refs.length ? refs : [text(finding.component)].filter(Boolean);
+  }));
+  const vulnerableComponentCount = parsed.components.filter((component) =>
+    affectedRefs.has(component.bomRef || component.purl || component.name)).length;
   const run: SbomRun = {
     id,
     service: standaloneService,
@@ -225,7 +231,7 @@ export async function parseStandaloneSbom(raw: string, filename: string, release
     componentCount: parsed.components.length,
     componentTypeCounts,
     vulnerabilityCount: findings.length,
-    vulnerableComponentCount: new Set(findings.map((finding) => String(finding.component || "").trim()).filter(Boolean)).size,
+    vulnerableComponentCount,
     severityCounts,
     kevCount: findings.filter((finding) => finding.kev === true).length,
     policyViolationCount: 0,
@@ -248,6 +254,7 @@ export async function parseStandaloneSbom(raw: string, filename: string, release
     toolVersion: "standalone-preview",
     dataSources: { mode: "standalone-preview", source: "CycloneDX embedded records" },
     findings,
+    vulnerableComponentCount,
   };
   return { ...run, components: parsed.components, analyses: [analysis] };
 }

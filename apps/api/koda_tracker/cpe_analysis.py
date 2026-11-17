@@ -281,6 +281,8 @@ def _add_finding(result, summary, identifier, record, context, component, cpe, o
     version = component.get("version", "")
     ref = component.get("bom-ref", "")
     evidence = {**outcome.payload(), "cpe": cpe, "nvdId": identifier, "dataAsOf": nvd_source}
+    if ref:
+        evidence["bomRef"] = ref
     if home:
         evidence["oracleHomeId"] = home["homeId"]
     existing = next((item for item in result if identifier in {item.get("canonicalId"), item.get("id"), *(item.get("aliases") or [])}

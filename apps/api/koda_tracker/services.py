@@ -31,7 +31,6 @@ from .policies import evaluate_revision
 from .quality import evaluate_quality, revision_payload as quality_payload
 from .vulnerability import active_bundle, load_context, normalize_finding
 from .cpe_analysis import enrich_cpe_findings
-from .oracle_evidence import ORACLE_COMPONENT_REF
 
 
 def create_components(db: Session, run: SbomRun, *, refresh: bool = False) -> None:
@@ -91,11 +90,14 @@ def _analyze_offline(db: Session, run: SbomRun) -> AnalysisRevision:
     db.flush()
     collection_evidence = {}
     components_for_cpe = []
+    component_refs = set()
     if isinstance(run, SbomRun):
         bom = run.normalized_bom or {}
         raw_components = bom.get("components", [])
         collection_evidence, source_root = coverage_for_bom(bom)
-        enqueue_components(db, list(iter_components(raw_components)))
+        components = list(iter_components(raw_components))
+        enqueue_components(db, components)
+        component_refs = {component["bom-ref"] for component in components if isinstance(component.get("bom-ref"), str)}
         components_for_cpe = raw_components if source_root is None else [
             component for component in raw_components if component.get("bom-ref") != source_root
         ]
@@ -144,7 +146,7 @@ def _analyze_offline(db: Session, run: SbomRun) -> AnalysisRevision:
             for match in payload.get("matches", []):
                 vuln = match.get("vulnerability", {})
                 artifact = match.get("artifact", {})
-                oracle_ref = artifact.get("id")
+                artifact_ref = artifact.get("id")
                 findings.append(
                     {
                         # Grype emits CVE aliases next to ``vulnerability``
@@ -159,10 +161,10 @@ def _analyze_offline(db: Session, run: SbomRun) -> AnalysisRevision:
                         }, context),
                         "component": artifact.get("purl") or artifact.get("name"),
                         "version": artifact.get("version"),
-                        # Preserve only an exact KODA Oracle reference. Package
-                        # names/versions cannot bind a result to one Home.
-                        **({"bomRef": oracle_ref} if isinstance(oracle_ref, str)
-                           and ORACLE_COMPONENT_REF.fullmatch(oracle_ref) else {}),
+                        # Preserve an exact input reference when the scanner
+                        # returns it. Generated scanner IDs are not BOM refs.
+                        **({"bomRef": artifact_ref} if isinstance(artifact_ref, str)
+                           and artifact_ref in component_refs else {}),
                         "fixedIn": [
                             str(item.get("version") if isinstance(item, dict) else item)
                             for item in vuln.get("fix", {}).get("versions", [])

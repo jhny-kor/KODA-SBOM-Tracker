@@ -389,11 +389,21 @@ describe("KODA SBOM Tracker", () => {
     expect(within(viewer).getByRole("checkbox", { name: "회차 영구 삭제" })).toBeDisabled();
   });
 
+  it("shows the distinct vulnerable component total in the SBOM round table", async () => {
+    window.history.replaceState(null, "", "/?page=runs");
+    render(<App />);
+    const column = await screen.findByRole("columnheader", { name: "취약 구성요소" });
+    const row = (await screen.findByText("결제 API", { selector: "td *" })).closest("tr")!;
+    expect(within(row).getAllByRole("cell")[(column as HTMLTableCellElement).cellIndex]).toHaveTextContent(/^4$/);
+  });
+
   it("opens a run from a KODA deep link", async () => {
     window.history.replaceState(null, "", "/?runId=run-1");
     render(<App />);
     expect(screen.getByRole("heading", { name: "1.4.2 · 3차" })).toBeInTheDocument();
-    expect(screen.getByRole("dialog", { name: "1.4.2 · 3차" })).toHaveClass("detail-modal");
+    const detail = screen.getByRole("dialog", { name: "1.4.2 · 3차" });
+    expect(detail).toHaveClass("detail-modal");
+    expect(within(detail).getByText("취약 구성요소", { selector: "dt" }).nextElementSibling).toHaveTextContent("4개");
     expect(screen.queryByText("SHA-256")).not.toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "구성요소 검색" })).toBeInTheDocument();
     expect(screen.getAllByRole("combobox", { name: "상세 페이지당 행 수" })).toHaveLength(2);

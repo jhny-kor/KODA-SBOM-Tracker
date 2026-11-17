@@ -259,7 +259,7 @@ def test_cve_projection_counts_dates_and_comparison_stay_consistent() -> None:
             response = client.post(
                 "/api/v1/sbom-runs",
                 data={"serviceId": service_id, "environmentId": environment_id, "releaseVersion": f"projection-{label}-{suffix}"},
-                files={"sbom": (f"{label}.cdx.json", _sbom(f"projection-{label}-{suffix}"), "application/json")},
+                files={"sbom": (f"{label}.cdx.json", _sbom("alpha"), "application/json")},
                 headers=headers,
             )
             assert response.status_code == 202
@@ -350,3 +350,59 @@ def test_committed_run_delete_reports_pending_artifact_cleanup_instead_of_500(mo
         assert quarantine.exists()
         original_unlink(quarantine)
         quarantine.parent.rmdir()
+
+
+def test_rounds_count_distinct_registered_components_for_each_completed_revision() -> None:
+    suffix = uuid.uuid4().hex[:10]
+    document = {
+        "bomFormat": "CycloneDX",
+        "specVersion": "1.6",
+        "components": [
+            {"type": "library", "name": "alpha", "version": "1", "bom-ref": "alpha-v1",
+             "purl": "pkg:maven/org.example/alpha@1"},
+            {"type": "library", "name": "alpha", "version": "2", "bom-ref": "alpha-v2",
+             "purl": "pkg:maven/org.example/alpha@2"},
+            {"type": "library", "name": "beta", "version": "1", "bom-ref": "beta",
+             "components": [
+                 {"type": "library", "name": "gamma", "version": "1", "bom-ref": "gamma"},
+             ]},
+        ],
+    }
+    findings = [
+        {"id": "CVE-2026-5000", "component": "alpha", "bomRef": "alpha-v1", "version": "1"},
+        {"id": "CVE-2026-5001", "component": "pkg:maven/org.example/alpha@1"},
+        {"id": "CVE-2026-5000", "component": "pkg:maven/org.example/alpha", "version": "2"},
+        {"id": "CVE-2026-5002", "component": "beta", "bomRef": "beta",
+         "cpeEvidence": [{"bomRef": "gamma"}]},
+        {"id": "CVE-2026-5003", "component": "not-in-sbom", "version": "1"},
+        {"id": "CVE-2026-5004", "component": "alpha"},
+    ]
+    with TestClient(app) as client:
+        headers = _admin(client)
+        service_id, environment_id = _catalogs(client, headers, f"component-count-{suffix}")
+        response = client.post(
+            "/api/v1/sbom-runs",
+            data={"serviceId": service_id, "environmentId": environment_id, "releaseVersion": f"count-{suffix}"},
+            files={"sbom": ("example.cdx.json", json.dumps(document).encode(), "application/json")},
+            headers=headers,
+        )
+        assert response.status_code == 202
+        run_id = response.json()["runId"]
+        with SessionLocal() as db:
+            run = db.get(SbomRun, run_id)
+            run.state = ProcessingState.COMPLETED
+            run.analysis_state = JobState.COMPLETED
+            db.add_all([
+                AnalysisRevision(run_id=run_id, sequence=1, state=JobState.COMPLETED, findings=[findings[1]]),
+                AnalysisRevision(run_id=run_id, sequence=2, state=JobState.FAILED, findings=[findings[0]]),
+                AnalysisRevision(run_id=run_id, sequence=3, state=JobState.COMPLETED, findings=[]),
+                AnalysisRevision(run_id=run_id, sequence=4, state=JobState.COMPLETED, findings=findings),
+            ])
+            db.commit()
+
+        listed = client.get("/api/v1/sbom-runs", params={"q": run_id}, headers=headers).json()["items"][0]
+        detail = client.get(f"/api/v1/sbom-runs/{run_id}", headers=headers).json()
+        assert listed["analysisAvailable"] is True
+        assert listed["vulnerabilityCount"] == detail["vulnerabilityCount"] == len(findings)
+        assert listed["vulnerableComponentCount"] == detail["vulnerableComponentCount"] == 4
+        assert [row["vulnerableComponentCount"] for row in detail["analyses"]] == [4, 0, None, 1]

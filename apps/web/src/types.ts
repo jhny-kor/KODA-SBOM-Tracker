@@ -130,6 +130,7 @@ export interface AnalysisRevisionSummary extends NativePolicyFields {
   dataSources?: AnalysisDataSources;
   error?: string | null;
   findingCount?: number;
+  vulnerableComponentCount?: number | null;
   policyCount?: number;
   findings?: Record<string, unknown>[];
   policies?: Record<string, unknown>[];

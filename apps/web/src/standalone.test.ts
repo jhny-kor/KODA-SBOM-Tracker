@@ -44,6 +44,22 @@ describe("standalone CycloneDX preview", () => {
     expect(detail.analyses[0].findings?.[1]).toMatchObject({ canonicalId: "CVE-2026-0002", severity: "medium" });
   });
 
+  it("counts every registered target only once, including several targets of one CVE", async () => {
+    const detail = await parseStandaloneSbom(JSON.stringify({
+      bomFormat: "CycloneDX", specVersion: "1.6",
+      components: [{ name: "demo", version: "1", "bom-ref": "demo-v1" },
+                   { name: "demo", version: "2", "bom-ref": "demo-v2" }],
+      vulnerabilities: [
+        { id: "CVE-2026-1001", affects: [{ ref: "demo-v1" }, { ref: "demo-v2" }] },
+        { id: "CVE-2026-1002", affects: [{ ref: "demo-v1" }] },
+        { id: "CVE-2026-1003", affects: [{ ref: "unregistered" }] },
+      ],
+    }), "demo.cdx.json");
+    expect(detail.vulnerabilityCount).toBe(3);
+    expect(detail.vulnerableComponentCount).toBe(2);
+    expect(detail.analyses[0].vulnerableComponentCount).toBe(2);
+  });
+
   it("parses XML and stores an uploaded preview run in memory", async () => {
     const xml = `<?xml version="1.0"?>
       <bom xmlns="http://cyclonedx.org/schema/bom/1.5" version="1.5">

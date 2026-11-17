@@ -108,7 +108,7 @@ from .ci_gate import router as ci_gate_router
 from .environment_admin_api import router as environment_admin_router
 from .library_api import router as library_router
 from .cve_catalog_api import router as cve_catalog_router
-from .vulnerability import active_bundle, cvss_score, project_cve_findings, scan_bundle_releases
+from .vulnerability import active_bundle, cvss_score, project_cve_findings, scan_bundle_releases, vulnerable_component_count
 from .ldap_auth import LdapConfig, LdapConfigurationError, LdapInvalidCredentials, LdapUnavailable, authenticate_user
 
 
@@ -2139,11 +2139,6 @@ def _run_payload(
 ) -> dict:
     latest = max(item.analyses, key=lambda analysis: analysis.sequence, default=None)
     findings = project_cve_findings(latest.findings if latest else [])
-    vulnerable_components = {
-        (str(finding.get("component")).strip(), str(finding.get("version") or "").strip())
-        for finding in findings
-        if str(finding.get("component") or "").strip()
-    }
     severity_counts: dict[str, int] = defaultdict(int)
     for finding in findings:
         severity = str(finding.get("severity") or "unknown").lower()
@@ -2175,7 +2170,7 @@ def _run_payload(
         "componentCount": component_count if component_count is not None else len(item.components),
         "componentTypeCounts": component_type_counts or {},
         "vulnerabilityCount": len(findings),
-        "vulnerableComponentCount": len(vulnerable_components),
+        "vulnerableComponentCount": vulnerable_component_count(item.normalized_bom, findings),
         "severityCounts": dict(severity_counts),
         "kevCount": sum(1 for finding in findings if finding.get("kev") is True),
         "policyViolationCount": _policy_count(latest),
@@ -2344,8 +2339,17 @@ def get_run(
         properties = item.normalized_bom["metadata"]["properties"]
         values = {prop["name"]: prop["value"] for prop in properties}
         payload["workbookMetadata"] = {label: values.get(f"koda:xlsx:{label}", "") for label in METADATA_LABELS}
-    payload["analyses"] = [
-        {
+    analyses = []
+    latest_id = payload["analysisId"]
+    for analysis in sorted(item.analyses, key=lambda value: value.sequence, reverse=True):
+        findings = project_cve_findings(analysis.findings)
+        affected_count = None
+        if analysis.state == JobState.COMPLETED:
+            affected_count = (
+                payload["vulnerableComponentCount"] if analysis.id == latest_id
+                else vulnerable_component_count(item.normalized_bom, findings)
+            )
+        analyses.append({
             "id": analysis.id,
             "sequence": analysis.sequence,
             "state": analysis.state,
@@ -2353,13 +2357,13 @@ def get_run(
             "cveDataAsOf": _cve_data_as_of(analysis),
             "toolVersion": analysis.tool_version,
             "dataSources": analysis.data_sources or {},
-            "findingCount": len(project_cve_findings(analysis.findings)),
+            "findingCount": len(findings),
+            "vulnerableComponentCount": affected_count,
             "policyCount": _policy_count(analysis),
             **_native_policy_result(analysis, include_evidence=True),
             "error": analysis.error,
-        }
-        for analysis in sorted(item.analyses, key=lambda value: value.sequence, reverse=True)
-    ]
+        })
+    payload["analyses"] = analyses
     return payload
 
 

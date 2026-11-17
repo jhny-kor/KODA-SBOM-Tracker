@@ -7,14 +7,14 @@ import type { NativeProject } from "./api";
 import type { SbomRun } from "./types";
 vi.mock("./api",async original=>({...await original<typeof import("./api")>(),previewMode:false,fetchProjectCatalog:vi.fn(),fetchProjectRuns:vi.fn()}));
 const project:NativeProject={id:"project-id",sourceId:"native",sourceProjectId:"portal",serviceId:"s",environmentId:"e",name:"연결 검증",version:"1.0",parentProjectId:null,tags:[],isLatest:true,active:true,revision:1};
-const run:SbomRun={id:"run-id",service:{id:"s",name:"검증 서비스",slug:"service"},environment:{id:"e",name:"운영",slug:"prod"},releaseVersion:"1.0",roundNumber:2,state:"completed",sha256:"hash",componentCount:6,vulnerabilityCount:3,policyViolationCount:1,dataAsOf:"2026-10-19",createdAt:"2026-10-20T00:00:00Z",analysisAvailable:true,analysisState:"completed"};
+const run:SbomRun={id:"run-id",service:{id:"s",name:"검증 서비스",slug:"service"},environment:{id:"e",name:"운영",slug:"prod"},releaseVersion:"1.0",roundNumber:2,state:"completed",sha256:"hash",componentCount:6,vulnerabilityCount:3,vulnerableComponentCount:2,policyViolationCount:1,dataAsOf:"2026-10-19",createdAt:"2026-10-20T00:00:00Z",analysisAvailable:true,analysisState:"completed"};
 beforeEach(()=>{vi.resetAllMocks();vi.mocked(api.fetchProjectCatalog).mockResolvedValue({items:[project],total:1,page:1,size:20});vi.mocked(api.fetchProjectRuns).mockResolvedValue({items:[run],total:1,page:1,size:10});});afterEach(cleanup);
 async function openProject(){fireEvent.click(await screen.findByRole("button",{name:/연결 검증 · 1.0/}));}
 it("loads connected runs only when a project is opened and routes to the existing result detail",async()=>{
  const open=vi.fn();render(<ProjectCatalogPanel canManage canViewRuns onOpenRun={open}/>);
  await screen.findByRole("button",{name:/연결 검증/});expect(api.fetchProjectRuns).not.toHaveBeenCalled();await openProject();
  const link=await screen.findByRole("link",{name:"점검결과 보기"});expect(api.fetchProjectRuns).toHaveBeenCalledWith("project-id",1);expect(link).toHaveAttribute("href","/?page=runs&runId=run-id");
- const row=link.closest("tr")!;expect(within(row).getByText("2차 / 1.0")).toBeInTheDocument();expect(within(row).getByText("검증 서비스 / 운영")).toBeInTheDocument();expect(within(row).getByText("3")).toBeInTheDocument();
+ const row=link.closest("tr")!;expect(within(row).getByText("2차 / 1.0")).toBeInTheDocument();expect(within(row).getByText("검증 서비스 / 운영")).toBeInTheDocument();expect(screen.getByRole("columnheader",{name:"취약 구성요소"})).toBeInTheDocument();expect(within(row).getByText("2")).toBeInTheDocument();expect(within(row).queryByText("3")).not.toBeInTheDocument();
  fireEvent.click(link);expect(open).toHaveBeenCalledWith(run);expect(api.fetchProjectRuns).toHaveBeenCalledTimes(1);
 });
 it("allows readonly catalog users to view results without enabling management",async()=>{
