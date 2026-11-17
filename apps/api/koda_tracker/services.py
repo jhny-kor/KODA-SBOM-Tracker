@@ -20,12 +20,13 @@ from .models import (
     RunComponent,
     SbomRun,
 )
-from .sbom import iter_components, licenses_for, normalized_identity, sbom_document_path, sha256_for
+from .sbom import iter_components, licenses_for, normalized_identity, sbom_document_path, sbom_nis_scan_path, sha256_for
 from . import package_metadata_models
 from .package_metadata import enqueue_components
 from . import workflow_models  # Register workflow tables before standalone create_all callers.
 from .private_vulnerability import match_private_vulnerabilities
 from .sbom_normalization import mark_current
+from .sbom_nis import NIS_SBOM_MEDIA_TYPE
 from .sbom_workbook import WORKBOOK_MEDIA_TYPE
 from .policies import evaluate_revision
 from .quality import evaluate_quality, revision_payload as quality_payload
@@ -133,14 +134,20 @@ def _analyze_offline(db: Session, run: SbomRun) -> AnalysisRevision:
             source, max_bytes=settings.max_upload_bytes, workbook=media_type == WORKBOOK_MEDIA_TYPE, keep_legacy=True,
         )
         with document as selected:
-            process = subprocess.run(
-                [settings.grype_binary, f"sbom:{selected}", "-o", "json"],
-                text=True,
-                capture_output=True,
-                timeout=300,
-                env=env,
-                check=False,
+            scanner_document = (
+                sbom_nis_scan_path(selected)
+                if media_type == NIS_SBOM_MEDIA_TYPE or media_type in SBOM_ARCHIVE_MEDIA_TYPES.values()
+                else nullcontext(selected)
             )
+            with scanner_document as grype_input:
+                process = subprocess.run(
+                    [settings.grype_binary, f"sbom:{grype_input}", "-o", "json"],
+                    text=True,
+                    capture_output=True,
+                    timeout=300,
+                    env=env,
+                    check=False,
+                )
         if process.returncode == 0:
             payload = json.loads(process.stdout)
             for match in payload.get("matches", []):

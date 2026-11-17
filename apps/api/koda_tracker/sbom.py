@@ -19,6 +19,7 @@ from defusedxml import ElementTree as SafeET
 from defusedxml.common import DefusedXmlException
 from .archive_formats import MEDIA_TYPES as SBOM_ARCHIVE_MEDIA_TYPES
 from .oracle_evidence import oracle_listener_identity
+from .sbom_nis import NIS_SBOM_MEDIA_TYPE, is_nis_csv, read_nis_csv
 
 
 # Large host inventories can exceed 30 seconds on offline server hardware.
@@ -277,6 +278,16 @@ def _normalize_json(payload):
     return payload, "application/vnd.cyclonedx+json"
 
 
+def _parse_nis(source) -> tuple[dict, str]:
+    from .config import get_settings
+
+    try:
+        payload = read_nis_csv(source, max_components=get_settings().max_sbom_components)
+    except ValueError as exc:
+        raise SbomValidationError(str(exc)) from exc
+    return payload, NIS_SBOM_MEDIA_TYPE
+
+
 def iter_components(components):
     """Yield every component in stable preorder, without recursive Python calls.
 
@@ -344,8 +355,11 @@ def parse_sbom(raw: bytes) -> tuple[dict, str]:
             raise SbomValidationError("유효한 XML 문서가 아닙니다") from exc
         payload = _xml_payload(root)
         media = "application/vnd.cyclonedx+xml"
+    elif is_nis_csv(raw[:4096]):
+        _check_upload_document_size(len(raw))
+        payload, media = _parse_nis(io.BytesIO(raw))
     else:
-        raise SbomValidationError("CycloneDX JSON 또는 XML만 지원합니다")
+        raise SbomValidationError("CycloneDX JSON/XML, SPDX 2.3 JSON 또는 NIS-SBOM 1.0 CSV를 선택하세요")
     return _validated_payload(payload), media
 
 
@@ -393,9 +407,27 @@ def _parse_sbom_document_file(path: Path, *, bounded: bool = False) -> tuple[dic
                 raise SbomValidationError("유효한 XML 문서가 아닙니다") from exc
             payload = _xml_payload(root)
             media = "application/vnd.cyclonedx+xml"
+        elif is_nis_csv(prefix):
+            _check_upload_document_size(os.fstat(candidate.fileno()).st_size)
+            payload, media = _parse_nis(candidate)
         else:
-            raise SbomValidationError("CycloneDX JSON 또는 XML만 지원합니다")
+            raise SbomValidationError("CycloneDX JSON/XML, SPDX 2.3 JSON 또는 NIS-SBOM 1.0 CSV를 선택하세요")
     return _validated_payload(payload), media
+
+
+@contextmanager
+def sbom_nis_scan_path(path: Path):
+    """Use a temporary scanner input for NIS CSV, retaining the uploaded file."""
+    with path.open("rb") as source:
+        convert = is_nis_csv(source.read(4096))
+    if not convert:
+        yield path
+        return
+    payload, _ = parse_sbom_upload_document(path)
+    with tempfile.NamedTemporaryFile("w", suffix=".cdx.json", encoding="utf-8", dir=path.parent) as converted:
+        _write_bounded_normalized_bom(payload, converted)
+        converted.flush()
+        yield Path(converted.name)
 
 
 def validate_with_cyclonedx_cli(raw: bytes, binary: str) -> None:
@@ -420,12 +452,12 @@ def validate_file_with_cyclonedx_cli(
 ) -> None:
     if not binary and parsed_document is None:
         return
-    # SPDX's original file is retained as the uploaded artifact. Validate the
-    # normalized CycloneDX view with this optional CycloneDX-only validator.
+    # Converted inputs retain their original artifact. Validate the temporary
+    # CycloneDX view with this optional CycloneDX-only validator.
     normalized = None
     if parsed_document is not None:
         payload, media_type = parsed_document
-        if media_type == "application/spdx+json":
+        if media_type in {"application/spdx+json", NIS_SBOM_MEDIA_TYPE}:
             normalized = payload
     else:
         with path.open("rb") as source:
@@ -438,24 +470,25 @@ def validate_file_with_cyclonedx_cli(
                     raise SbomValidationError("유효한 JSON 문서가 아닙니다") from exc
                 if isinstance(candidate, dict) and "spdxVersion" in candidate:
                     normalized, _ = _normalize_json(candidate)
+            elif is_nis_csv(prefix):
+                _check_upload_document_size(os.fstat(source.fileno()).st_size)
+                source.seek(0)
+                normalized, _ = _parse_nis(source)
     if normalized is None:
         if binary:
             _validate_cyclonedx_file(path, binary, input_format)
         return
 
     if not binary:
-        _write_bounded_spdx(normalized)
+        _write_bounded_normalized_bom(normalized)
         return
     with tempfile.NamedTemporaryFile("w", suffix=".json", encoding="utf-8", dir=path.parent) as converted:
-        if parsed_document is None:
-            json.dump(normalized, converted, ensure_ascii=False)
-        else:
-            _write_bounded_spdx(normalized, converted)
+        _write_bounded_normalized_bom(normalized, converted)
         converted.flush()
         _validate_cyclonedx_file(Path(converted.name), binary, "json")
 
 
-def _write_bounded_spdx(payload: dict, output=None) -> None:
+def _write_bounded_normalized_bom(payload: dict, output=None) -> None:
     size = 0
     try:
         for chunk in json.JSONEncoder(ensure_ascii=False).iterencode(payload):
@@ -464,7 +497,7 @@ def _write_bounded_spdx(payload: dict, output=None) -> None:
             if output is not None:
                 output.write(chunk)
     except UnicodeError as exc:
-        raise SbomValidationError("변환된 SPDX 문서의 문자 인코딩이 올바르지 않습니다") from exc
+        raise SbomValidationError("변환된 SBOM 문서의 문자 인코딩이 올바르지 않습니다") from exc
 
 
 def _run_cyclonedx(command: list[str], *, timeout: int) -> subprocess.CompletedProcess[str]:
