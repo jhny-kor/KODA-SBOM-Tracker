@@ -216,13 +216,13 @@ def _inspect(source, kind, limits, *, _local=False):
     return _checked(_entries(source, kind), **limits)
 
 
-def archive_unpacked_size(source, *, max_members=100_000, max_unpacked_bytes=12 * 1024**3, max_member_bytes=4 * 1024**3):
+def archive_unpacked_size(source, *, max_members=100_000, max_unpacked_bytes=12 * 1024**3, max_member_bytes=4 * 1024**3, _local=False):
     limits = dict(max_members=max_members, max_unpacked_bytes=max_unpacked_bytes, max_member_bytes=max_member_bytes)
     try:
         kind = archive_kind(Path(source))
         if kind is None:
             raise ArchiveError("unsupported archive; use ZIP, TAR.GZ, TAR or 7Z")
-        return sum(item.size for item in _inspect(source, kind, limits) if not item.directory)
+        return sum(item.size for item in _inspect(source, kind, limits, _local=_local) if not item.directory)
     except (OSError, tarfile.TarError, zipfile.BadZipFile, UnicodeError, RuntimeError, EOFError, struct.error) as exc:
         raise ArchiveError("invalid or corrupt archive") from exc
 

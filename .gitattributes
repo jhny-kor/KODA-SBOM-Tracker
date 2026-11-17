@@ -6,3 +6,4 @@ docs/koda-integration-ko.md        filter=hostredact
 docs/presentations/*.html          filter=hostredact
 README.md                          filter=hostredact
 apps/web/src/App.tsx               filter=hostredact
+collect-unified-data.cmd           -text whitespace=cr-at-eol
