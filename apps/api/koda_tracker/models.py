@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
     Boolean,
     DateTime,
     Enum,
@@ -169,7 +170,7 @@ class SbomRun(Base):
     spec_version: Mapped[str] = mapped_column(String(16))
     serial_number: Mapped[str | None] = mapped_column(String(255), nullable=True)
     sha256: Mapped[str] = mapped_column(String(64), index=True)
-    size_bytes: Mapped[int] = mapped_column(Integer)
+    size_bytes: Mapped[int] = mapped_column(BigInteger)
     artifact_path: Mapped[str] = mapped_column(Text)
     normalized_bom: Mapped[dict] = mapped_column(JSON)
     uploaded_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)

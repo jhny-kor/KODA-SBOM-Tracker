@@ -24,9 +24,9 @@ def test_retired_analysis_is_absent_from_linux_readiness() -> None:
     assert "client_max_body_size 65m;" in gateway
     assert "client_max_body_size 64k;" in gateway
     assert "location = /api/v1/sbom-runs" in gateway
-    assert "client_max_body_size 501m;" in gateway
+    assert "client_max_body_size 5122m;" in gateway
     assert "limit_conn sbom_upload_conn 2;" in gateway
-    assert "UPLOAD_MAX_BYTES=524288000" in (ROOT / ".env.example").read_text()
+    assert "UPLOAD_MAX_BYTES=5368709120" in (ROOT / ".env.example").read_text()
     assert '${PUBLIC_HTTP_BIND:-127.0.0.1}:${PUBLIC_HTTP_PORT:-8088}:8080' in compose
     assert "TRACKER_PUBLIC_BIND: ${PUBLIC_HTTP_BIND:-127.0.0.1}" in compose
     assert all("AIRGAP_HEALTH_TIMEOUT:-420" in launcher for launcher in launchers)
@@ -36,10 +36,10 @@ def test_upload_limit_defaults_match_gateway_and_ui() -> None:
     config = (ROOT / "apps/api/koda_tracker/config.py").read_text()
     ui = (ROOT / "apps/web/src/App.tsx").read_text()
 
-    assert "max_upload_bytes: int = 500 * 1024 * 1024" in config
+    assert "max_upload_bytes: int = 5 * 1024**3" in config
     assert 'id="sbom-upload-limit"' in ui
-    assert '"100 MiB"' in ui and '"500 MiB (압축파일과 해제한 문서에 각각 적용)"' in ui
-    assert "client_max_body_size 501m;" in (ROOT / "deploy/nginx/gateway.conf.template").read_text()
+    assert '"100 MiB"' in ui and '"5 GiB (문서 파싱 제한 별도)"' in ui
+    assert "client_max_body_size 5122m;" in (ROOT / "deploy/nginx/gateway.conf.template").read_text()
 
 
 def test_compatibility_and_review_imports_have_dedicated_gateway_limits() -> None:

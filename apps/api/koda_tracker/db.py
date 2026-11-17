@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Generator
 
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import BigInteger, create_engine, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from .config import get_settings
@@ -121,6 +121,17 @@ def ensure_sbom_media_type_column(bind=engine) -> None:
             if length is not None and length < 128:
                 with bind.begin() as connection:
                     connection.execute(text("ALTER TABLE sbom_runs ALTER COLUMN media_type TYPE VARCHAR(128)"))
+            return
+
+
+def ensure_sbom_size_bytes_column(bind=engine) -> None:
+    """Preserve old size values while allowing artifacts larger than 2 GiB."""
+    if bind.dialect.name != "postgresql":
+        return
+    for column in inspect(bind).get_columns("sbom_runs"):
+        if column["name"] == "size_bytes" and not isinstance(column["type"], BigInteger):
+            with bind.begin() as connection:
+                connection.execute(text("ALTER TABLE sbom_runs ALTER COLUMN size_bytes TYPE BIGINT"))
             return
 
 

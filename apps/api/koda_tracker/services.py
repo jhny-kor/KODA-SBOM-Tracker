@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-from contextlib import nullcontext
 from collections import Counter
 from pathlib import Path
 
@@ -21,7 +20,7 @@ from .models import (
     RunComponent,
     SbomRun,
 )
-from .sbom import SBOM_ARCHIVE_MEDIA_TYPES, iter_components, licenses_for, normalized_identity, sbom_document_path, sha256_for
+from .sbom import iter_components, licenses_for, normalized_identity, sbom_document_path, sha256_for
 from . import package_metadata_models
 from .package_metadata import enqueue_components
 from . import workflow_models  # Register workflow tables before standalone create_all callers.
@@ -128,10 +127,8 @@ def _analyze_offline(db: Session, run: SbomRun) -> AnalysisRevision:
         env["GRYPE_EXTERNAL_SOURCES_ENABLE"] = "false"
         source = Path(run.artifact_path)
         media_type = getattr(run, "media_type", "")
-        document = (
-            sbom_document_path(source, max_bytes=settings.max_upload_bytes, workbook=media_type == WORKBOOK_MEDIA_TYPE)
-            if media_type == WORKBOOK_MEDIA_TYPE or media_type in SBOM_ARCHIVE_MEDIA_TYPES.values()
-            else nullcontext(source)
+        document = sbom_document_path(
+            source, max_bytes=settings.max_upload_bytes, workbook=media_type == WORKBOOK_MEDIA_TYPE, keep_legacy=True,
         )
         with document as selected:
             process = subprocess.run(

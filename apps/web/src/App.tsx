@@ -731,14 +731,14 @@ function UploadModal({
                 <FlowSelect name="environmentId" required>{environments.filter((environment) => environment.active !== false).map((environment) => (<option key={environment.id} value={environment.id}>{environment.name}</option>))}</FlowSelect></label>)}<label>{standaloneMode ? "릴리스 (선택)" : "릴리스"}<input name="releaseVersion" placeholder="예: 1.4.2" defaultValue={standaloneMode ? "preview" : undefined} required={!standaloneMode} /></label></div>
       <label>SBOM 파일
         <input name="sbom" type="file" aria-label="SBOM 파일"
-          accept={standaloneMode ? ".json,.xml,application/json,application/xml" : ".json,.xml,.zip,.tar,.tar.gz,.tgz,.7z,.xlsx,application/json,application/xml,application/spdx+json,application/vnd.cyclonedx+json,application/vnd.cyclonedx+xml"}
+          accept={standaloneMode ? ".json,.xml,application/json,application/xml" : ".json,.xml,.zip,.tar,.tar.gz,.tgz,.7z,.xlsx,.csv,text/csv,application/json,application/xml,application/spdx+json,application/vnd.cyclonedx+json,application/vnd.cyclonedx+xml"}
           aria-describedby={`sbom-supported-formats${standaloneMode ? "" : " sbom-archive-formats sbom-workbook-format"} sbom-upload-limit`} required />
-        <small id="sbom-supported-formats">{standaloneMode ? "로컬 미리보기: CycloneDX JSON/XML" : "지원 형식: CycloneDX 1.4, 1.5, 1.6, 1.7 (JSON/XML) · SPDX 2.3 (JSON)"}</small>
+        <small id="sbom-supported-formats">{standaloneMode ? "로컬 미리보기: CycloneDX JSON/XML" : "지원 형식: CycloneDX 1.4, 1.5, 1.6, 1.7 (JSON/XML) · SPDX 2.3 (JSON) · NIS-SBOM 1.0 (CSV)"}</small>
         {!standaloneMode && <>
-          <small id="sbom-archive-formats">압축 업로드: ZIP · TAR.GZ/TGZ · TAR · 7Z. 압축파일에는 위 지원 형식의 JSON/XML 문서 파일만 정확히 1개 넣으세요. README 등 동반 파일은 허용하지 않습니다. 형식과 내용은 서버에서 확인합니다.</small>
+          <small id="sbom-archive-formats">압축 업로드: ZIP · TAR.GZ/TGZ · TAR · 7Z. 압축파일에는 위 지원 형식의 JSON/XML/CSV 문서 파일만 정확히 1개 넣으세요. README 등 동반 파일은 허용하지 않습니다. 형식과 내용은 서버에서 확인합니다.</small>
           <small id="sbom-workbook-format">Excel (.xlsx, 최대 10 MiB) 첫 시트의 1~5행에는 A열 또는 B열에 항목명, C열에 값을 입력하세요. 항목 순서는 솔루션명, 기준 버전, 운영 OS Platform, 작성일자, 대상 서버입니다. 6행 A~F열은 번호, 구분, 컴포넌트명, 버전, 라이선스 유형, 비고 / 상세 설명입니다. 버전은 텍스트 셀에 입력하세요.</small>
         </>}
-        <small id="sbom-upload-limit">{!standaloneMode && "JSON/XML·압축 업로드 "}최대 {standaloneMode ? "100 MiB" : "500 MiB (압축파일과 해제한 문서에 각각 적용)"}</small>
+        <small id="sbom-upload-limit">{!standaloneMode && "SBOM 업로드 "}최대 {standaloneMode ? "100 MiB" : "5 GiB (문서 파싱 제한 별도)"}</small>
       </label>
       <label>메모
             <textarea name="note" rows={3} placeholder="변경 사유 또는 배포 식별자" /></label>
@@ -1270,7 +1270,7 @@ function GuidePage() {
       <h2 id="guide-flow-title">기본 사용 순서</h2>
       <ol className="guide-flow">
         <li><strong>서비스·환경 준비</strong><span>설정에서 SBOM을 구분할 서비스와 운영 환경을 확인합니다.</span></li>
-        <li><strong>SBOM 업로드</strong><span>서비스, 환경, 릴리스를 선택하고 CycloneDX 1.4~1.7 JSON/XML, SPDX 2.3 JSON 또는 구성요소 목록 Excel(.xlsx)을 등록합니다. ZIP, TAR.GZ/TGZ, TAR, 7Z 압축파일에는 지원 JSON/XML 문서가 정확히 1개 있어야 합니다.</span></li>
+        <li><strong>SBOM 업로드</strong><span>서비스, 환경, 릴리스를 선택하고 CycloneDX 1.4~1.7 JSON/XML, SPDX 2.3 JSON, NIS-SBOM 1.0 CSV 또는 구성요소 목록 Excel(.xlsx)을 등록합니다. ZIP, TAR.GZ/TGZ, TAR, 7Z 압축파일에는 지원 JSON/XML/CSV 문서가 정확히 1개 있어야 합니다.</span></li>
         <li><strong>분석 결과 확인</strong><span>회차 상세에서 분석 상태와 자료 기준일을 확인합니다. 취약점의 CVSS, KEV, EPSS와 제안 버전을 살펴보고, 필요하면 VEX 검토와 SSVC 평가를 진행합니다.</span></li>
         <li><strong>변경 추적</strong><span>회차 비교에서 구성요소·취약점·정책 결과의 변화를 확인합니다. 같은 SBOM이라도 분석에 사용한 취약점 자료 기준일이 다르면 결과가 달라질 수 있습니다.</span></li>
       </ol>

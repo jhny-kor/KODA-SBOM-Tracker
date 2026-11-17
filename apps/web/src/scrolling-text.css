@@ -9,10 +9,12 @@ a:hover .scrolling-text-content, a:focus-visible .scrolling-text-content,
 @keyframes text-travel { 0%, 8% { transform: translateX(0); } 92%, 100% { transform: translateX(var(--text-travel)); } }
 .flow-select { position: relative; display: block; width: 100%; min-width: 0; max-width: 100%; height: var(--select-height, 40px); }
 .flow-select > select { display: block; width: 100%; min-width: 0; max-width: 100%; height: 100%; appearance: none; padding-right: 32px; }
-.flow-select[data-ready="true"] > select { color: transparent; }
-.flow-select > select option, .flow-select > select optgroup { color: var(--text, #172b35); background: var(--surface, #fff); }
-.flow-select-viewport { position: absolute; inset: 1px 32px 1px 12px; display: flex; align-items: center; min-width: 0; overflow: hidden; pointer-events: none; color: var(--text, #172b35); }
-.flow-select:has(> select:disabled) .flow-select-viewport { opacity: .55; }
+/* Native popups can inherit the select's color instead of the option color. */
+.flow-select > select, select option, select optgroup { color: #000; }
+select option, select optgroup { background-color: #fff; }
+.flow-select-viewport { display: none; position: absolute; inset: 1px 1px 1px 1px; padding: 0 31px 0 11px; align-items: center; min-width: 0; overflow: hidden; pointer-events: none; color: #000; background: #fff; border-radius: 3px; }
+.flow-select[data-ready="true"] .flow-select-viewport { display: flex; }
+.flow-select:has(> select:disabled) .flow-select-viewport { color: #595959; background-color: #f6f8fa; }
 .flow-select-chevron { position: absolute; top: 50%; right: 10px; width: 16px; height: 16px; transform: translateY(-50%); pointer-events: none; color: var(--muted, #687b85); }
 @media (prefers-reduced-motion: reduce) {
   .scrolling-text[data-overflow="true"] > .scrolling-text-content { animation: none; }

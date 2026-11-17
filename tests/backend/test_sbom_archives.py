@@ -173,10 +173,9 @@ def test_raw_upload_and_expansion_limits_are_independent(context, monkeypatch):
 
 
 def test_archive_document_budget_rejects_without_storing_run_or_artifact(context, monkeypatch):
-    raw = JSON + b" " * 512
+    raw = JSON[:-1] + b',"notes":"' + b"x" * 512 + b'"}'
     compressed = archive_bytes("zip", [("bom.json", raw)])
     assert len(compressed) < 256 < len(raw)
-    monkeypatch.setattr(main, "MAX_UPLOAD_DOCUMENT_BYTES", 256)
     monkeypatch.setattr(sbom_module, "MAX_UPLOAD_DOCUMENT_BYTES", 256)
 
     response = upload(context, compressed)
@@ -185,6 +184,20 @@ def test_archive_document_budget_rejects_without_storing_run_or_artifact(context
     assert context.db.scalar(select(func.count()).select_from(SbomRun)) == 0
     assert context.db.scalar(select(func.count()).select_from(Job)) == 0
     assert not list(context.settings.artifact_dir.iterdir())
+
+
+@pytest.mark.parametrize("compressed", [False, True])
+def test_padded_json_is_compacted_for_validation_and_keeps_original(context, monkeypatch, compressed):
+    document = JSON + b" " * 8192
+    raw = archive_bytes("zip", [("bom.json", document)]) if compressed else document
+    monkeypatch.setattr(sbom_module, "MAX_UPLOAD_DOCUMENT_BYTES", 256)
+
+    response = upload(context, raw)
+
+    assert response.status_code == 202, response.text
+    run = context.db.get(SbomRun, response.json()["runId"])
+    assert Path(run.artifact_path).read_bytes() == raw
+    assert run.normalized_bom["specVersion"] == "1.6"
 
 
 def test_archive_keeps_queue_component_and_idempotency_admission(context, monkeypatch):

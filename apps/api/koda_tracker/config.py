@@ -12,7 +12,7 @@ class Settings(BaseSettings):
 
     database_url: str = "sqlite:///./tracker.db"
     artifact_dir: Path = Path("./data/artifacts")
-    max_upload_bytes: int = 500 * 1024 * 1024
+    max_upload_bytes: int = 5 * 1024**3
     max_request_body_bytes: int = 64 * 1024
     max_sbom_components: int = 50_000
     max_service_runs: int = 10_000

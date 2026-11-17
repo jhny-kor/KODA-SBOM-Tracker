@@ -147,8 +147,82 @@ def sbom_upload_media_type(path: Path, document_media_type: str) -> str:
     return archive_media_type(kind) if kind is not None else document_media_type
 
 
+_JSON_BYTES_STRING = re.compile(rb'["\\]')
+_JSON_WHITESPACE_RUN = re.compile(rb"[ \t\r\n]+")
+
+
+def _compact_large_json(source, destination) -> None:
+    """Collapse insignificant JSON whitespace without changing strings or syntax."""
+    written = 0
+    in_string = escaped = previous_space = False
+    while chunk := source.read(1024 * 1024):
+        output = bytearray()
+        start = int(escaped)
+        position = start
+        escaped = False
+        if start:
+            output.extend(chunk[:start])
+        while position < len(chunk):
+            if in_string:
+                match = _JSON_BYTES_STRING.search(chunk, position)
+                if match is None:
+                    output.extend(chunk[position:])
+                    break
+                end = match.end()
+                position = end
+                if match[0] == b"\\":
+                    position += 1
+                    escaped = end == len(chunk)
+                else:
+                    in_string = False
+                output.extend(chunk[start:position])
+                start = position
+                continue
+            quote = chunk.find(b'"', position)
+            limit = len(chunk) if quote == -1 else quote
+            plain = _JSON_WHITESPACE_RUN.sub(b" ", chunk[position:limit])
+            output.extend(plain[1:] if previous_space and plain.startswith(b" ") else plain)
+            if quote == -1:
+                previous_space = (plain.endswith(b" ") if plain else previous_space)
+                break
+            output.append(34)
+            in_string = True
+            previous_space = False
+            start = position = quote + 1
+        written += len(output)
+        _check_upload_document_size(written)
+        destination.write(output)
+
+
 @contextmanager
-def sbom_document_path(path: Path, *, max_bytes: int | None = None, workbook: bool = False):
+def _document_for_parsing(path: Path, spool: Path, *, keep_legacy: bool):
+    if path.stat().st_size <= MAX_UPLOAD_DOCUMENT_BYTES:
+        yield path
+        return
+    with path.open("rb") as source:
+        prefix = source.read(4096)
+        if not prefix.lstrip().startswith((b"{", b"[")):
+            yield path
+            return
+        source.seek(0)
+        spool.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix=".koda-sbom-json-", dir=spool) as temporary:
+            compact = Path(temporary) / "sbom.json"
+            try:
+                with compact.open("wb") as destination:
+                    _compact_large_json(source, destination)
+            except SbomValidationError:
+                if not keep_legacy:
+                    raise
+                yield path
+            else:
+                yield compact
+
+
+@contextmanager
+def sbom_document_path(
+    path: Path, *, max_bytes: int | None = None, workbook: bool = False, keep_legacy: bool = False,
+):
     """Yield one plain document; never persist or recursively unpack members."""
     from .archive_formats import ArchiveError, archive_kind, extract_archive
     from .config import get_settings
@@ -159,10 +233,11 @@ def sbom_document_path(path: Path, *, max_bytes: int | None = None, workbook: bo
             from .sbom_workbook import MAX_WORKBOOK_BYTES
             if kind != "zip" or path.stat().st_size > MAX_WORKBOOK_BYTES:
                 raise SbomValidationError("10 MiB 이하의 Excel .xlsx 파일을 선택하세요")
-        if kind is None:
-            yield path
-            return
         settings = get_settings()
+        if kind is None:
+            with _document_for_parsing(path, settings.artifact_dir, keep_legacy=keep_legacy) as document:
+                yield document
+            return
         limit = settings.max_upload_bytes if max_bytes is None else max_bytes
         settings.artifact_dir.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix=".koda-sbom-archive-", dir=settings.artifact_dir) as temporary:
@@ -186,7 +261,8 @@ def sbom_document_path(path: Path, *, max_bytes: int | None = None, workbook: bo
                 raise SbomValidationError("압축파일에는 디렉터리 외 SBOM 파일이 정확히 하나 있어야 합니다")
             if archive_kind(files[0]) is not None:
                 raise SbomValidationError("중첩된 SBOM 압축파일은 허용되지 않습니다")
-            yield files[0]
+            with _document_for_parsing(files[0], settings.artifact_dir, keep_legacy=keep_legacy) as document:
+                yield document
     except ArchiveError as exc:
         raise SbomValidationError(f"SBOM 압축파일이 올바르지 않습니다: {exc}") from exc
 

@@ -38,7 +38,7 @@ from .compatibility_data import router as compatibility_data_router
 from .compatibility_sources import MAX_ARCHIVE_BYTES as MAX_COMPATIBILITY_ARCHIVE_BYTES
 from .config import get_settings, session_cookie_name
 from .comparison import compare_components, compare_records
-from .db import Base, SessionLocal, engine, ensure_component_search_support, ensure_environment_active_column, ensure_ldap_subject_attribute_column, ensure_native_policy_columns, ensure_postgres_manager_enum, ensure_sbom_media_type_column, ensure_sbom_source_metadata_column, ensure_user_approval_state_column, ensure_user_identity_columns, get_db
+from .db import Base, SessionLocal, engine, ensure_component_search_support, ensure_environment_active_column, ensure_ldap_subject_attribute_column, ensure_native_policy_columns, ensure_postgres_manager_enum, ensure_sbom_media_type_column, ensure_sbom_size_bytes_column, ensure_sbom_source_metadata_column, ensure_user_approval_state_column, ensure_user_identity_columns, get_db
 from .models import (
     AnalysisRevision,
     ApiToken,
@@ -63,7 +63,6 @@ from .models import (
 )
 from .sbom_normalization import mark_current
 from .sbom import (
-    MAX_UPLOAD_DOCUMENT_BYTES,
     SbomValidationError,
     component_count,
     parse_sbom_upload_document,
@@ -368,6 +367,7 @@ async def lifespan(_: FastAPI):
     ensure_environment_active_column(engine)
     ensure_sbom_source_metadata_column(engine)
     ensure_sbom_media_type_column(engine)
+    ensure_sbom_size_bytes_column(engine)
     ensure_native_policy_columns(engine)
     # v1 uses create_all for a fresh install, but keep the one additive field
     # introduced by the vulnerability-data lifecycle backward compatible with
@@ -2056,8 +2056,7 @@ async def upload_sbom(
 
     def validate_and_persist():
         settings = get_settings()
-        document_limit = min(max_bytes, MAX_UPLOAD_DOCUMENT_BYTES)
-        with sbom_document_path(staged_path, max_bytes=document_limit, workbook=workbook) as document:
+        with sbom_document_path(staged_path, max_bytes=max_bytes, workbook=workbook) as document:
             payload, document_media_type = parse_sbom_upload_document(document)
             validate_component_count(payload, settings.max_sbom_components)
             input_format = "json" if document_media_type.endswith("+json") else "xml"
@@ -2093,6 +2092,7 @@ async def upload_sbom(
         )
 
     try:
+        await sbom.close()
         async with _upload_persist_lock:
             return await run_in_threadpool(validate_and_persist)
     except SbomValidationError as exc:
