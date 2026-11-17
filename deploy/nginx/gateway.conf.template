@@ -23,7 +23,7 @@ server {
         limit_conn sbom_upload_conn 2;
         limit_req zone=sbom_upload_rate burst=20 nodelay;
         proxy_request_buffering off;
-        proxy_read_timeout 600s;
+        proxy_read_timeout 1h;
         proxy_send_timeout 600s;
         proxy_http_version 1.1;
         proxy_set_header Host $host;

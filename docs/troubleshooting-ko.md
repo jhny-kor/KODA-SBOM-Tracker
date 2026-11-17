@@ -113,14 +113,14 @@ docker compose --env-file .env "${COMPOSE_FILES[@]}" \
   exec gateway nginx -T 2>/dev/null | grep client_max_body_size
 ```
 
-정상값은 `UPLOAD_MAX_BYTES=524288000`이며 nginx 출력에는 서버 기본
+정상값은 `UPLOAD_MAX_BYTES=5368709120`이며 nginx 출력에는 서버 기본
 `client_max_body_size 64k;`와 `/api/v1/sbom-runs` 전용
-`client_max_body_size 501m;`가 함께 표시됩니다. 추가 1MiB는 multipart 요청 정보를
+`client_max_body_size 5122m;`가 함께 표시됩니다. 추가 2 MiB는 multipart 요청 정보를
 수용합니다. 외부 Nginx·Apache·L7 장비가 있으면 SBOM 업로드 경로만 501MiB 이상으로
 설정하고 인증·제어 경로에는 작은 기본 한도를 유지합니다.
 
 파일 전송이 끝난 뒤 422와 문서 파싱 제한 안내가 표시되면 풀린 SBOM 문서의
-크기와 구조를 확인합니다. 파싱 대상은 최대 128 MiB이며 JSON·XML의 중첩 깊이와
+크기와 구조를 확인합니다. 파싱 대상은 최대 128 MiB이며 큰 JSON은 문자열 밖 공백을 줄인 크기로 검사합니다. JSON·XML의 중첩 깊이와
 구조 복잡도에도 한도가 있습니다. 필요하다면 수집 대상을 나누어 SBOM을 생성합니다.
 
 ## 6. 수정한 UI가 아니라 이전 화면

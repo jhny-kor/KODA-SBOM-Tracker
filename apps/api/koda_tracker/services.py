@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import nullcontext
 import os
 import subprocess
 from collections import Counter
@@ -20,7 +21,7 @@ from .models import (
     RunComponent,
     SbomRun,
 )
-from .sbom import iter_components, licenses_for, normalized_identity, sbom_document_path, sbom_nis_scan_path, sha256_for
+from .sbom import SBOM_ARCHIVE_MEDIA_TYPES, iter_components, licenses_for, normalized_identity, sbom_document_path, sbom_nis_scan_path, sha256_for
 from . import package_metadata_models
 from .package_metadata import enqueue_components
 from . import workflow_models  # Register workflow tables before standalone create_all callers.
