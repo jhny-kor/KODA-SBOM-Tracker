@@ -1,6 +1,6 @@
 @echo off
 setlocal DisableDelayedExpansion
-pushd "%~dp0.." || exit /b 1
+pushd "%~dp0" || exit /b 1
 
 py.exe -3 -c "import sys; sys.exit(sys.version_info < (3, 12))" >nul 2>&1
 if not errorlevel 1 goto run_py

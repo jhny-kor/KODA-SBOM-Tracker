@@ -3,3 +3,14 @@
 !/collect-unified-data.cmd
 !/collect-unified-data.ps1
 !/collect-windows-vulnerability-data.py
+!/LICENSE
+!/NOTICE
+!/THIRD_PARTY_NOTICES.md
+!/lib/
+!/lib/archive_formats.py
+!/lib/build-data-update.py
+!/lib/collect-unified-data.py
+!/lib/nvd-alias-index.py
+!/lib/offline_intelligence.py
+!/lib/stage-intelligence.py
+!/lib/streaming_nvd.py

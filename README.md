@@ -105,8 +105,9 @@ SBOM 원본과 분석 리비전의 기준일·정책 버전을 보존하고 현�
   레코드만 브라우저 메모리에서 표시하며 Grype·KODA 정책 분석과 영구 저장은
   하지 않습니다. 소스에서 바로 실행하는 개발용 경로는
   `.\scripts\start-windows-preview.ps1 -OpenBrowser`입니다.
-- Windows에서 `vuln-db\collect-unified-data.cmd`를 실행하면 같은 폴더의 서명 키로 최신 Grype DB·NVD·CISA KEV·FIRST EPSS를
-  수집해 서명된 통합 압축파일과 SHA-256 체크섬을 만듭니다. 포털에서 압축파일을 그대로
+- Windows에서 `vuln-db` 폴더와 그 안의 `lib`를 복사한 뒤 `collect-unified-data.cmd`를 실행하면
+  최신 Grype DB·NVD·CISA KEV·FIRST EPSS를 수집합니다. 서명된 통합 압축파일과 SHA-256 체크섬을
+  `vuln-db\dist\vulnerability-data`에 저장합니다. 포털에서 압축파일을 그대로
   업로드해 검증한 뒤 적용합니다. [Windows 수집 및 반입 절차](docs/unified-vulnerability-data-ko.md#windows에서-최신-자료-압축-만들기)
 
 ## 로그인과 권한
