@@ -257,7 +257,7 @@ gateway는 브라우저가 보낸 신원 헤더를 제거한 뒤 Tracker가 반�
 서명된 통합 파일의 검증이 완료되면 **검증한 통합 자료 적용**을 누르고 활성
 릴리스와 자료별 기준일을 확인합니다. 데이터 적용에는 API나 분석 워커의 이미지
 재빌드가 필요하지 않습니다. Windows 수집 장비에서는
-저장소 루트의 `collect-unified-data.cmd`로 서명된 통합 파일과 운반용 SHA-256을 만들 수 있습니다.
+`vuln-db\collect-unified-data.cmd`로 서명된 통합 파일과 운반용 SHA-256을 만들 수 있습니다.
 [서명된 통합 자료 수집·반입](unified-vulnerability-data-ko.md)
 
 상단 **활성 CVE 기준일**은 현재 승인된 NVD 자료의 기준일입니다. 활성 자료나

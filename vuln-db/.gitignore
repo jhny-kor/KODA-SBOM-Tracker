@@ -1,0 +1,5 @@
+*
+!/.gitignore
+!/collect-unified-data.cmd
+!/collect-unified-data.ps1
+!/collect-windows-vulnerability-data.py

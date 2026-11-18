@@ -16,4 +16,5 @@ dist
 backups
 runtime
 volumes
+vuln-db
 .DS_Store
