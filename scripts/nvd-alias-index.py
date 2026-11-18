@@ -10,21 +10,30 @@ from __future__ import annotations
 
 import argparse
 import copy
-import gzip
 import json
 import re
+import sqlite3
+import sys
 import tempfile
+from collections.abc import Iterable
+from contextlib import closing
 from pathlib import Path
 from typing import Any, TextIO
 
+_SCRIPT_DIR = Path(__file__).resolve().parent
+_READER_DIR = next((directory for directory in (
+    _SCRIPT_DIR.parent / "apps/api/koda_tracker",
+    _SCRIPT_DIR,
+    _SCRIPT_DIR.parent / "source/apps/api/koda_tracker",
+    _SCRIPT_DIR.parent.parent / "source/tracker/koda_tracker",
+) if (directory / "streaming_nvd.py").is_file()), None)
+if _READER_DIR is None:
+    raise RuntimeError("NVD streaming reader is missing from this distribution")
+sys.path.insert(0, str(_READER_DIR))
+from streaming_nvd import Kind, NvdShapeError, read_json_sections
+
 
 IDENTIFIER = re.compile(r"\b(?:CVE-\d{4}-\d{4,}|GHSA-[0-9A-Z-]+)\b", re.IGNORECASE)
-
-
-def _open_json(path: Path) -> TextIO:
-    if path.name.endswith(".gz"):
-        return gzip.open(path, "rt", encoding="utf-8")
-    return path.open("r", encoding="utf-8")
 
 
 def _identifiers(value: Any) -> set[str]:
@@ -41,14 +50,6 @@ def _identifiers(value: Any) -> set[str]:
             result.update(_identifiers(item))
         return result
     return set()
-
-
-def _records(payload: Any) -> list[dict[str, Any]]:
-    if isinstance(payload, dict) and isinstance(payload.get("vulnerabilities"), list):
-        return [item for item in payload["vulnerabilities"] if isinstance(item, dict)]
-    if isinstance(payload, list):
-        return [item for item in payload if isinstance(item, dict)]
-    return []
 
 
 def _cve_record(record: dict[str, Any]) -> dict[str, Any] | None:
@@ -111,34 +112,124 @@ def _cve_record(record: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
-def build_metadata(inputs: list[Path]) -> tuple[dict[str, str], dict[str, dict[str, Any]], int]:
-    aliases: dict[str, str] = {}
-    details: dict[str, dict[str, Any]] = {}
+def _merge_feed(database: sqlite3.Connection, path: Path) -> int:
     records_seen = 0
-    for path in inputs:
-        with _open_json(path) as handle:
-            payload = json.load(handle)
-        for record in _records(payload):
-            cve = record.get("cve") if isinstance(record.get("cve"), dict) else record
-            metadata = _cve_record(record)
-            if metadata is None or not isinstance(cve, dict):
-                continue
-            canonical = metadata["id"]
-            records_seen += 1
-            aliases[canonical] = canonical
-            for alias in _identifiers(cve.get("references", [])):
-                aliases.setdefault(alias, canonical)
-            previous = details.get(canonical, {}).get("lastModified")
-            current = metadata.get("lastModified")
-            if isinstance(previous, str) and (not isinstance(current, str) or current < previous):
-                continue
-            details[canonical] = metadata
-    return dict(sorted(aliases.items())), dict(sorted(details.items())), records_seen
+    database.execute("SAVEPOINT nvd_feed")
+
+    def start_section(name: str | None, _kind: Kind | None) -> None:
+        nonlocal records_seen
+        # Match json.load when a duplicate vulnerabilities field replaces an
+        # earlier section, including when the final field is not an array.
+        if name == "vulnerabilities" and records_seen:
+            database.execute("ROLLBACK TO nvd_feed")
+            records_seen = 0
+
+    def add_record(_name: str | None, _key: str | int, record: object) -> None:
+        nonlocal records_seen
+        if not isinstance(record, dict):
+            return
+        metadata = _cve_record(record)
+        if metadata is None:
+            return
+        cve = record["cve"] if isinstance(record.get("cve"), dict) else record
+        canonical = metadata["id"]
+        records_seen += 1
+        # A real CVE overrides an alias of the same name. Reference aliases
+        # keep their first target, even when the metadata revision is older.
+        database.execute(
+            "INSERT INTO aliases VALUES (?, ?) ON CONFLICT(alias) DO UPDATE SET cve = excluded.cve",
+            (canonical, canonical),
+        )
+        database.executemany(
+            "INSERT INTO aliases VALUES (?, ?) ON CONFLICT(alias) DO NOTHING",
+            ((alias, canonical) for alias in _identifiers(cve.get("references", []))),
+        )
+        modified = metadata["lastModified"]
+        database.execute(
+            """INSERT INTO vulnerabilities VALUES (?, ?, ?)
+               ON CONFLICT(cve) DO UPDATE SET modified = excluded.modified, payload = excluded.payload
+               WHERE vulnerabilities.modified IS NULL OR excluded.modified >= vulnerabilities.modified""",
+            (canonical, modified if isinstance(modified, str) else None,
+             json.dumps(metadata, ensure_ascii=False, indent=2, sort_keys=True)),
+        )
+
+    try:
+        read_json_sections(
+            path,
+            section_names=lambda name, kind: name == "vulnerabilities" and kind == "list",
+            on_section=start_section,
+            on_entry=add_record,
+            allow_root_list=True,
+            allow_gzip=True,
+        )
+    except NvdShapeError:
+        # Like the previous indexer, a valid scalar root contains no records.
+        pass
+    except (ValueError, OSError, EOFError) as error:
+        raise ValueError(f"NVD feed {path}: {error}") from error
+    database.execute("RELEASE nvd_feed")
+    return records_seen
+
+
+def _populate(database: sqlite3.Connection, inputs: list[Path]) -> int:
+    database.executescript("""
+        PRAGMA cache_size = -8192;
+        CREATE TABLE aliases (alias TEXT PRIMARY KEY, cve TEXT NOT NULL) WITHOUT ROWID;
+        CREATE TABLE vulnerabilities (
+            cve TEXT PRIMARY KEY, modified TEXT, payload TEXT NOT NULL
+        ) WITHOUT ROWID;
+    """)
+    return sum(_merge_feed(database, path) for path in inputs)
+
+
+def build_metadata(inputs: list[Path]) -> tuple[dict[str, str], dict[str, dict[str, Any]], int]:
+    """Materialize an index for callers that need a Python mapping."""
+    with tempfile.TemporaryDirectory(prefix="nvd-index-") as temporary:
+        with closing(sqlite3.connect(Path(temporary) / "index.sqlite3")) as database:
+            records_seen = _populate(database, inputs)
+            aliases = dict(database.execute("SELECT alias, cve FROM aliases ORDER BY alias"))
+            details = {
+                cve: json.loads(payload)
+                for cve, payload in database.execute("SELECT cve, payload FROM vulnerabilities ORDER BY cve")
+            }
+    return aliases, details, records_seen
 
 
 def build_index(inputs: list[Path]) -> tuple[dict[str, str], int]:
     aliases, _, records_seen = build_metadata(inputs)
     return aliases, records_seen
+
+
+def _write_section(handle: TextIO, rows: Iterable[tuple[str, str]]) -> None:
+    handle.write("{")
+    separator = "\n"
+    for key, value_json in rows:
+        handle.write(separator)
+        indented = value_json.replace("\n", "\n    ")
+        handle.write(f"    {json.dumps(key)}: {indented}")
+        separator = ",\n"
+    if separator == ",\n":
+        handle.write("\n  ")
+    handle.write("}")
+
+
+def write_index(inputs: list[Path], output: Path) -> tuple[int, int]:
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".nvd-index-", dir=output.parent) as temporary:
+        workspace = Path(temporary)
+        with closing(sqlite3.connect(workspace / "index.sqlite3")) as database:
+            records_seen = _populate(database, inputs)
+            alias_count = database.execute("SELECT count(*) FROM aliases").fetchone()[0]
+            with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=workspace, delete=False) as handle:
+                staged = Path(handle.name)
+                aliases = database.execute("SELECT alias, cve FROM aliases ORDER BY alias")
+                handle.write('{\n  "aliases": ')
+                _write_section(handle, ((alias, json.dumps(cve)) for alias, cve in aliases))
+                handle.write(',\n  "vulnerabilities": ')
+                _write_section(handle, database.execute("SELECT cve, payload FROM vulnerabilities ORDER BY cve"))
+                handle.write("\n}\n")
+        staged.replace(output)
+    return records_seen, alias_count
 
 
 def main() -> int:
@@ -149,14 +240,11 @@ def main() -> int:
     for path in args.inputs:
         if not path.is_file():
             parser.error(f"NVD input does not exist: {path}")
-    aliases, details, records_seen = build_metadata(args.inputs)
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=args.output.parent, delete=False) as handle:
-        json.dump({"aliases": aliases, "vulnerabilities": details}, handle, ensure_ascii=False, indent=2, sort_keys=True)
-        handle.write("\n")
-        temporary = Path(handle.name)
-    temporary.replace(args.output)
-    print(f"Built NVD alias index: {args.output} ({records_seen} CVE records, {len(aliases)} identifiers)")
+    try:
+        records_seen, alias_count = write_index(args.inputs, args.output)
+    except (OSError, ValueError, sqlite3.Error) as error:
+        parser.exit(1, f"NVD index build failed: {error}\n")
+    print(f"Built NVD alias index: {args.output} ({records_seen} CVE records, {alias_count} identifiers)")
     return 0
 
 
