@@ -32,7 +32,8 @@ from starlette.concurrency import run_in_threadpool
 
 from .external_api import router as external_router
 from .java_impact import router as java_impact_router
-from .shared_ai import KodaFindingReviewRequest, KodaSummaryFacts, review_koda_finding, router as ai_router, summarize_koda_facts
+from .identity_suggestions import router as identity_suggestions_router
+from .shared_ai import KodaFindingReviewRequest, KodaSummaryFacts, comparison_briefing, review_koda_finding, router as ai_router, summarize_koda_facts
 from .upgrade_batches import router as upgrade_batches_router
 from .compatibility_data import router as compatibility_data_router
 from .compatibility_sources import MAX_ARCHIVE_BYTES as MAX_COMPATIBILITY_ARCHIVE_BYTES
@@ -474,6 +475,7 @@ app.include_router(java_impact_router)
 app.include_router(upgrade_batches_router)
 app.include_router(compatibility_data_router)
 app.include_router(ai_router)
+app.include_router(identity_suggestions_router)
 app.add_middleware(RequestBodyLimitMiddleware)
 _upload_persist_lock = asyncio.Lock()
 
@@ -2666,6 +2668,24 @@ def compare_runs(
         "vulnerabilities": finding_changes,
         "policies": policy_changes,
     }
+
+
+class ComparisonBriefingRequest(BaseModel):
+    baseRunId: str = Field(min_length=1, max_length=36)
+    targetRunId: str = Field(min_length=1, max_length=36)
+    baseAnalysisId: str | None = Field(default=None, max_length=36)
+    targetAnalysisId: str | None = Field(default=None, max_length=36)
+
+
+@app.post("/api/v1/comparisons/ai-briefing")
+def brief_comparison(
+    body: ComparisonBriefingRequest,
+    db: Session = Depends(get_db),
+    _=Depends(require_permission("compare.view")),
+    _csrf=Depends(require_csrf),
+) -> dict:
+    comparison = compare_runs(body.baseRunId, body.targetRunId, body.baseAnalysisId, body.targetAnalysisId, db=db, _=None)
+    return comparison_briefing(db, comparison)
 
 
 @app.get("/api/v1/audit-events")

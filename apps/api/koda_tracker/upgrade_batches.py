@@ -18,6 +18,7 @@ from .library_api import package_coordinate
 from .models import Environment, ProcessingState, Release, RunComponent, SbomRun, new_id, now
 from .security import require_csrf, require_permission
 from .services import audit
+from .shared_ai import upgrade_explanation
 from .upgrade_elf import ElfEvidence, eval_elf
 from .upgrade_maven import MavenEvidence, eval_maven, maven_version_key
 from .upgrade_native_versions import deb_version_key, rpm_version_key
@@ -386,3 +387,8 @@ def get_batch(run_id: Id, batch_id: Id, db: Session = Depends(get_db), user=Depe
     if not item or item.baseline_run_id != base.id or (item.result["serviceId"], item.result["environmentId"]) != _scope(base):
         raise HTTPException(404, "해당 회차의 검토 기록을 찾을 수 없습니다")
     return _batch_response(db, item, user)
+
+
+@router.post("/{run_id}/{batch_id}/ai-explanation", dependencies=[Depends(_view), Depends(require_csrf)])
+def explain_batch(run_id: Id, batch_id: Id, db: Session = Depends(get_db), user=Depends(_view)):
+    return upgrade_explanation(db, get_batch(run_id, batch_id, db, user))

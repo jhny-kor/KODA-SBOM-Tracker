@@ -93,3 +93,82 @@ export function TrackerAISummary({ runId }: { runId: string }) {
     {summary && <p role="status" style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{summary}</p>}
   </section>;
 }
+
+function useAIRequest<T>(path: string, body?: unknown) {
+  const [result, setResult] = useState<T | null>(null);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  async function run() {
+    setBusy(true); setError(""); setResult(null);
+    try {
+      setResult(await request<T>(path, body === undefined ? { method: "POST" } : {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+      }));
+    } catch (cause) { setError((cause as Error).message); }
+    finally { setBusy(false); }
+  }
+  return { result, error, busy, run };
+}
+
+const preWrap = { whiteSpace: "pre-wrap", overflowWrap: "anywhere" } as const;
+
+type Briefing = { briefing: { newRisks: string; resolvedRisks: string; approvalChecks: string[] }; truncated: string[] };
+
+export function ComparisonAIBriefing(props: { baseRunId: string; targetRunId: string; baseAnalysisId?: string; targetAnalysisId?: string }) {
+  const { result, error, busy, run } = useAIRequest<Briefing>("/api/v1/comparisons/ai-briefing", {
+    baseRunId: props.baseRunId, targetRunId: props.targetRunId,
+    ...(props.baseAnalysisId ? { baseAnalysisId: props.baseAnalysisId } : {}),
+    ...(props.targetAnalysisId ? { targetAnalysisId: props.targetAnalysisId } : {}),
+  });
+  return <section className="run-metadata-section" aria-label="사내 AI 릴리스 브리핑">
+    <button className="secondary" type="button" disabled={busy} onClick={() => void run()}>{busy ? "브리핑 생성 중…" : "사내 AI 릴리스 브리핑"}</button>
+    <p className="muted">비교 결과의 건수와 변경 목록(영역별 최대 30건)을 사내 모델에 보냅니다. 해시·회차 ID·원본은 보내지 않으며 응답은 검토 참고용입니다.</p>
+    {error && <p className="form-message" role="alert">{error}</p>}
+    {result && <div role="status">
+      <h4>새로 생긴 위험</h4><p style={preWrap}>{result.briefing.newRisks}</p>
+      <h4>해소된 위험</h4><p style={preWrap}>{result.briefing.resolvedRisks}</p>
+      {!!result.briefing.approvalChecks.length && <><h4>승인 전 확인</h4><ul className="paths">{result.briefing.approvalChecks.map((item, index) => <li key={index} style={preWrap}>{item}</li>)}</ul></>}
+      {!!result.truncated.length && <p className="muted">일부 목록만 전달했습니다. 전체 변경은 아래 탭에서 확인하세요.</p>}
+    </div>}
+  </section>;
+}
+
+type Explanation = { explanation: { summary: string; candidates: { version: string; note: string }[]; checklist: string[] } };
+
+export function UpgradeAIExplanation({ runId, batchId }: { runId: string; batchId: string }) {
+  const { result, error, busy, run } = useAIRequest<Explanation>(
+    `/api/v1/upgrade-batches/${encodeURIComponent(runId)}/${encodeURIComponent(batchId)}/ai-explanation`);
+  return <section className="run-metadata-section" aria-label="사내 AI 후보 해설">
+    <button className="secondary" type="button" disabled={busy} onClick={() => void run()}>{busy ? "해설 생성 중…" : "사내 AI로 해설"}</button>
+    <p className="muted">버전 선택은 위 검토 엔진 결과가 기준입니다. AI는 근거를 설명하고 확인 항목을 정리하며, 서버 별칭은 보내지 않습니다.</p>
+    {error && <p className="form-message" role="alert">{error}</p>}
+    {result && <div role="status">
+      <p style={preWrap}>{result.explanation.summary}</p>
+      {!!result.explanation.candidates.length && <ul className="paths">{result.explanation.candidates.map(item => <li key={item.version} style={preWrap}><strong>{item.version}</strong> · {item.note}</li>)}</ul>}
+      {!!result.explanation.checklist.length && <><h4>적용 전 확인</h4><ul className="paths">{result.explanation.checklist.map((item, index) => <li key={index} style={preWrap}>{item}</li>)}</ul></>}
+    </div>}
+  </section>;
+}
+
+type IdentityCandidate = { id: string; vendor: string; product: string; match: "exact" | "partial"; cveCount: number; cpe: string; confidence: "high" | "medium" | "low" | null; reason: string | null };
+type IdentityResult = { candidates: IdentityCandidate[]; dataAsOf: string | null; reason?: string };
+const confidenceLabel = { high: "높음", medium: "보통", low: "낮음" };
+
+export function IdentityAISuggestions({ runId, identityKey }: { runId: string; identityKey: string }) {
+  const { result, error, busy, run } = useAIRequest<IdentityResult>(
+    `/api/v1/ai/runs/${encodeURIComponent(runId)}/identity-suggestions`, { identityKey });
+  useEffect(() => { void run(); }, []); // eslint-disable-line react-hooks/exhaustive-deps -- one lookup per opened row
+  return <div aria-label="CPE 식별 후보" role="region">
+    {busy && <p className="muted">활성 NVD 자료에서 후보를 찾고 사내 AI로 순위를 매기는 중…</p>}
+    {error && <p className="form-message" role="alert">{error}</p>}
+    {result && !result.candidates.length && <p className="muted">{result.reason || "식별 후보가 없습니다."}</p>}
+    {result && !!result.candidates.length && <>
+      <p className="muted">후보는 NVD {result.dataAsOf || "기준일 미상"} 자료에서 이름 규칙으로만 찾고, AI는 순위와 근거만 붙입니다. 확인한 CPE를 원본 SBOM의 cpe 필드에 넣고 다시 업로드해야 분석에 반영됩니다.</p>
+      <table><thead><tr><th>CPE</th><th>이름 일치</th><th>관련 CVE</th><th>AI 신뢰도·근거</th></tr></thead>
+        <tbody>{result.candidates.map(item => <tr key={item.id}>
+          <td className="mono wrap">{item.cpe}</td><td>{item.match === "exact" ? "정확" : "부분"}</td><td>{item.cveCount}</td>
+          <td style={preWrap}>{item.confidence ? `${confidenceLabel[item.confidence]} · ${item.reason}` : "AI 순위 없음"}</td>
+        </tr>)}</tbody></table>
+    </>}
+  </div>;
+}

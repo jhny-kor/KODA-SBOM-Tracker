@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { request } from "./api";
 import { formatSeoulDateTime } from "./format";
 import { EvidenceFacts, SourceFiles, SourceLink, type ReferenceItem } from "./OfficialCompatibilityEvidence";
+import { UpgradeAIExplanation } from "./SharedAI";
 
 const endpoint = "/api/v1/upgrade-batches";
 const labels = { maven: "Java/Maven", python: "Python", elf: "Linux C/ELF" };
@@ -140,7 +141,7 @@ function UpgradeForm({ runId, canManage }: { runId: string; canManage: boolean }
         </form>
       </>}
     </>}
-    {result && <BatchResult result={result} />}
+    {result && <BatchResult runId={runId} result={result} />}
     {!!history.items.length && <section aria-label="일괄 검토 이력">
       <h3>검토 이력</h3>
       <ul className="paths">{history.items.map(item => <li key={item.id}>
@@ -177,7 +178,7 @@ function OfficialReferenceCell({ candidate }: { candidate: Candidate }) {
   </td>;
 }
 
-function BatchResult({ result }: { result: Batch }) {
+function BatchResult({ runId, result }: { runId: string; result: Batch }) {
   const showReferences = result.candidates.some(candidate => candidate.officialReferences !== undefined);
   return <section aria-label="후보 버전 검토 결과">
     <h3>{labels[result.ecosystem]} 후보 버전 검토 결과</h3>
@@ -199,5 +200,6 @@ function BatchResult({ result }: { result: Batch }) {
           <VerificationCell check={candidate.build} /><VerificationCell check={candidate.runtime} />
         </tr>)}</tbody></table>
     </div>
+    <UpgradeAIExplanation key={result.id} runId={runId} batchId={result.id} />
   </section>;
 }

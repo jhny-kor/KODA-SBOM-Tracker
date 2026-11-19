@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 from datetime import timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -12,11 +13,12 @@ from sqlalchemy.orm import sessionmaker
 from pydantic import SecretStr
 
 from koda_tracker.config import get_settings
-from koda_tracker import db as db_module, main as main_module
+from koda_tracker import db as db_module, identity_suggestions as identity_module, main as main_module
 from koda_tracker.external_api import ExternalReadToken
 from koda_tracker.main import app
 from koda_tracker.models import AnalysisRevision, JobState, ProcessingState, SbomRun, now
 from koda_tracker.shared_ai import SharedAISettings
+from koda_tracker.upgrade_batches import UpgradeBatch
 
 EXTERNAL = "/api/v1/integrations/external"
 JAVA = "/api/v1/java-impact"
@@ -52,7 +54,7 @@ def _service(client, headers):
     return response.json()["id"]
 
 
-def _run(client, headers, service, environment, version, cve, digest="a" * 64, additional_version=None):
+def _run(client, headers, service, environment, version, cve, digest="a" * 64, additional_version=None, extra=()):
     bom = {
         "bomFormat": "CycloneDX", "specVersion": "1.6", "version": 1,
         "metadata": {"component": {"type": "application", "name": "example", "bom-ref": "root"}},
@@ -67,6 +69,7 @@ def _run(client, headers, service, environment, version, cve, digest="a" * 64, a
         bom["components"].append({"type": "library", "name": "app-core", "version": additional_version,
                                   "bom-ref": "core-additional", "purl": f"{COORDINATE}@{additional_version}?type=jar"})
         bom["dependencies"][1]["dependsOn"].append("core-additional")
+    bom["components"].extend(extra)
     response = client.post("/api/v1/sbom-runs", data={
         "serviceId": service, "environmentId": environment, "releaseVersion": version,
     }, files={"sbom": ("integration.cdx.json", json.dumps(bom).encode(), "application/json")}, headers=headers)
@@ -327,3 +330,168 @@ def test_koda_finding_review_uses_private_provider_and_validates_advice(monkeypa
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
+
+
+def test_ai_assists_explain_tracker_results_without_deciding_them(monkeypatch):
+    calls = []
+    reply = {"content": ""}
+
+    class Model(BaseHTTPRequestHandler):
+        def do_POST(self):
+            calls.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(json.dumps({"choices": [{"message": {"content": reply["content"]}}]}).encode())
+
+        def log_message(self, *args):
+            pass
+
+    def facts(index=-1):
+        return json.loads(calls[index]["messages"][1]["content"])
+
+    class Index:
+        def items(self, query):
+            for identifier, record in RECORDS:
+                if query in record["descriptions"][0]["value"].casefold():
+                    yield identifier, record
+
+    def leaf(cpe):
+        return {"configurations": [{"nodes": [{"operator": "OR", "cpeMatch": [{"vulnerable": True, "criteria": cpe}]}]}]}
+
+    RECORDS = [
+        ("CVE-2024-0001", {"descriptions": [{"lang": "en", "value": "Issue in OpenSSL ssl handling"}],
+                           **leaf("cpe:2.3:a:openssl:openssl:*:*:*:*:*:*:*:*")}),
+        ("CVE-2024-0002", {"descriptions": [{"lang": "en", "value": "Issue in LibreSSL ssl handling"}],
+                           **leaf("cpe:2.3:a:openbsd:libressl:*:*:*:*:*:*:*:*")}),
+        ("CVE-2024-0003", {"descriptions": [{"lang": "en", "value": "Unrelated ssl text"}],
+                           **leaf("cpe:2.3:a:other:dashboard:*:*:*:*:*:*:*:*")}),
+    ]
+
+    @contextmanager
+    def release():
+        yield None, Index(), {"dataAsOf": "2026-11-01"}
+
+    monkeypatch.setattr(identity_module, "catalog_release", release)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Model)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with TestClient(app) as client:
+            csrf = _login(client)
+            service = _service(client, csrf)
+            env = next(item["id"] for item in client.get("/api/v1/environments").json() if item["slug"] == "prod")
+            native = {"type": "library", "name": "libssl.so.1.1", "version": "1.1.1k", "bom-ref": "native-ssl"}
+            base = _run(client, csrf, service, env, "1.0", "CVE-2025-20001")
+            target = _run(client, csrf, service, env, "2.0", "CVE-2025-20002", extra=[native])
+            briefing_body = {"baseRunId": base, "targetRunId": target}
+            assert client.post("/api/v1/comparisons/ai-briefing", json=briefing_body).status_code == 403
+            assert client.post("/api/v1/comparisons/ai-briefing", json=briefing_body, headers=csrf).status_code == 503
+            configured = client.put(AI + "/settings", headers=csrf, json={
+                "baseUrl": f"http://127.0.0.1:{server.server_port}/v1", "model": "internal-model"})
+            assert configured.status_code == 200, configured.text
+
+            # 6. Comparison briefing: computed diff in, structured advice out; hashes and run IDs stay home.
+            briefing = {"newRisks": "CVE-2025-20002가 새로 발견되었습니다.", "resolvedRisks": "CVE-2025-20001이 해소되었습니다.",
+                        "approvalChecks": ["신규 고위험 취약점의 수정 버전을 확인하세요."]}
+            reply["content"] = json.dumps(briefing)
+            response = client.post("/api/v1/comparisons/ai-briefing", json=briefing_body, headers=csrf)
+            assert response.status_code == 200, response.text
+            assert response.json() == {"model": "internal-model", "briefing": briefing, "truncated": [], "advisory": True}
+            sent = facts()
+            assert [row["id"] for row in sent["vulnerabilities"]["added"]] == ["CVE-2025-20002"]
+            assert [row["id"] for row in sent["vulnerabilities"]["removed"]] == ["CVE-2025-20001"]
+            assert {row["name"] for row in sent["components"]["added"]} == {"libssl.so.1.1"}
+            raw = calls[-1]["messages"][1]["content"]
+            assert base not in raw and target not in raw and "a" * 64 not in raw and "must-not-leave" not in raw
+            for invalid in ({**briefing, "verdict": "safe"}, {**briefing, "newRisks": " "},
+                            {**briefing, "approvalChecks": ["x"] * 9}):
+                reply["content"] = json.dumps(invalid)
+                assert client.post("/api/v1/comparisons/ai-briefing", json=briefing_body, headers=csrf).status_code == 502
+            reply["content"] = "자유 형식 답변"
+            assert client.post("/api/v1/comparisons/ai-briefing", json=briefing_body, headers=csrf).status_code == 502
+
+            # 5. Upgrade explanation: engine picks stay as stored; host labels never leave; unknown versions dropped.
+            with db_module.SessionLocal() as db:
+                run = db.get(SbomRun, base)
+                batch = UpgradeBatch(baseline_run_id=base, manifest_sha256="c" * 64, result={
+                    "schemaVersion": 1, "manifestSha256": "c" * 64, "createdAt": now().isoformat(), "importedBy": "test-admin",
+                    "baseline": {"runId": base, "sha256": run.sha256}, "serviceId": run.release.service_id,
+                    "environmentId": run.release.environment_id, "ecosystem": "maven", "coordinate": COORDINATE,
+                    "deploymentId": None, "platform": {"server": "build-host-private", "source": "ops-ledger", "os": "linux",
+                                                       "architecture": "x86_64", "javaMajor": 17},
+                    "currentVersions": ["1.0"], "highestConditionVersion": "1.2", "highestVerifiedVersion": None,
+                    "orderingLimited": False, "candidates": [
+                        {"version": "1.2", "sbom": None, "conditionStatus": "conditions_met", "reasons": ["Java 17 충족"],
+                         "evidenceSource": None, "reportSha256": None, "artifactSha256": None,
+                         "build": {"status": "not_reported"}, "runtime": {"status": "not_reported"}},
+                        {"version": "2.0", "sbom": None, "conditionStatus": "conflict", "reasons": ["Java 21 필요"],
+                         "evidenceSource": None, "reportSha256": None, "artifactSha256": None,
+                         "build": {"status": "not_reported"}, "runtime": {"status": "not_reported"}}]})
+                db.add(batch)
+                db.commit()
+                batch_id = batch.id
+            explanation = {"summary": "엔진이 1.2를 조건 충족 최고 버전으로 판정했습니다.",
+                           "candidates": [{"version": "1.2", "note": "Java 17 조건 충족"},
+                                          {"version": "9.9", "note": "모델이 만든 버전"}],
+                           "checklist": ["빌드·실행 기록을 반입하세요."]}
+            reply["content"] = json.dumps(explanation)
+            path = f"/api/v1/upgrade-batches/{base}/{batch_id}/ai-explanation"
+            assert client.post(path).status_code == 403
+            response = client.post(path, headers=csrf)
+            assert response.status_code == 200, response.text
+            assert [row["version"] for row in response.json()["explanation"]["candidates"]] == ["1.2"]
+            sent = facts()
+            assert sent["highestConditionVersion"] == "1.2" and sent["platform"] == {
+                "os": "linux", "architecture": "x86_64", "javaMajor": 17}
+            assert "build-host-private" not in calls[-1]["messages"][1]["content"]
+            assert client.post(f"/api/v1/upgrade-batches/{target}/{batch_id}/ai-explanation", headers=csrf).status_code == 404
+
+            # 3. Identity suggestions: candidates only from the NVD index; the model ranks, never invents.
+            components = client.get(f"/api/v1/sbom-runs/{target}/components", params={"size": 100}).json()["items"]
+            native_key = next(row["identityKey"] for row in components if row["name"] == "libssl.so.1.1")
+            purl_key = next(row["identityKey"] for row in components if row["purl"])
+            identity_path = AI + f"/runs/{target}/identity-suggestions"
+            assert client.post(identity_path, json={"identityKey": native_key}).status_code == 403
+            assert client.post(identity_path, json={"identityKey": purl_key}, headers=csrf).status_code == 409
+            assert client.post(identity_path, json={"identityKey": "missing"}, headers=csrf).status_code == 404
+            reply["content"] = json.dumps({"ranking": [
+                {"candidate": "c1", "confidence": "high", "reason": "libssl은 OpenSSL의 라이브러리입니다."},
+                {"candidate": "c9", "confidence": "high", "reason": "후보 밖"}]})
+            response = client.post(identity_path, json={"identityKey": native_key}, headers=csrf)
+            assert response.status_code == 200, response.text
+            result = response.json()
+            sent = facts()
+            assert {row["product"] for row in sent["candidates"]} == {"openssl", "libressl"}
+            assert sent["component"]["name"] == "libssl.so.1.1"
+            assert [row["id"] for row in result["candidates"]] == ["c1", "c0"]
+            top = result["candidates"][0]
+            assert top["confidence"] == "high" and top["product"] in {"openssl", "libressl"}
+            assert top["cpe"] == f"cpe:2.3:a:{top['vendor']}:{top['product']}:1.1.1k:*:*:*:*:*:*:*"
+            assert result["candidates"][1]["confidence"] is None and result["dataAsOf"] == "2026-11-01"
+            RECORDS.clear()
+            before = len(calls)
+            empty = client.post(identity_path, json={"identityKey": native_key}, headers=csrf).json()
+            assert empty["candidates"] == [] and len(calls) == before
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_identity_candidates_search_readable_names_and_compare_squashed_forms():
+    assert identity_module._search_terms("log4j-core-2.14.1.jar")[:2] == ["log4j-core", "log4j"]
+    assert identity_module._name_forms("jackson-databind-2.9.10.1") == {"jacksondatabind"}
+    assert identity_module._name_forms("libssl.so.1.1") == {"libssl", "ssl"}
+    queries = []
+
+    class Index:
+        def items(self, query):
+            queries.append(query)
+            text = {"log4j-core": "apache log4j-core jndi issue", "log4j": "apache log4j issue"}
+            if query in text:
+                yield "CVE-2021-44228", {"descriptions": [{"lang": "en", "value": text[query]}], "configurations": [
+                    {"nodes": [{"cpeMatch": [{"vulnerable": True, "criteria": "cpe:2.3:a:apache:log4j:*:*:*:*:*:*:*:*"}]}]}]}
+
+    rows = identity_module.nvd_candidates(Index(), "log4j-core-2.14.1.jar", "org.apache.logging.log4j")
+    assert queries[0] == "log4j-core"
+    assert [(row["vendor"], row["product"], row["match"]) for row in rows] == [("apache", "log4j", "partial")]
