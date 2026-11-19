@@ -1,3 +1,4 @@
+import { ResizableTable } from "./ResizableTable";
 import { Fragment, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { demoMode, previewMode, standaloneMode, activateVulnerabilityBundle, approveUser, archiveRun, createApiToken, createAnalysis, createEnvironment, createService, createUser, deleteRun, deleteUser, fetchAuditEvents, fetchApiTokens, fetchCatalogs, fetchComparison, fetchJob, fetchLdapSettings, fetchRun, fetchRunComponents, fetchRunFindings, fetchRuns, fetchUsers, fetchVulnerabilityBundles, login, patchEnvironment, patchService, patchUser, logout, register, resumeSession, revokeApiToken, updateLdapSettings, uploadRun, syncVulnerabilityBundles, fetchRolePolicies, updateRolePolicies, setForbiddenHandler } from "./api";
 import { demoChanges, demoLdapSettings, demoRolePolicyCatalog, demoRuns } from "./demo";
@@ -177,9 +178,10 @@ function cvssScore(record: Record<string, unknown>) {
   return found === undefined ? "-" : String(found);
 }
 
-function fixedInLabel(record: Record<string, unknown>) {
+function fixedInValues(record: Record<string, unknown>) {
   const value = record.fixedIn;
-  return Array.isArray(value) ? value.filter(Boolean).join(", ") || "-" : value ? String(value) : "-";
+  const versions = Array.isArray(value) ? value.filter(Boolean).map(String) : value ? [String(value)] : [];
+  return versions.length ? versions : ["-"];
 }
 
 function redactSha256(value: unknown): unknown {
@@ -338,9 +340,11 @@ function PreviewBars({ items, emptyLabel }: { items: { label: string; value: num
     <span>{item.label}</span><div className="preview-bar-track"><i className={item.tone || ""} style={{ width: `${(item.value / maximum) * 100}%` }} /></div><strong>{item.value}</strong>
   </div>))}</div>);}
 
-export function Dashboard({ runs, onUpload,
+export function Dashboard({ runs, onUpload, loading = false, recent = false,
   standalone,
   canUpload}: { runs: SbomRun[]; onUpload: () => void;
+  loading?: boolean;
+  recent?: boolean;
   standalone: boolean;
   canUpload: boolean;}) {
   const uploadedRuns = useMemo(() => runs
@@ -372,11 +376,11 @@ export function Dashboard({ runs, onUpload,
             </p></div>{canUpload && (<button className="primary" onClick={onUpload}><Icon name="upload" />SBOM 업로드
             </button>)}
         </div>
-    <div className="preview-empty"><Icon name="upload" /><h2>아직 업로드한 SBOM이 없습니다.</h2><p>SBOM 회차에서 CycloneDX 1.4~1.7 JSON/XML 또는 SPDX 2.3 JSON을 업로드하면 이 화면에 분석
+    {loading ? <p className="preview-empty" role="status">SBOM 현황을 불러오는 중입니다…</p> : <div className="preview-empty"><Icon name="upload" /><h2>아직 업로드한 SBOM이 없습니다.</h2><p>SBOM 회차에서 CycloneDX 1.4~1.7 JSON/XML 또는 SPDX 2.3 JSON을 업로드하면 이 화면에 분석
             그래프가 표시됩니다.
           </p>{canUpload && (<button className="primary" onClick={onUpload}>첫 SBOM 업로드
             </button>)}
-        </div>
+        </div>}
   </section>);
 
   const series = [
@@ -385,7 +389,7 @@ export function Dashboard({ runs, onUpload,
   const trendMaximum = Math.max(1, ...series.flatMap((item) => item.values));
   return (<section className="page preview-dashboard-page">
     <div className="page-heading"><div><p className="preview-eyebrow">{standalone ? "LOCAL" : "OPERATIONS"} SBOM PORTFOLIO
-          </p><h1>대시보드</h1><p className="preview-dashboard-subtitle">등록된 SBOM {uploadedRuns.length}건의 분석 결과입니다.{" "}
+          </p><h1>대시보드</h1><p className="preview-dashboard-subtitle">{recent ? "최근" : "등록된"} SBOM {uploadedRuns.length}건의 분석 결과입니다.{" "}
             {standalone ? "브라우저 내 미리보기 데이터" : "최신 분석 리비전"}을
             집계합니다.
           </p></div>{canUpload && (<button className="primary" onClick={onUpload}><Icon name="upload" />SBOM 업로드
@@ -420,8 +424,8 @@ export function Dashboard({ runs, onUpload,
     </div>
   </section>);}
 
-function RunsPage({ runs, services, environments, search, onUpload, onSelect,
-  canUpload}: { runs: SbomRun[]; services: CatalogItem[]; environments: CatalogItem[]; search: string; onUpload: () => void; onSelect: (run: SbomRun) => void;
+function RunsPage({ revision, services, environments, search, onUpload, onSelect,
+  canUpload}: { revision: number; services: CatalogItem[]; environments: CatalogItem[]; search: string; onUpload: () => void; onSelect: (run: SbomRun) => void;
   canUpload: boolean;}) {
   const [service, setService] = useState("");
   const [environment, setEnvironment] = useState("");
@@ -429,25 +433,30 @@ function RunsPage({ runs, services, environments, search, onUpload, onSelect,
   const [source, setSource] = useState<"manual" | "scheduled">("manual");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
-  const [result, setResult] = useState({ items: runs.slice(0, 10), page: 1, size: 10, total: runs.length });
-  const [searching, setSearching] = useState(false);
+  const [result, setResult] = useState({ items: [] as SbomRun[], page: 1, size: 10, total: 0 });
+  const [searching, setSearching] = useState(true);
   const [error, setError] = useState("");
   const deferredSearch = useDeferredValue(search.trim());
   useEffect(() => { queueMicrotask(() => setPage(1)); }, [deferredSearch]);
   useEffect(() => {
-    let cancelled = false;
+    const request = new AbortController();
     queueMicrotask(() => {
-      if (!cancelled) {
+      if (!request.signal.aborted) {
         setSearching(true);
         setError("");
       }
     });
-    void fetchRuns({ page, size: pageSize, q: deferredSearch, serviceId: service, environmentId: environment, state, source })
-      .then((next) => { if (!cancelled) setResult(next); })
-      .catch((reason) => { if (!cancelled) setError(reason instanceof Error ? reason.message : "회차를 불러오지 못했습니다."); })
-      .finally(() => { if (!cancelled) setSearching(false); });
-    return () => { cancelled = true; };
-  }, [deferredSearch, environment, page, pageSize, runs, service, source, state]);
+    void fetchRuns({ page, size: pageSize, q: deferredSearch, serviceId: service, environmentId: environment, state, source }, request.signal)
+      .then((next) => {
+        if (request.signal.aborted) return;
+        const finalPage = Math.max(1, Math.ceil(next.total / pageSize));
+        if (page > finalPage) setPage(finalPage);
+        setResult(next);
+      })
+      .catch((reason) => { if (!request.signal.aborted) setError(reason instanceof Error ? reason.message : "회차를 불러오지 못했습니다."); })
+      .finally(() => { if (!request.signal.aborted) setSearching(false); });
+    return () => request.abort();
+  }, [deferredSearch, environment, page, pageSize, revision, service, source, state]);
   const pageCount = Math.max(1, Math.ceil(result.total / pageSize));
   const currentPage = Math.min(page, pageCount);
   const visible = result.items;
@@ -461,7 +470,7 @@ function RunsPage({ runs, services, environments, search, onUpload, onSelect,
             </button>)}
         </div>
         <div className="status-summary">
-          <span>조회된 회차의 최신 CVE 기준일 <strong>{dataBaselineLabel(dataAsOf, "CVE 기준일 확인 필요")}</strong></span>
+          <span>최신 CVE 기준일 <strong>{dataBaselineLabel(dataAsOf, "CVE 기준일 확인 필요")}</strong></span>
           <i />
           <span>대기 작업 <strong className="warning">{queued}건</strong></span>
           <i />
@@ -480,7 +489,7 @@ function RunsPage({ runs, services, environments, search, onUpload, onSelect,
       </div>
       <div className="table-frame">
         <div className="table-scroll">
-          <table className="runs-table">
+          <ResizableTable className="runs-table">
             <thead><tr><th>서비스</th><th>환경</th><th>릴리스</th><th>회차</th><th>CVE 기준일</th><th>구성요소</th><th>취약 구성요소</th><th>정책 위반</th><th>처리 상태</th><th>업로드 시각</th></tr></thead>
             <tbody>
               {visible.map((run) => (
@@ -494,7 +503,7 @@ function RunsPage({ runs, services, environments, search, onUpload, onSelect,
               ))}
               {!visible.length && (<tr><td colSpan={10}>{searching ? "구성요소와 회차를 검색하고 있습니다…" : error || "조건에 맞는 회차가 없습니다."}</td></tr>)}
             </tbody>
-          </table>
+          </ResizableTable>
         </div>
         <div className="table-footer"><span>전체 {result.total}건 · {currentPage}/{pageCount}페이지
           </span><div><select aria-label="페이지당 행 수" value={pageSize} onChange={(event) => { setPageSize(Number(event.target.value)); setPage(1);}}><option value={10}>10개씩 보기</option><option value={20}>20개씩 보기</option><option value={50}>50개씩 보기</option><option value={100}>100개씩 보기</option></select><button aria-label="첫 페이지" disabled={currentPage === 1} onClick={() => setPage(1)}>|‹
@@ -541,6 +550,8 @@ function ComparePage({ runs, can }: { runs: SbomRun[]; can: (permission: string)
   const [baseAnalysisId, setBaseAnalysisId] = useState("");
   const [targetAnalysisId, setTargetAnalysisId] = useState("");
   const [tab, setTab] = useState<"components" | "vulnerabilities" | "policies">("components");
+  const [componentPage, setComponentPage] = useState(1);
+  const [componentPageSize, setComponentPageSize] = useState(10);
   const [selected, setSelected] = useState<ComponentChange | null>(demoChanges[2]);
   const [comparison, setComparison] = useState<Comparison | null>(null);
   const [message, setMessage] = useState("");
@@ -556,6 +567,7 @@ function ComparePage({ runs, can }: { runs: SbomRun[]; can: (permission: string)
     try {
       const result = await fetchComparison(baseId, targetId, baseAnalysisId || undefined, targetAnalysisId || undefined);
       setComparison(result);
+      setComponentPage(1);
       setSelected(result.components[0] || null);
       setMessage("");} catch (error) {
       setMessage(error instanceof Error ? error.message : "비교에 실패했습니다.");}
@@ -589,6 +601,9 @@ function ComparePage({ runs, can }: { runs: SbomRun[]; can: (permission: string)
   const securityAvailable = !!comparison && analysisAvailable(baseRevision || baseRun) && analysisAvailable(targetRevision || targetRun);
   const summary = comparison?.summary;
   const changes = comparison?.components || [];
+  const visibleComponentPage = Math.min(componentPage, Math.max(1, Math.ceil(changes.length / componentPageSize)));
+  const componentOffset = (visibleComponentPage - 1) * componentPageSize;
+  const visibleChanges = changes.slice(componentOffset, componentOffset + componentPageSize);
   return (
     <section className="page compare-page">
       <h1>회차 비교</h1>
@@ -623,13 +638,15 @@ function ComparePage({ runs, can }: { runs: SbomRun[]; can: (permission: string)
       {tab === "policies" && comparison && securityAvailable && <p className="form-message">기준 정책: {comparison.base.policyVersion ? `v${comparison.base.policyVersion}` : "기존 결과"} · {comparison.base.policyState === "completed" ? "평가 완료" : comparison.base.policyState === "failed" ? "평가 실패" : "KODA 정책 미평가"} / 비교 정책: {comparison.target.policyVersion ? `v${comparison.target.policyVersion}` : "기존 결과"} · {comparison.target.policyState === "completed" ? "평가 완료" : comparison.target.policyState === "failed" ? "평가 실패" : "KODA 정책 미평가"}</p>}
       {tab === "components" ? (
         <>
-          <div className="table-frame diff-table-frame"><div className="table-scroll"><table className="diff-table">
+          <div className="table-frame diff-table-frame">
+            <DetailPagination label="구성요소 비교 페이지당 행 수" total={changes.length} page={visibleComponentPage} pageSize={componentPageSize} onPage={setComponentPage} onPageSize={size => { setComponentPageSize(size); setComponentPage(1); }} />
+            <div className="table-scroll"><ResizableTable className="diff-table">
             <thead><tr><th>변화</th><th>구성요소</th><th>기준 버전</th><th>비교 버전</th><th>PURL</th></tr></thead>
-            <tbody>{changes.map((change) => (<tr key={change.identityKey} className={selected?.identityKey === change.identityKey ? "selected" : ""} onClick={() => setSelected(change)}>
+            <tbody>{visibleChanges.map((change) => (<tr key={change.identityKey} className={selected?.identityKey === change.identityKey ? "selected" : ""} onClick={() => setSelected(change)}>
               <td><span className={`change ${changeLabel(change).replace(" ", "-")}`}>{changeLabel(change)}</span></td><td>{change.name}</td><td>{change.baseVersion ?? "-"}</td><td>{change.targetVersion ?? "-"}</td><td className="mono">{change.purl}</td>
             </tr>))}</tbody>
-          </table></div></div>
-          {selected ? (<ComponentInspector change={selected} comparison={securityAvailable ? comparison : null} can={can} /> ): (<EmptyComparison kind="구성요소" rows={[]} />)}
+          </ResizableTable></div></div>
+          {selected ? (<ComponentInspector change={selected} comparison={securityAvailable ? comparison : null} can={can} /> ): (<p className="muted">구성요소 변화가 없습니다.</p>)}
         </>
       ) : !securityAvailable ? <p>완료된 분석 리비전을 선택해야 취약점·정책 변화를 확인할 수 있습니다.</p> : (
         <ComparisonRecordsTable
@@ -662,15 +679,17 @@ export function ComponentInspector({ change, comparison, can }: { change: Compon
   );}
 
 function ComparisonRecordsTable({ kind, rows }: { kind: string; rows: RecordChange[];}) {
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
+  const visiblePage = Math.min(page, Math.max(1, Math.ceil(rows.length / pageSize)));
+  const offset = (visiblePage - 1) * pageSize;
+  const visibleRows = rows.slice(offset, offset + pageSize);
   const isVulnerability = kind === "취약점";
-  return (<><>{kind === "정책 위반" && <p className="form-message">정책 위반은 분석 리비전에 저장된 판정 결과의 추가·해소·변경 내역입니다. KODA 정책 버전과 예외 변경도 비교에 반영됩니다. 기존 기존 외부 시스템 결과는 과거 리비전에 보존됩니다.</p>}</><div className="table-frame diff-table-frame"><div className="table-scroll"><table className="diff-table records-table"><thead><tr><th>변화</th><th>{isVulnerability ? "식별자" : "규칙"}</th><th>구성요소</th>{isVulnerability && <><th>CVSS</th><th>KEV</th></>}<th>상태</th></tr></thead><tbody>{rows.length ? (rows.map((row, index) => {
+  return (<><>{kind === "정책 위반" && <p className="form-message">정책 위반은 분석 리비전에 저장된 판정 결과의 추가·해소·변경 내역입니다. KODA 정책 버전과 예외 변경도 비교에 반영됩니다. 기존 기존 외부 시스템 결과는 과거 리비전에 보존됩니다.</p>}</><div className="table-frame diff-table-frame"><DetailPagination label={`${kind} 비교 페이지당 행 수`} total={rows.length} page={visiblePage} pageSize={pageSize} onPage={setPage} onPageSize={size => { setPageSize(size); setPage(1); }} /><div className="table-scroll"><ResizableTable className="diff-table records-table"><thead><tr><th>변화</th><th>{isVulnerability ? "식별자" : "규칙"}</th><th>구성요소</th>{isVulnerability && <><th>CVSS</th><th>KEV</th></>}<th>상태</th></tr></thead><tbody>{rows.length ? (visibleRows.map((row, index) => {
     const record = row.record || row.target || row.base || {};
     const status = severityValue(record);
-    return (<tr key={`${row.change}-${index}`}><td><span className={`change ${row.change === "added" ? "추가" : row.change === "removed" ? "제거" : "버전-변경"}`}>{row.change === "added" ? "신규" : row.change === "removed" ? "해소" : "변경"}</span></td><td className="mono">{String(record.canonicalId || record.id || record.policyName || record.policyId || record.rule || "-")}</td><td>{String(record.component || "-")}</td>{isVulnerability && <><td>{cvssScore(record)}</td><td>{record.kev ? "KEV" : "-"}</td></>}<td>{isVulnerability ? <span className={`severity-pill ${severityClass(status)}`}>{severityLabel(status)}</span> : record.suppressed ? "기한부 예외" : record.action === "fail" ? "위반" : record.action === "warn" ? "경고" : String(status)}</td></tr>);}) ): (<tr><td colSpan={isVulnerability ? 6 : 4}>변화가 없습니다.</td></tr>)}</tbody></table></div></div></>);}
+    return (<tr key={`${row.change}-${index}`}><td><span className={`change ${row.change === "added" ? "추가" : row.change === "removed" ? "제거" : "버전-변경"}`}>{row.change === "added" ? "신규" : row.change === "removed" ? "해소" : "변경"}</span></td><td className="mono">{String(record.canonicalId || record.id || record.policyName || record.policyId || record.rule || "-")}</td><td>{String(record.component || "-")}</td>{isVulnerability && <><td>{cvssScore(record)}</td><td>{record.kev ? "KEV" : "-"}</td></>}<td>{isVulnerability ? <span className={`severity-pill ${severityClass(status)}`}>{severityLabel(status)}</span> : record.suppressed ? "기한부 예외" : record.action === "fail" ? "위반" : record.action === "warn" ? "경고" : String(status)}</td></tr>);}) ): (<tr><td colSpan={isVulnerability ? 6 : 4}>변화가 없습니다.</td></tr>)}</tbody></ResizableTable></div></div></>);}
 
-function EmptyComparison({ kind, rows }: { kind: string; rows: RecordChange[];}) {
-  return <ComparisonRecordsTable kind={kind} rows={rows} />;
-}
 
 function UploadModal({
   services,
@@ -740,7 +759,7 @@ function UploadModal({
           <small id="sbom-archive-formats">압축 업로드: ZIP · TAR.GZ/TGZ · TAR · 7Z. 압축파일에는 위 지원 형식의 JSON/XML/CSV 문서 파일만 정확히 1개 넣으세요. README 등 동반 파일은 허용하지 않습니다. 형식과 내용은 서버에서 확인합니다.</small>
           <small id="sbom-workbook-format">Excel (.xlsx, 최대 10 MiB) 첫 시트의 1~5행에는 A열 또는 B열에 항목명, C열에 값을 입력하세요. 항목 순서는 솔루션명, 기준 버전, 운영 OS Platform, 작성일자, 대상 서버입니다. 6행 A~F열은 번호, 구분, 컴포넌트명, 버전, 라이선스 유형, 비고 / 상세 설명입니다. 버전은 텍스트 셀에 입력하세요.</small>
         </>}
-        <small id="sbom-upload-limit">{!standaloneMode && "SBOM 업로드 "}최대 {standaloneMode ? "100 MiB" : "5 GiB (문서 파싱 제한 별도)"}</small>
+        <small id="sbom-upload-limit">{standaloneMode ? "최대 100 MiB" : "업로드 및 압축 해제 후 최대 5 GiB · 128 MiB 초과 문서는 CycloneDX 1.6/1.7 UTF-8 JSON으로 제출하세요."}</small>
       </label>
       <label>메모
             <textarea name="note" rows={3} placeholder="변경 사유 또는 배포 식별자" /></label>
@@ -828,6 +847,7 @@ function RunDetail({ run, onClose, onChanged, username, onOpenLibrary,
   const currentFindingPage = Math.min(findingPage, findingPageCount);
   return (<div className="drawer-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><section className="detail-modal" role="dialog" aria-modal="true" aria-labelledby="run-detail-title"><header><div><ScrollingText>{current.service.name}</ScrollingText><h2 id="run-detail-title"><ScrollingText>{`${current.releaseVersion} · ${current.roundNumber}차`}</ScrollingText></h2></div><button type="button" className="icon-button" aria-label="회차 상세 닫기" onClick={onClose}><Icon name="close" /></button></header>
     <div className="detail-status"><span className={`state ${current.state}`}>{stateLabel(current.state)}</span><span>{scheduled ? "스케줄 점검" : "수동/API 점검"}</span><span className="detail-environment"><ScrollingText>{current.environment.name}</ScrollingText></span><span>CycloneDX {current.specVersion}</span></div>
+    <section className="run-detail-group" aria-labelledby="run-detail-summary"><h3 id="run-detail-summary">회차 정보</h3>
     <dl><dt>원본 파일</dt><dd><ScrollingText>{current.filename || "-"}</ScrollingText></dd>{scheduled && (<><dt>대상 서버</dt><dd>{String(sourceMetadata.server || sourceMetadata.remoteServer || "-")}</dd><dt>대상 디렉토리</dt><dd className="mono wrap">{String(sourceMetadata.directory || sourceMetadata.remoteDirectory || "-")}</dd><dt>점검 방식</dt><dd>{String(sourceMetadata.mode || "-")}</dd><dt>예약 실행 ID</dt><dd className="mono wrap">{String(sourceMetadata.scheduleRunId || "-")}</dd><dt>규칙 버전</dt><dd>{String(sourceMetadata.rulePolicyVersion ?? "-")}</dd></>)}<dt>CVE 기준일</dt><dd>{cveBaseline(current)}</dd><dt>오프라인 분석</dt><dd>{jobStateLabel(current.analysisState)}</dd><dt>구성요소</dt><dd>{current.componentCount.toLocaleString()}개</dd><dt>취약 구성요소</dt><dd>{analysisAvailable(current) && current.vulnerableComponentCount != null ? `${current.vulnerableComponentCount.toLocaleString()}개` : "미평가"}</dd><dt>정책 위반·경고·정보</dt><dd>{policyCountLabel(current)}{current.policyState === "completed" ? "건" : ""}</dd></dl>
     {workbookMetadata && <>
       <h3>Excel 원본 정보</h3>
@@ -839,19 +859,28 @@ function RunDetail({ run, onClose, onChanged, username, onOpenLibrary,
     {!analysisAvailable(current) && <p role="alert" className="drawer-error">{analysisUnavailableReason(current)}</p>}
     {current.note && <p className="preview-note">메모: {current.note}</p>}
     <RunMetadataEditor key={`metadata-${current.id}`} runId={current.id} onSaved={async () => { const refreshed = await fetchRun(current.id); setDetail(refreshed); onChanged(); }} />
+    </section>
+    <section className="run-detail-group" aria-labelledby="run-component-inspector">
+    <div className="detail-table-heading"><h3 id="run-component-inspector">구성요소 검사기 ({componentResult.total.toLocaleString()})</h3><label className="detail-search"><Icon name="search" /><input aria-label="구성요소 검색" value={componentQuery} onChange={(event) => { setComponentQuery(event.target.value); setComponentPage(1); }} placeholder="이름, 버전, PURL 검색" /></label></div><div className="table-scroll"><ResizableTable className="component-inspector-table"><thead><tr><th>이름</th><th>버전</th><th>{workbookMetadata ? "구분 · 비고" : "PURL"}</th><th>라이선스</th></tr></thead><tbody>{components.map((component) => (<Fragment key={component.identityKey}><tr><td>{onOpenLibrary ? <button className="environment-row-button" onClick={() => onOpenLibrary(component.name)}><ScrollingText focusable={false}>{component.name}</ScrollingText></button> : <ScrollingText>{component.name}</ScrollingText>}<AssetEvidence component={component} /></td><td><ScrollingText>{component.version || "-"}</ScrollingText></td><td className="mono"><ScrollingText>{workbookMetadata ? workbookComponentNotes(component) : component.purl || component.bomRef || "-"}</ScrollingText>{!previewMode && !component.purl && current.state === "completed" && <button type="button" className="secondary cpe-candidate-button" aria-expanded={identityKey === component.identityKey} onClick={() => setIdentityKey(key => key === component.identityKey ? "" : component.identityKey)}>CPE 식별 후보</button>}</td><td>{component.licenses?.length ? component.licenses.map((license, index) => <ScrollingText key={index}>{typeof license === "string" ? license : String((license as { license?: { id?: string; name?: string } }).license?.id || (license as { license?: { id?: string; name?: string } }).license?.name || "식별 불가")}</ScrollingText>) : "-"}</td></tr>{identityKey === component.identityKey && <tr><td colSpan={4}><IdentityAISuggestions key={`${current.id}:${component.identityKey}`} runId={current.id} identityKey={component.identityKey} /></td></tr>}</Fragment>))}{!components.length && (<tr><td colSpan={4}>{deferredComponentQuery ? "검색 조건에 맞는 구성요소가 없습니다." : "구성요소 상세가 없습니다."}</td></tr>)}</tbody></ResizableTable></div><DetailPagination total={componentResult.total} page={currentComponentPage} pageSize={componentPageSize} onPage={setComponentPage} onPageSize={(size) => { setComponentPageSize(size); setComponentPage(1); }} />
+    </section>
+    <section className="run-detail-group" aria-labelledby="run-finding-inspector">
+    <h3 id="run-finding-inspector">취약점 검사기 ({analysisAvailable(current) ? findingResult.total.toLocaleString() : "미평가"})</h3><div className="table-scroll"><ResizableTable className="finding-inspector-table"><thead><tr><th>취약점 ID</th><th>심각도</th><th>구성요소</th><th>CVSS</th><th>KEV</th><th>CWE</th><th>EPSS</th><th>제안 버전</th><th>VEX 검토</th></tr></thead><tbody>{findings.map((finding, index) => { const severity = String(finding.severity || "unknown"); return (<tr key={`${String(finding.canonicalId || finding.id || "finding")}-${(currentFindingPage - 1) * findingPageSize + index}`}><td className="mono">{String(finding.canonicalId || finding.id || "식별자 없음")}{finding.sourceKind === "private_vulnerability" && <small className="workflow-id"><ScrollingText>{["사내 취약점", finding.title, finding.description].filter(Boolean).join(" · ")}</ScrollingText></small>}</td><td><span className={`severity-pill ${severityClass(severity)}`}>{severityLabel(severity)}</span></td><td className="mono"><ScrollingText>{String(finding.componentName || finding.component || "-")}</ScrollingText><OracleHomeEvidence value={finding.oracleHomeEvidence} /></td><td>{cvssScore(finding)}</td><td>{finding.kev ? "KEV" : "-"}</td><td>{Array.isArray(finding.cwes) && finding.cwes.length ? [...new Set(finding.cwes.map(String))].map(value => <ScrollingText key={value}>{`CWE-${value}`}</ScrollingText>) : "확인 안 됨"}</td><td><EpssEvidence finding={finding} stacked /></td><td>{fixedInValues(finding).map((version, versionIndex) => <ScrollingText key={versionIndex}>{version}</ScrollingText>)}</td><td>{finding.vex && typeof finding.vex === "object" ? <span title={String((finding.vex as Record<string, unknown>).detail || "")}>{(finding.vex as Record<string, unknown>).suppressed ? "승인된 영향 없음·오탐 (원시 발견 보존)" : `승인된 ${String((finding.vex as Record<string, unknown>).state || "검토")}`}</span> : "미검토"}</td></tr>);})}{!findings.length && (<tr><td colSpan={9}>{analysisAvailable(current) ? "취약점 결과가 없습니다." : analysisUnavailableReason(current)}</td></tr>)}</tbody></ResizableTable></div><DetailPagination total={findingResult.total} page={currentFindingPage} pageSize={findingPageSize} onPage={setFindingPage} onPageSize={(size) => { setFindingPageSize(size); setFindingPage(1); }} />
+    </section>
+    <section className="run-detail-group" aria-label="정책 및 분석 요약">
     {showCompletedRunTools && analysisAvailable(current) && <TrackerAISummary key={`ai-${current.id}`} runId={current.id} />}
     <NativePolicyResult result={current} runId={current.id} />
-    <div className="detail-table-heading"><h3>구성요소 검사기 ({componentResult.total.toLocaleString()})</h3><label className="detail-search"><Icon name="search" /><input aria-label="구성요소 검색" value={componentQuery} onChange={(event) => { setComponentQuery(event.target.value); setComponentPage(1); }} placeholder="이름, 버전, PURL 검색" /></label></div><div className="table-scroll"><table className="component-inspector-table"><thead><tr><th>이름</th><th>버전</th><th>{workbookMetadata ? "구분 · 비고" : "PURL"}</th><th>라이선스</th></tr></thead><tbody>{components.map((component) => (<Fragment key={component.identityKey}><tr><td>{onOpenLibrary ? <button className="environment-row-button" onClick={() => onOpenLibrary(component.name)}><ScrollingText focusable={false}>{component.name}</ScrollingText></button> : <ScrollingText>{component.name}</ScrollingText>}<AssetEvidence component={component} /></td><td><ScrollingText>{component.version || "-"}</ScrollingText></td><td className="mono"><ScrollingText>{workbookMetadata ? workbookComponentNotes(component) : component.purl || component.bomRef || "-"}</ScrollingText>{!previewMode && !component.purl && current.state === "completed" && <button type="button" className="secondary compact" aria-expanded={identityKey === component.identityKey} onClick={() => setIdentityKey(key => key === component.identityKey ? "" : component.identityKey)}>CPE 식별 후보</button>}</td><td>{component.licenses?.length ? component.licenses.map((license) => typeof license === "string" ? license : String((license as { license?: { id?: string; name?: string };}).license?.id || (license as { license?: { id?: string; name?: string;};}).license?.name || "식별 불가")).join(", ") : "-"}</td></tr>{identityKey === component.identityKey && <tr><td colSpan={4}><IdentityAISuggestions key={`${current.id}:${component.identityKey}`} runId={current.id} identityKey={component.identityKey} /></td></tr>}</Fragment>))}{!components.length && (<tr><td colSpan={4}>{deferredComponentQuery ? "검색 조건에 맞는 구성요소가 없습니다." : "구성요소 상세가 없습니다."}</td></tr>)}</tbody></table></div><DetailPagination total={componentResult.total} page={currentComponentPage} pageSize={componentPageSize} onPage={setComponentPage} onPageSize={(size) => { setComponentPageSize(size); setComponentPage(1); }} />
-    <h3>취약점 검사기 ({analysisAvailable(current) ? findingResult.total.toLocaleString() : "미평가"})</h3><div className="table-scroll"><table className="finding-inspector-table"><thead><tr><th>취약점 ID</th><th>심각도</th><th>구성요소</th><th>CVSS</th><th>KEV</th><th>CWE / EPSS</th><th>제안 버전</th><th>VEX 검토</th></tr></thead><tbody>{findings.map((finding, index) => { const severity = String(finding.severity || "unknown"); return (<tr key={`${String(finding.canonicalId || finding.id || "finding")}-${(currentFindingPage - 1) * findingPageSize + index}`}><td className="mono">{String(finding.canonicalId || finding.id || "식별자 없음")}{finding.sourceKind === "private_vulnerability" && <small className="workflow-id">사내 취약점 · {String(finding.title || "")}<br/>{String(finding.description || "")}</small>}</td><td><span className={`severity-pill ${severityClass(severity)}`}>{severityLabel(severity)}</span></td><td className="mono"><ScrollingText>{String(finding.componentName || finding.component || "-")}</ScrollingText><OracleHomeEvidence value={finding.oracleHomeEvidence} /></td><td>{cvssScore(finding)}</td><td>{finding.kev ? "KEV" : "-"}</td><td>{Array.isArray(finding.cwes) && finding.cwes.length ? finding.cwes.map(value=>`CWE-${value}`).join(", ") : "CWE 확인 안 됨"}<br/><EpssEvidence finding={finding} /></td><td><ScrollingText>{fixedInLabel(finding)}</ScrollingText></td><td>{finding.vex && typeof finding.vex === "object" ? <span title={String((finding.vex as Record<string, unknown>).detail || "")}>{(finding.vex as Record<string, unknown>).suppressed ? "승인된 영향 없음·오탐 (원시 발견 보존)" : `승인된 ${String((finding.vex as Record<string, unknown>).state || "검토")}`}</span> : "미검토"}</td></tr>);})}{!findings.length && (<tr><td colSpan={8}>{analysisAvailable(current) ? "취약점 결과가 없습니다." : analysisUnavailableReason(current)}</td></tr>)}</tbody></table></div><DetailPagination total={findingResult.total} page={currentFindingPage} pageSize={findingPageSize} onPage={setFindingPage} onPageSize={(size) => { setFindingPageSize(size); setFindingPage(1); }} />
+    </section>
+    <SbomQualityPanel runId={current.id} analysisId={latestAnalysisId} canRerun={can("analysis.create")} canViewProfiles={can("policies.view") || can("policies.manage")} canManage={can("policies.manage")} archived={current.state === "archived"} />
     {showCompletedRunTools && <>
       <JavaUpgradePanel key={`java-${current.id}`} runId={current.id} serviceId={current.service.id} canManage={can("catalog.manage")} />
       <OfflineUpgradePanel key={`upgrade-${current.id}`} runId={current.id} canManage={can("catalog.manage")} />
     </>}
-    <SbomQualityPanel runId={current.id} analysisId={latestAnalysisId} canRerun={can("analysis.create")} canViewProfiles={can("policies.view") || can("policies.manage")} canManage={can("policies.manage")} archived={current.state === "archived"} />
     <CpeCoverage analysis={latestAnalysis} loading={!detail} collectionCoverage={detail?.collectionCoverage} collectionCoverageState={detail?.collectionCoverageState} />
-    <h3>분석 리비전</h3><ul className="paths">{detail?.analyses?.length ? (detail.analyses.map((analysis) => (<li key={analysis.id}>r{analysis.sequence} · {jobStateLabel(analysis.state)} ·{" "}
+    <section className="run-detail-group" aria-labelledby="run-analysis-history">
+    <h3 id="run-analysis-history">분석 리비전</h3><ul className="paths">{detail?.analyses?.length ? (detail.analyses.map((analysis) => (<li key={analysis.id}>r{analysis.sequence} · {jobStateLabel(analysis.state)} ·{" "}
                 {dataBaselineLabel(preferredCveDate(analysis.cveDataAsOf, analysis.dataAsOf), "CVE 기준일 확인 필요")} · 취약 구성요소 {analysisAvailable(analysis) && analysis.vulnerableComponentCount != null ? `${analysis.vulnerableComponentCount.toLocaleString()}개` : "미평가"}{analysis.error ? ` · ${analysis.error}` : ""} · 정책 {analysis.policyVersion ? `v${analysis.policyVersion}` : "-"} · {analysis.policyState === "completed" ? "평가 완료" : analysis.policyState === "failed" ? "평가 실패" : "미평가"}{analysis.policyError ? ` · ${analysis.policyError}` : ""}<AnalysisPolicyHistory analysis={analysis} runId={current.id} /></li>) )
           ): (<li>상세를 불러오는 중이거나 분석 리비전이 없습니다.</li>)}</ul>
+    </section>
               {(can("metadata.view") || can("metadata.manage")) && <PackageMetadataPanel runId={current.id} canManage={can("metadata.manage")} />}
     {can("metadata.view") && <OfflineRunEvidence key={`offline-${current.id}`} runId={current.id} canRespond={can("vex.manage")} canViewResponses={can("vex.view")} />}
     {(can("ssvc.view") || can("ssvc.manage")) && <SsvcAssessmentsPanel key={`ssvc-${current.id}`} runId={current.id} findings={findings} canManage={can("ssvc.manage")} />}
@@ -952,16 +981,16 @@ function ServicesPage({
             </button></div>)}
       </div>
     {message && (<p className="form-message" role="status">{message}</p>)}
-    <div className="settings-grid catalog-grid"><div className="table-frame"><h2 className="table-title">서비스 {activeServices.length}개</h2><div className="table-scroll" role="region" aria-label="서비스 목록 가로 스크롤" tabIndex={0}><table className="service-catalog-flow-table"><thead><tr><th>서비스</th><th>식별자</th><th>작업</th></tr></thead><tbody>{activeServices.length ? (visibleServices.map((item) => (<tr key={item.id}><td><ScrollingText>{item.name}</ScrollingText></td><td className="mono"><ScrollingText>{item.slug}</ScrollingText></td><td><button type="button" className="secondary compact" title={item.id} onClick={() => void copyOrShow("서비스 연동 ID", item.id)}>연동 ID 복사</button>{canManage && (
+    <div className="settings-grid catalog-grid"><div className="table-frame"><h2 className="table-title">서비스 {activeServices.length}개</h2><div className="table-scroll" role="region" aria-label="서비스 목록 가로 스크롤" tabIndex={0}><ResizableTable className="service-catalog-flow-table"><thead><tr><th>서비스</th><th>식별자</th><th>작업</th></tr></thead><tbody>{activeServices.length ? (visibleServices.map((item) => (<tr key={item.id}><td><ScrollingText>{item.name}</ScrollingText></td><td className="mono"><ScrollingText>{item.slug}</ScrollingText></td><td><button type="button" className="secondary compact" title={item.id} onClick={() => void copyOrShow("서비스 연동 ID", item.id)}>연동 ID 복사</button>{canManage && (
                         <>
                           {" "}
                           <button className="secondary compact" disabled={busy} onClick={() => void editService(item)}>이름 변경
                           </button> {" "}<button className="danger compact" disabled={busy} onClick={() => void removeService(item)}>삭제</button></>
                       )}
     </td></tr>) )
-              ): (<tr><td colSpan={3}>등록된 서비스가 없습니다.</td></tr>)}</tbody></table></div><DetailPagination total={activeServices.length} page={currentServicePage} pageSize={catalogPageSize} label="서비스 페이지당 행 수" onPage={setServicePage} onPageSize={(size) => { setCatalogPageSize(size); setServicePage(1); setEnvironmentPage(1); }} /></div><div className="table-frame"><h2 className="table-title">환경 {activeEnvironments.length}개</h2><div className="table-scroll" role="region" aria-label="환경 목록 가로 스크롤" tabIndex={0}><table className="environment-catalog-flow-table"><thead><tr><th>환경</th><th>식별자</th><th>정렬</th><th>작업</th></tr></thead><tbody>{activeEnvironments.length ? (visibleEnvironments.map((item) => (<tr key={item.id}><td><ScrollingText>{item.name}</ScrollingText></td><td className="mono"><ScrollingText>{item.slug}</ScrollingText></td><td>{item.sortOrder ?? "-"}</td><td><button type="button" className="secondary compact" title={item.id} onClick={() => void copyOrShow("환경 연동 ID", item.id)}>연동 ID 복사</button>{canManage && (<>{" "}<button className="secondary compact" disabled={busy} onClick={() => setEditingEnvironment(item)}>변경
+              ): (<tr><td colSpan={3}>등록된 서비스가 없습니다.</td></tr>)}</tbody></ResizableTable></div><DetailPagination total={activeServices.length} page={currentServicePage} pageSize={catalogPageSize} label="서비스 페이지당 행 수" onPage={setServicePage} onPageSize={(size) => { setCatalogPageSize(size); setServicePage(1); setEnvironmentPage(1); }} /></div><div className="table-frame"><h2 className="table-title">환경 {activeEnvironments.length}개</h2><div className="table-scroll" role="region" aria-label="환경 목록 가로 스크롤" tabIndex={0}><ResizableTable className="environment-catalog-flow-table"><thead><tr><th>환경</th><th>식별자</th><th>정렬</th><th>작업</th></tr></thead><tbody>{activeEnvironments.length ? (visibleEnvironments.map((item) => (<tr key={item.id}><td><ScrollingText>{item.name}</ScrollingText></td><td className="mono"><ScrollingText>{item.slug}</ScrollingText></td><td>{item.sortOrder ?? "-"}</td><td><button type="button" className="secondary compact" title={item.id} onClick={() => void copyOrShow("환경 연동 ID", item.id)}>연동 ID 복사</button>{canManage && (<>{" "}<button className="secondary compact" disabled={busy} onClick={() => setEditingEnvironment(item)}>변경
                         </button> <button className="danger compact" disabled={busy} onClick={() => void removeEnvironment(item)}>삭제</button></>)}</td></tr>) )
-              ): (<tr><td colSpan={4}>등록된 환경이 없습니다.</td></tr>)}</tbody></table></div><DetailPagination total={activeEnvironments.length} page={currentEnvironmentPage} pageSize={catalogPageSize} label="환경 페이지당 행 수" onPage={setEnvironmentPage} onPageSize={(size) => { setCatalogPageSize(size); setServicePage(1); setEnvironmentPage(1); }} /></div></div>
+              ): (<tr><td colSpan={4}>등록된 환경이 없습니다.</td></tr>)}</tbody></ResizableTable></div><DetailPagination total={activeEnvironments.length} page={currentEnvironmentPage} pageSize={catalogPageSize} label="환경 페이지당 행 수" onPage={setEnvironmentPage} onPageSize={(size) => { setCatalogPageSize(size); setServicePage(1); setEnvironmentPage(1); }} /></div></div>
     {mode && (<div className="modal-backdrop" role="presentation"><section className="modal" role="dialog" aria-modal="true"><header><h2>{mode === "service" ? "서비스 추가" : "환경 추가"}</h2><button type="button" className="icon-button" aria-label="추가 창 닫기" onClick={() => setMode(null)}><Icon name="close" /></button></header><form onSubmit={submit}><label>이름
                 <input name="name" required autoFocus /></label><label>식별자
                 <input name="slug" pattern="[a-z0-9][a-z0-9-]{1,126}[a-z0-9]" required /><small>영문 소문자, 숫자, 하이픈만 사용합니다.</small></label>{mode === "environment" && (<label>정렬 순서
@@ -983,10 +1012,10 @@ function VulnerabilityPage({ bundles, onSync, onBaselineRefresh, canManage, embe
     {!embedded && <div className="page-heading"><h1>취약점 데이터</h1></div>}
     <UnifiedVulnerabilityDataPanel canManage={canManage} onChanged={onSync} onBaselineRefresh={onBaselineRefresh} />
     <details><summary>과거 반입 기록 ({bundles.length}개)</summary><p>과거 기록은 현재 파일의 존재·활성 상태를 보증하지 않습니다. 위 통합 자료 상태를 기준으로 확인하세요.</p>
-      <div className="table-scroll"><table><thead><tr><th>기록된 번들</th><th>Grype 기준일</th><th>NVD 기준일</th><th>KEV 기준일</th><th>반입 시각</th></tr></thead><tbody>
+      <div className="table-scroll"><ResizableTable><thead><tr><th>기록된 번들</th><th>Grype 기준일</th><th>NVD 기준일</th><th>KEV 기준일</th><th>반입 시각</th></tr></thead><tbody>
         {visibleBundles.map(item => <tr key={item.id}><td>{item.version}</td><td>{item.dataAsOf || "미확인"}</td><td>{item.nvdDataAsOf || "미확인"}</td><td>{item.kevDataAsOf || "미확인"}</td><td>{formatSeoulDateTime(item.importedAt)}</td></tr>)}
         {!bundles.length && <tr><td colSpan={5}>과거 반입 기록이 없습니다.</td></tr>}
-      </tbody></table></div>
+      </tbody></ResizableTable></div>
       <DetailPagination total={bundles.length} page={currentPage} pageSize={pageSize} label="취약점 번들 페이지당 행 수" onPage={setPage} onPageSize={size => {setPageSize(size); setPage(1);}} />
     </details>
   </section>;
@@ -1017,8 +1046,8 @@ function AuditPage({ events, embedded = false }: { events: AuditEvent[]; embedde
     return () => { cancelled = true; };
   }, [deferredQuery, events, page, pageSize]);
   const exportHref = `/api/v1/audit-events?format=csv${query.trim() ? `&q=${encodeURIComponent(query.trim())}` : ""}`;
-  return (<section className={embedded ? "settings-panel generic-page" : "page generic-page"}><div className="page-heading"><div><h1>감사 로그</h1><p>가입·LDAP·업로드·분석·관리 작업을 불변 이력으로 조회합니다.</p></div><a className="secondary" href={previewMode ? "#" : exportHref} download={previewMode ? undefined : "koda-audit-events.csv"} onClick={(event) => previewMode && event.preventDefault()}>Excel 다운로드</a></div><div className="generic-toolbar"><label className="global-search"><Icon name="search" /><input aria-label="감사 로그 검색" value={query} onChange={(event) => { setQuery(event.target.value); setPage(1); }} placeholder="행위자, 작업, 대상, 상세 검색" /></label><span>{result.total}건</span></div><div className="table-frame"><div className="table-scroll"><table><thead><tr><th>시각</th><th>행위자</th><th>작업</th><th>대상</th><th>상세</th></tr></thead><tbody>{result.items.length ? (result.items.map((item) => (<tr key={item.id}><td>{formatSeoulDateTime(item.createdAt)}</td><td>{item.actor}</td><td className="mono">{item.action}</td><td>{item.targetType}:{item.targetId}</td><td className="mono">{auditDetailLabel(item.detail)}</td></tr>) )
-              ): (<tr><td colSpan={5}>감사 로그가 없습니다.</td></tr>)}</tbody></table></div><DetailPagination total={result.total} page={Math.min(page, Math.max(1, Math.ceil(result.total / pageSize)))} pageSize={pageSize} onPage={setPage} onPageSize={(size) => { setPageSize(size); setPage(1); }} /></div></section>);}
+  return (<section className={embedded ? "settings-panel generic-page" : "page generic-page"}><div className="page-heading"><div><h1>감사 로그</h1><p>가입·LDAP·업로드·분석·관리 작업을 불변 이력으로 조회합니다.</p></div><a className="secondary" href={previewMode ? "#" : exportHref} download={previewMode ? undefined : "koda-audit-events.csv"} onClick={(event) => previewMode && event.preventDefault()}>Excel 다운로드</a></div><div className="generic-toolbar"><label className="global-search"><Icon name="search" /><input aria-label="감사 로그 검색" value={query} onChange={(event) => { setQuery(event.target.value); setPage(1); }} placeholder="행위자, 작업, 대상, 상세 검색" /></label><span>{result.total}건</span></div><div className="table-frame"><div className="table-scroll"><ResizableTable><thead><tr><th>시각</th><th>행위자</th><th>작업</th><th>대상</th><th>상세</th></tr></thead><tbody>{result.items.length ? (result.items.map((item) => (<tr key={item.id}><td>{formatSeoulDateTime(item.createdAt)}</td><td>{item.actor}</td><td className="mono">{item.action}</td><td>{item.targetType}:{item.targetId}</td><td className="mono">{auditDetailLabel(item.detail)}</td></tr>) )
+              ): (<tr><td colSpan={5}>감사 로그가 없습니다.</td></tr>)}</tbody></ResizableTable></div><DetailPagination total={result.total} page={Math.min(page, Math.max(1, Math.ceil(result.total / pageSize)))} pageSize={pageSize} onPage={setPage} onPageSize={(size) => { setPageSize(size); setPage(1); }} /></div></section>);}
 
 type ApiTokenSummary = { id: string; name: string; serviceId?: string; active: boolean; createdAt: string;};
 
@@ -1142,12 +1171,12 @@ export function SettingsPage({ users, services, environments = [], tokens, ldapS
         policies.map((item) => [item.role, new Set(item.permissions)])));
   const settingsTabs = useMemo(() => {
     const tabs: { id: SettingsTab; label: string; icon: string }[] = [];
+    if (canUsers || canTokens) tabs.push({ id: "users", label: "사용자 관리", icon: "user" });
     if (canProjects) tabs.push({ id: "projects", label: "프로젝트 관리", icon: "integration" });
     if (canSbomPolicies || canSbomPolicyManage) tabs.push({ id: "sbom-policies", label: "SBOM 정책", icon: "settings" });
     if (canReanalysis || canReanalysisManage) tabs.push({ id: "reanalysis", label: "재분석 일정", icon: "settings" });
     if (canNotifications || canNotificationManage) tabs.push({ id: "notifications", label: "알림함", icon: "audit" });
     if (canServices) tabs.push({ id: "services", label: "서비스·환경", icon: "service" });
-    if (canUsers || canTokens) tabs.push({ id: "users", label: "사용자 관리", icon: "user" });
     if (canRoles || canPolicyEdit) tabs.push({ id: "roles", label: "권한 관리", icon: "settings" });
     if (isAdmin) tabs.push({ id: "environment-admins", label: "환경별 관리자", icon: "user" });
     if (canExternalData || canPrivateData || canMetadataData || canCveData) tabs.push({ id: "vulnerability", label: "취약점 데이터", icon: "vulnerability" });
@@ -1226,7 +1255,7 @@ export function SettingsPage({ users, services, environments = [], tokens, ldapS
       {!previewMode && <ExternalReadTokens services={services} environments={environments} />}
       {canServices && canTokens && (<>
         <div className="table-frame integration-status"><div className="settings-panel-heading"><div><h2 className="table-title">KODA GitLab 자동 연동</h2><p>GitLab 연결과 저장소 선택은 KODA에서만 설정합니다. Tracker는 KODA 요청을 받아 저장소별 서비스·환경·전송 토큰을 자동 생성하거나 재사용합니다.</p></div><span className={`user-status ${gitlabServices.length ? "active" : "inactive"}`}>{gitlabServices.length ? "저장소 연결됨" : "연결 대기"}</span></div><div className="integration-status-body"><p>GitLab 저장소 → KODA 점검·CycloneDX 생성 → Tracker 회차 수신·분석 → KODA가 GitLab 결과 MR·취약점 이슈 저장</p><p>{gitlabEnvironment ? "gitlab-source 환경이 자동 준비되었습니다." : "첫 저장소 연결 시 gitlab-source 환경이 자동 준비됩니다."}</p><div className="button-row"><button type="button" className="secondary" onClick={() => setActiveTab("services")}>자동 생성 항목 보기</button></div></div></div>
-        <div className="table-frame"><h2 className="table-title">자동 생성된 저장소 서비스</h2><div className="table-scroll" role="region" aria-label="저장소 서비스 목록 가로 스크롤" tabIndex={0}><table className="gitlab-service-flow-table"><thead><tr><th>GitLab 저장소</th><th>Tracker 식별자</th><th>전송 토큰</th></tr></thead><tbody>{gitlabServices.length ? visibleGitlabServices.map((item) => { const tokenCount = tokens.filter((token) => token.active && token.serviceId === item.id).length; return (<tr key={item.id}><td><ScrollingText>{item.name}</ScrollingText></td><td className="mono"><ScrollingText>{item.slug}</ScrollingText></td><td>{tokenCount ? "활성" : "확인 필요"}</td></tr>);}) : (<tr><td colSpan={3}>KODA에서 연결한 GitLab 저장소가 없습니다.</td></tr>)}</tbody></table></div><DetailPagination total={gitlabServices.length} page={currentGitlabServicePage} pageSize={gitlabPageSize} label="GitLab 서비스 페이지당 행 수" onPage={setGitlabServicePage} onPageSize={(size) => { setGitlabPageSize(size); setGitlabServicePage(1); }} /></div>
+        <div className="table-frame"><h2 className="table-title">자동 생성된 저장소 서비스</h2><div className="table-scroll" role="region" aria-label="저장소 서비스 목록 가로 스크롤" tabIndex={0}><ResizableTable className="gitlab-service-flow-table"><thead><tr><th>GitLab 저장소</th><th>Tracker 식별자</th><th>전송 토큰</th></tr></thead><tbody>{gitlabServices.length ? visibleGitlabServices.map((item) => { const tokenCount = tokens.filter((token) => token.active && token.serviceId === item.id).length; return (<tr key={item.id}><td><ScrollingText>{item.name}</ScrollingText></td><td className="mono"><ScrollingText>{item.slug}</ScrollingText></td><td>{tokenCount ? "활성" : "확인 필요"}</td></tr>);}) : (<tr><td colSpan={3}>KODA에서 연결한 GitLab 저장소가 없습니다.</td></tr>)}</tbody></ResizableTable></div><DetailPagination total={gitlabServices.length} page={currentGitlabServicePage} pageSize={gitlabPageSize} label="GitLab 서비스 페이지당 행 수" onPage={setGitlabServicePage} onPageSize={(size) => { setGitlabPageSize(size); setGitlabServicePage(1); }} /></div>
       </>)}
     </div>)}
     {activeTab === "shared-ai" && isAdmin && !previewMode && <div id="settings-panel-shared-ai" role="tabpanel" aria-labelledby="settings-tab-shared-ai"><SharedAISettingsPanel /></div>}
@@ -1236,7 +1265,7 @@ export function SettingsPage({ users, services, environments = [], tokens, ldapS
     {activeTab === "services" && canServices && (<div id="settings-panel-services" role="tabpanel" aria-labelledby="settings-tab-services"><ServicesPage services={services} environments={environments} canManage={canCatalogManage} onChanged={onChanged} /></div>)}
     {activeTab === "environment-admins" && isAdmin && <div id="settings-panel-environment-admins" role="tabpanel" aria-labelledby="settings-tab-environment-admins"><EnvironmentAdministrators /></div>}
     {activeTab === "ldap" && isAdmin && (<LdapSettingsPanel settings={ldapSettings} onChanged={onLdapChanged} />)}
-    {activeTab === "users" && (canUsers || canTokens) && (<div className="settings-panel" id="settings-panel-users" role="tabpanel" aria-labelledby="settings-tab-users"><div className="settings-grid">{canUsers && (<div className="table-frame"><h2 className="table-title">사용자 {users.length}명</h2><div className="table-scroll" role="region" aria-label="사용자 목록 가로 스크롤" tabIndex={0}><table className="settings-users-flow-table"><thead><tr><th>사용자</th><th>역할</th><th>상태</th><th>작업</th></tr></thead><tbody>{users.length ? visibleUsers.map((item) => (<tr key={item.id || item.username} className={item.status === "pending" ? "pending-user" : ""}><td><ScrollingText>{item.username}</ScrollingText></td><td><select aria-label={`${item.username} 역할`} value={item.role} disabled={busy || item.status === "deleted"} onChange={(event) => void updateUser(item, "role", event.target.value)}>{canRoles && (<><option value="admin">관리자</option><option value="manager">매니저</option></>)}<option value="analyst">분석자</option><option value="uploader">업로더</option><option value="viewer">조회자</option></select></td><td><span className={`user-status ${item.status || (item.active ? "active" : "inactive")}`}>{userStatusLabel(item)}</span></td><td>{item.id && (item.status === "pending" ? (<button type="button" className="primary compact" disabled={busy} onClick={() => void approve(item)}>승인</button>) : item.status === "deleted" ? (<span>삭제됨</span>) : (<><button type="button" className="secondary compact" disabled={busy} onClick={() => void updateUser(item, "active", !item.active)}>{item.active ? "비활성화" : "활성화"}</button>{<button type="button" className="danger compact" disabled={busy} onClick={() => void removeUser(item)}>삭제</button>}</>))}</td></tr>)) : (<tr><td colSpan={4}>등록된 사용자가 없습니다.</td></tr>)}</tbody></table></div><DetailPagination total={users.length} page={currentUserPage} pageSize={accountPageSize} label="사용자 페이지당 행 수" onPage={setUserPage} onPageSize={(size) => { setAccountPageSize(size); setUserPage(1); setTokenPage(1); }} /></div>)}{canTokens && (<div className="table-frame"><h2 className="table-title">API 토큰 {tokens.length}개</h2><div className="table-scroll" role="region" aria-label="API 토큰 목록 가로 스크롤" tabIndex={0}><table className="settings-tokens-flow-table"><thead><tr><th>이름</th><th>서비스</th><th>생성 시각</th><th>상태</th><th /></tr></thead><tbody>{tokens.length ? visibleTokens.map((item) => (<tr key={item.id}><td><ScrollingText>{item.name}</ScrollingText></td><td><ScrollingText>{services.find((service) => service.id === item.serviceId)?.name || item.serviceId || "-"}</ScrollingText></td><td>{formatSeoulDateTime(item.createdAt)}</td><td>{item.active ? "활성" : "폐기"}</td><td>{item.active && (<button type="button" className="secondary compact" onClick={() => void revoke(item.id)} disabled={busy}>폐기</button>)}</td></tr>)) : (<tr><td colSpan={5}>발급된 토큰이 없습니다.</td></tr>)}</tbody></table></div><DetailPagination total={tokens.length} page={currentTokenPage} pageSize={accountPageSize} label="토큰 페이지당 행 수" onPage={setTokenPage} onPageSize={(size) => { setAccountPageSize(size); setUserPage(1); setTokenPage(1); }} /></div>)}</div></div>)}
+    {activeTab === "users" && (canUsers || canTokens) && (<div className="settings-panel" id="settings-panel-users" role="tabpanel" aria-labelledby="settings-tab-users"><div className="settings-grid">{canUsers && (<div className="table-frame"><h2 className="table-title">사용자 {users.length}명</h2><div className="table-scroll" role="region" aria-label="사용자 목록 가로 스크롤" tabIndex={0}><ResizableTable className="settings-users-flow-table"><thead><tr><th>사용자</th><th>역할</th><th>상태</th><th>작업</th></tr></thead><tbody>{users.length ? visibleUsers.map((item) => (<tr key={item.id || item.username} className={item.status === "pending" ? "pending-user" : ""}><td><ScrollingText>{item.username}</ScrollingText></td><td><select aria-label={`${item.username} 역할`} value={item.role} disabled={busy || item.status === "deleted"} onChange={(event) => void updateUser(item, "role", event.target.value)}>{canRoles && (<><option value="admin">관리자</option><option value="manager">매니저</option></>)}<option value="analyst">분석자</option><option value="uploader">업로더</option><option value="viewer">조회자</option></select></td><td><span className={`user-status ${item.status || (item.active ? "active" : "inactive")}`}>{userStatusLabel(item)}</span></td><td>{item.id && (item.status === "pending" ? (<button type="button" className="primary compact" disabled={busy} onClick={() => void approve(item)}>승인</button>) : item.status === "deleted" ? (<span>삭제됨</span>) : (<><button type="button" className="secondary compact" disabled={busy} onClick={() => void updateUser(item, "active", !item.active)}>{item.active ? "비활성화" : "활성화"}</button>{<button type="button" className="danger compact" disabled={busy} onClick={() => void removeUser(item)}>삭제</button>}</>))}</td></tr>)) : (<tr><td colSpan={4}>등록된 사용자가 없습니다.</td></tr>)}</tbody></ResizableTable></div><DetailPagination total={users.length} page={currentUserPage} pageSize={accountPageSize} label="사용자 페이지당 행 수" onPage={setUserPage} onPageSize={(size) => { setAccountPageSize(size); setUserPage(1); setTokenPage(1); }} /></div>)}{canTokens && (<div className="table-frame"><h2 className="table-title">API 토큰 {tokens.length}개</h2><div className="table-scroll" role="region" aria-label="API 토큰 목록 가로 스크롤" tabIndex={0}><ResizableTable className="settings-tokens-flow-table"><thead><tr><th>이름</th><th>서비스</th><th>생성 시각</th><th>상태</th><th /></tr></thead><tbody>{tokens.length ? visibleTokens.map((item) => (<tr key={item.id}><td><ScrollingText>{item.name}</ScrollingText></td><td><ScrollingText>{services.find((service) => service.id === item.serviceId)?.name || item.serviceId || "-"}</ScrollingText></td><td>{formatSeoulDateTime(item.createdAt)}</td><td>{item.active ? "활성" : "폐기"}</td><td>{item.active && (<button type="button" className="secondary compact" onClick={() => void revoke(item.id)} disabled={busy}>폐기</button>)}</td></tr>)) : (<tr><td colSpan={5}>발급된 토큰이 없습니다.</td></tr>)}</tbody></ResizableTable></div><DetailPagination total={tokens.length} page={currentTokenPage} pageSize={accountPageSize} label="토큰 페이지당 행 수" onPage={setTokenPage} onPageSize={(size) => { setAccountPageSize(size); setUserPage(1); setTokenPage(1); }} /></div>)}</div></div>)}
     {activeTab === "roles" && canPolicyEdit && policies.length > 0 && (<div className="settings-panel" id="settings-panel-roles" role="tabpanel" aria-labelledby="settings-tab-roles"><div className="table-frame"><h2 className="table-title">권한 정책</h2>{POLICY_SECTIONS.map((section) => (<section className="role-policy-section" key={section.label}><div className="role-policy-section-heading"><h3>{section.label}</h3><p>{section.description}</p></div><div className="role-policy-grid">{roles.map((role) => (<fieldset key={role} aria-label={`${roleLabel(role)} ${section.label}`}><legend>{roleLabel(role)}</legend>{section.groups.map((group) => { const entries = group.permissions.filter((permission) => permissionNames.includes(permission)); return entries.length ? (<div className="permission-group" key={group.label}>{section.label === "기능 제어" && <h4>{group.label}</h4>}{entries.map((permission) => (<label key={permission}><input type="checkbox" checked={policyDraft[role]?.has(permission) || false} disabled={!canPolicyEdit || busy || (permission === "sbom.delete" && role !== "admin")} onChange={() => setPolicyDraft((current) => { const next = new Set(current[role] || []); if (next.has(permission)) next.delete(permission); else next.add(permission); return { ...current, [role]: next }; })} />{section.label === "화면 접근 권한" ? permissionLabel(permission).replace(/ 조회$/, "") : permissionLabel(permission)}</label>))}</div>) : null; })}</fieldset>))}</div></section>))}{canPolicyEdit && (<div className="role-policy-actions"><button type="button" className="primary" onClick={async () => { setBusy(true); setMessage(""); try { const changed = roles.filter((role) => { const before = policies.find((item) => item.role === role)?.permissions || []; const after = [...(policyDraft[role] || [])]; return before.length !== after.length || before.some((item) => !policyDraft[role]?.has(item)); }); if (!changed.length) { setMessage("변경된 역할 정책이 없습니다."); return; } const updated = await updateRolePolicies(changed.map((role) => ({ role, permissions: [...(policyDraft[role] || [])] }))); const next = policies.map((item) => updated.find((changedPolicy) => changedPolicy.role === item.role) || item); await onPolicyChanged(next); setMessage("역할 정책을 저장했습니다."); } catch (error) { setMessage(error instanceof Error ? error.message : "역할 정책 저장에 실패했습니다."); } finally { setBusy(false); } }}>권한 정책 저장</button></div>)}</div></div>)}
     {activeTab === "vulnerability" && (canExternalData || canPrivateData || canMetadataData || canCveData) && (<div id="settings-panel-vulnerability" role="tabpanel" aria-labelledby="settings-tab-vulnerability">
       <div className="page-heading vulnerability-data-heading"><h1>취약점 데이터</h1>
@@ -1260,10 +1289,6 @@ export function SettingsPage({ users, services, environments = [], tokens, ldapS
     {mode && (<div className="modal-backdrop" role="presentation"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="settings-modal-title"><header><h2 id="settings-modal-title">{mode === "user" ? "사용자 추가" : "API 토큰 발급"}</h2><button type="button" className="icon-button" aria-label="설정 창 닫기" onClick={() => setMode(null)}><Icon name="close" /></button></header><form onSubmit={submit}>{mode === "user" ? (<><label>사용자 이름<input name="username" required autoFocus /></label><label>임시 비밀번호<input name="password" type="password" minLength={12} required /></label><label>역할<select name="role" defaultValue="viewer">{canRoles && (<><option value="admin">관리자</option><option value="manager">매니저</option></>)}<option value="analyst">분석자</option><option value="uploader">업로더</option><option value="viewer">조회자</option></select></label></>) : (<><label>토큰 이름<input name="name" required autoFocus /></label><label>허용 서비스<FlowSelect name="serviceId" required><option value="" disabled>서비스를 선택하세요</option>{services.map((item) => (<option key={item.id} value={item.id}>{item.name}</option>))}</FlowSelect></label><small>서비스 범위 토큰입니다. 토큰 원문은 지금만 표시되며 서버에는 해시만 저장됩니다.</small></>)}{message && <p className="form-message">{message}</p>}<footer><button type="button" className="secondary" onClick={() => setMode(null)}>닫기</button><button className="primary" disabled={busy}>{busy ? "처리 중…" : "확인"}</button></footer></form></section></div>)}
   </section>);
 }
-
-function GenericPage({ rows }: { rows: string[][] }) {
-  return (<section className="page generic-page"><h1>대시보드</h1><p>서비스와 최신 SBOM 회차의 운영 상태를 확인합니다.</p><div className="table-frame"><div className="table-scroll" role="region" aria-label="항목 목록 가로 스크롤" tabIndex={0}><table><thead><tr><th>이름</th><th>구분</th><th>값</th><th>상태/시각</th></tr></thead><tbody>{rows.length ? (rows.map((row) => (<tr key={row.join()}>{row.map((cell) => (<td key={cell}>{cell}</td>))}</tr>) )
-            ): (<tr><td colSpan={4}>표시할 데이터가 없습니다.</td></tr>)}</tbody></table></div></div></section>);}
 
 function GuidePage() {
   return (<section className="page guide-page">
@@ -1367,6 +1392,9 @@ export default function App() {
   const [collapsed, setCollapsed] = useState(false);
   const [globalSearch, setGlobalSearch] = useState("");
   const [runs, setRuns] = useState<SbomRun[]>(previewMode ? demoRuns : []);
+  const [runsLoaded, setRunsLoaded] = useState(demoMode);
+  const [recentRunsOnly, setRecentRunsOnly] = useState(false);
+  const [revision, setRevision] = useState(0);
   const [activeCveDate, setActiveCveDate] = useState<string | null>(null);
   const baselineRequest = useRef<AbortController | null>(null);
   const [services, setServices] = useState<CatalogItem[]>(previewMode ? demoServices : []);
@@ -1386,7 +1414,6 @@ export default function App() {
       : null);
   const [rolePolicyCatalog, setRolePolicyCatalog] = useState<string[]>(previewMode ? [...demoRolePolicyCatalog.catalog] : []);
   const [rolePolicies, setRolePolicies] = useState<RolePolicy[]>(previewMode ? demoRolePolicyCatalog.roles.map((item) => ({ ...item, permissions: [...item.permissions] })) : []);
-  const [genericRows, setGenericRows] = useState<Record<string, string[][]>>({});
   const [bundles, setBundles] = useState<VulnerabilityBundle[]>([]);
   const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
   const [users, setUsers] = useState<UserSummary[]>([]);
@@ -1415,6 +1442,7 @@ export default function App() {
   const can = useCallback(
     (permission: string) => permissions.has("*") || permissions.has(permission),
     [permissions]);
+  const canLoadRuns = dataAccess(authUser).runs;
   const canReadCveBaseline = ["dashboard.view", "runs.view", "vulnerability.view", "metadata.view"].some(can);
   const refreshCveBaseline = useCallback(() => {
     baselineRequest.current?.abort();
@@ -1436,77 +1464,84 @@ export default function App() {
   const canUpload = hasPermissions(authUser, "sbom.upload", "services.view");
   const loadData = useCallback(async (loadedUser: AuthUser | null) => {
     setLoadError("");
-    const loadedPermissions = permissionSet(loadedUser);
-    const loadCan = (permission: string) => loadedPermissions.has("*") || loadedPermissions.has(permission);
-    const access = dataAccess(loadedUser);
-    let nextRuns: SbomRun[];
-    let catalogs: { services: CatalogItem[]; environments: CatalogItem[] };
+    setRevision((value) => value + 1);
+    if (!dataAccess(loadedUser).catalogs) {
+      setServices([]);
+      setEnvironments([]);
+      return;
+    }
     try {
-      const [runResult, nextCatalogs] = await Promise.all([
-        access.runs ? fetchRuns({ size: 100 }) : Promise.resolve({ items: [] as SbomRun[], page: 1, size: 100, total: 0 }),
-          access.catalogs ? fetchCatalogs({ includeInactive: loadedPermissions.has("catalog.manage") }) : Promise.resolve({ services: [], environments: [] }),
-      ]);
-      nextRuns = runResult.items;
-      catalogs = nextCatalogs;
+      const catalogs = await fetchCatalogs({ includeInactive: permissionSet(loadedUser).has("catalog.manage") });
+      setServices(catalogs.services);
+      setEnvironments(catalogs.environments);
     } catch (error) {
-      setLoadError(error instanceof Error ? error.message : "데이터를 불러오지 못했습니다.");
-      return [];
+      setLoadError(error instanceof Error ? error.message : "카탈로그를 불러오지 못했습니다.");
     }
-    setRuns(nextRuns);
-    setServices(catalogs.services);
-    setEnvironments(catalogs.environments);
-    if (initialLink.runId) {
-      let linkedRun = nextRuns.find((run) => run.id === initialLink.runId);
-      if (!linkedRun && access.runs) {
-        try {
-          linkedRun = await fetchRun(initialLink.runId);
-        } catch {
-          setLoadError("링크의 SBOM 회차를 찾을 수 없습니다.");
-        }
-      }
-      if (linkedRun) {
-        setPage("runs");
-        setSelectedRun(linkedRun);}
-    }
-    if (!demoMode && !standaloneMode) {
-      const [auditResult, usersResult, bundlesResult, tokensResult, ldapResult] = await Promise.allSettled([
-        loadedUser?.role === "admin" && loadCan("audit.view")
-          ? fetchAuditEvents()
-          : Promise.resolve({ items: [] as AuditEvent[], page: 1, size: 10, total: 0 }),
-        loadCan("users.manage") ?fetchUsers(): Promise.resolve([]),
-        loadedUser?.role === "admin" && loadCan("vulnerability.view")
-          ?fetchVulnerabilityBundles(): Promise.resolve([]),
-        loadCan("tokens.manage") ?fetchApiTokens(): Promise.resolve([]),
-        loadedUser?.role === "admin" ? fetchLdapSettings() : Promise.resolve(null)]);
-      if (auditResult.status === "fulfilled") setAuditEvents(auditResult.value.items);
-      if (usersResult.status === "fulfilled") setUsers(usersResult.value);
-      if (bundlesResult.status === "fulfilled") setBundles(bundlesResult.value);
-      if (tokensResult.status === "fulfilled") setTokens(tokensResult.value);
-      if (ldapResult.status === "fulfilled") setLdapSettings(ldapResult.value);
-      setGenericRows({
-        dashboard: [
-          ["등록 서비스", "서비스", String(catalogs.services.length), "활성"],
-          ["SBOM 회차", "회차", String(nextRuns.length), nextRuns[0]?.createdAt || "-"],
-          ["일부 실패", "처리 상태", String(nextRuns.filter((run) => run.state === "partial" || run.state === "failed").length), "검토 필요"]],
-        services: catalogs.services.map((service) => [service.name, service.slug, service.id, "활성"]),
-        audit: auditResult.status === "fulfilled" ? auditResult.value.items.map((item) => [item.actor, item.action, `${item.targetType}:${item.targetId}`, item.createdAt]) : [],
-        settings: usersResult.status === "fulfilled" ? usersResult.value.map((item) => [item.username, item.role, item.active ? "활성" : "비활성", "-"]) : [],
-        vuln: []});}
-    if (standaloneMode) {
-      setGenericRows({
-        dashboard: [
-          ["로컬 미리보기", "실행 모드", "standalone", "브라우저 분석"],
-          ["업로드 회차", "SBOM", String(nextRuns.filter((run) => run.id.startsWith("standalone-")).length), "확인 가능"],
-          ["서버 연동", "Docker·로그인·기존 외부 시스템", "사용 안 함", "미리보기"]]});}
-    if (loadCan("roles.manage")) {
+  }, []);
+  useEffect(() => {
+    if (demoMode || !authenticated || !canLoadRuns || (page !== "dashboard" && page !== "compare")) return;
+    const request = new AbortController();
+    const firstPageSize = page === "dashboard" ? 24 : 100;
+    async function loadRuns() {
       try {
-        const result = await fetchRolePolicies();
-        setRolePolicyCatalog(result.catalog);
-        setRolePolicies(result.roles);
+        const first = await fetchRuns({ size: firstPageSize }, request.signal);
+        if (request.signal.aborted) return;
+        const hasMore = first.total > firstPageSize;
+        setRuns(first.items);
+        setRecentRunsOnly(hasMore);
+        setRunsLoaded(true);
+        if (page === "dashboard" && hasMore) {
+          const history = await fetchRuns({ size: 100 }, request.signal);
+          if (request.signal.aborted) return;
+          setRuns(history.items);
+          setRecentRunsOnly(history.total > history.items.length);
+        }
       } catch (error) {
-        setLoadError(error instanceof Error ? error.message : "역할 정책을 불러오지 못했습니다.");
-      }}
-    return nextRuns;}, [initialLink.runId]);
+        if (request.signal.aborted) return;
+        setLoadError(error instanceof Error ? error.message : "회차를 불러오지 못했습니다.");
+        setRunsLoaded(true);
+      }
+    }
+    void loadRuns();
+    return () => request.abort();
+  }, [authenticated, canLoadRuns, page, revision]);
+  useEffect(() => {
+    if (demoMode || !authenticated || page !== "runs" || !initialLink.runId ||
+        readPortalLink().runId !== initialLink.runId || !dataAccess(authUser).runs) return;
+    let cancelled = false;
+    void fetchRun(initialLink.runId).then(
+      (run) => { if (!cancelled) setSelectedRun(run); },
+      () => { if (!cancelled) setLoadError("링크의 SBOM 회차를 찾을 수 없습니다."); },
+    );
+    return () => { cancelled = true; };
+  }, [authenticated, authUser, initialLink.runId, page]);
+  useEffect(() => {
+    if (demoMode || standaloneMode || !authenticated || page !== "settings" || !canPage(authUser, "settings")) return;
+    let cancelled = false;
+    const isAdmin = authUser?.role === "admin";
+    void Promise.allSettled([
+      isAdmin && can("audit.view") ? fetchAuditEvents() : Promise.resolve({ items: [] as AuditEvent[], page: 1, size: 10, total: 0 }),
+      can("users.manage") ? fetchUsers() : Promise.resolve([]),
+      isAdmin && can("vulnerability.view") ? fetchVulnerabilityBundles() : Promise.resolve([]),
+      can("tokens.manage") ? fetchApiTokens() : Promise.resolve([]),
+      isAdmin ? fetchLdapSettings() : Promise.resolve(null),
+      can("roles.manage") ? fetchRolePolicies() : Promise.resolve(null),
+    ]).then(([audit, currentUsers, currentBundles, currentTokens, ldap, roles]) => {
+      if (cancelled) return;
+      if (audit.status === "fulfilled") setAuditEvents(audit.value.items);
+      if (currentUsers.status === "fulfilled") setUsers(currentUsers.value);
+      if (currentBundles.status === "fulfilled") setBundles(currentBundles.value);
+      if (currentTokens.status === "fulfilled") setTokens(currentTokens.value);
+      if (ldap.status === "fulfilled") setLdapSettings(ldap.value);
+      if (roles.status === "fulfilled" && roles.value) {
+        setRolePolicyCatalog(roles.value.catalog);
+        setRolePolicies(roles.value.roles);
+      } else if (roles.status === "rejected") {
+        setLoadError(roles.reason instanceof Error ? roles.reason.message : "역할 정책을 불러오지 못했습니다.");
+      }
+    });
+    return () => { cancelled = true; };
+  }, [authenticated, authUser, can, page, revision]);
   useEffect(() => {
     if (demoMode) return;
     if (standaloneMode) {
@@ -1530,12 +1565,12 @@ export default function App() {
     const listener = () => window.innerWidth <= 1024 && setCollapsed(true);
     listener(); window.addEventListener("resize", listener); return () => window.removeEventListener("resize", listener);}, []);
   const content = useMemo(() => {
-    if (page === "dashboard" ) return (<Dashboard runs={runs} onUpload={() => setUploadOpen(true)} canUpload={canUpload}
-          standalone={standaloneMode}/>);
-    if (page === "runs") return (<RunsPage runs={runs} services={services} environments={environments} search={globalSearch}
+    if (page === "dashboard" ) return (<Dashboard runs={canLoadRuns ? runs : []} onUpload={() => setUploadOpen(true)} canUpload={canUpload}
+          standalone={standaloneMode} loading={!runsLoaded && canLoadRuns} recent={recentRunsOnly}/>);
+    if (page === "runs") return (<RunsPage revision={revision} services={services} environments={environments} search={globalSearch}
           canUpload={canUpload} onUpload={() => setUploadOpen(true)} onSelect={openRun} />);
     if (page === "libraries") return <LibrariesPage initialQuery={libraryQuery} onOpenRun={openRunById} />;
-    if (page === "compare") return <ComparePage runs={runs} can={can} />;
+    if (page === "compare") return <ComparePage runs={canLoadRuns ? runs : []} can={can} />;
     if (page === "guide") return <GuidePage />;
     const settingsContent = (initialTab?: SettingsTab) => (<SettingsPage users={users} services={services} environments={environments} tokens={tokens} ldapSettings={ldapSettings} policies={rolePolicies}
           roleCatalog={rolePolicyCatalog}
@@ -1573,9 +1608,9 @@ export default function App() {
           onLdapChanged={setLdapSettings}
           onChanged={() => void loadData(authUser)} />);
     if (page === "settings") return settingsContent(initialLink.settingsTab || undefined);
-    return <GenericPage rows={genericRows.dashboard || []} />;}, [auditEvents, bundles, can, environments, genericRows, globalSearch, initialLink.settingsTab, ldapSettings, loadData, openRun, openRunById, libraryQuery, page, runs, services, tokens, users,
+    return null;}, [auditEvents, bundles, can, environments, globalSearch, revision, runsLoaded, recentRunsOnly, initialLink.settingsTab, ldapSettings, loadData, openRun, openRunById, libraryQuery, page, runs, services, tokens, users,
     rolePolicyCatalog,
-    rolePolicies, authUser, navigate, canUpload, canReadCveBaseline, refreshCveBaseline]);
+    rolePolicies, authUser, navigate, canUpload, canLoadRuns, canReadCveBaseline, refreshCveBaseline]);
   useEffect(() => {
     const nextPage = pageForPermissions(authUser, page);
     if (nextPage && nextPage !== page) queueMicrotask(() => navigate(nextPage));}, [authUser, navigate, page]);
@@ -1591,6 +1626,8 @@ export default function App() {
         .then(() => {
           setAuthUser(null);
           setActiveCveDate(null);
+          setRuns([]);
+          setRunsLoaded(false);
           setSelectedRun(null);
           replacePortalLink({ runId: null });
           setAuthenticated(false);
@@ -1600,7 +1637,7 @@ export default function App() {
     <main>{loadError && <p className="form-message" role="alert">{loadError}</p>}{standaloneMode && (<div className="standalone-banner" role="status"><strong>로컬 미리보기 모드</strong><span>로그인·Docker 없이 CycloneDX 구조와 파일 내장 취약점 레코드만
               표시합니다.
             </span></div>)}{content}</main>
-    {uploadOpen && canUpload && (<UploadModal services={services} environments={environments} onClose={() => setUploadOpen(false)} onUploaded={(runId) => { setUploadOpen(false); void loadData(authUser).then((nextRuns) => { const uploaded = nextRuns.find((run) => run.id === runId); if (uploaded) openRun(uploaded);});}} />)}
+    {uploadOpen && canUpload && (<UploadModal services={services} environments={environments} onClose={() => setUploadOpen(false)} onUploaded={(runId) => { setUploadOpen(false); void loadData(authUser); openRunById(runId);}} />)}
     {selectedRun && (<RunDetail run={selectedRun} username={authUser?.username}
           onOpenLibrary={query => { setLibraryQuery(query); closeRun(); navigate("libraries"); }}
           can={canRunAction} onClose={closeRun} onChanged={() => void loadData(authUser)} />)}

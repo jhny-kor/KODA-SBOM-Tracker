@@ -1,0 +1,34 @@
+.resizable-table > thead > tr > th:has(> .column-resize-handle) {
+  position: relative;
+  padding-inline-end: 15px;
+}
+.resizable-table > thead > tr > th.sticky-name:has(> .column-resize-handle) {
+  position: sticky;
+}
+.resizable-table > tbody > tr > td {
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.resizable-table .column-resize-handle {
+  position: absolute;
+  z-index: 1;
+  inset: 0 -1px 0 auto;
+  display: grid;
+  place-items: center;
+  width: 13px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  color: var(--muted, #52667a);
+  background: transparent;
+  font: 14px/1 monospace;
+  cursor: col-resize;
+  touch-action: none;
+  user-select: none;
+}
+.resizable-table .column-resize-handle:hover,
+.resizable-table .column-resize-handle:focus-visible {
+  color: var(--accent, #007781);
+  background: rgba(0, 119, 129, .10);
+}

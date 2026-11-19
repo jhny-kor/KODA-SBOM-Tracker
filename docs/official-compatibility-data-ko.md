@@ -28,7 +28,7 @@ Oracle 특정 채널은 `--oracle-repo`로 지정할 수 있습니다.
 | 출력 | 용도 |
 | --- | --- |
 | `catalog-*.tar.gz` | 패키지·버전·파일 URL, 공식 색인 출처와 SHA-256, 반입 지원 여부, 수집 오류를 검토합니다. PyPI 소스 배포본과 Tracker 미지원 Oracle 패키지도 목록에 남깁니다. |
-| `tracker-*.tar.gz` | 공식 POM, PyPI 릴리스 JSON과 지원 wheel, 지원 Oracle RPM을 담습니다. 각 압축은 최대 20개 항목과 16 MiB 제한을 적용하며 Tracker 검증기를 통과한 뒤 저장합니다. |
+| `tracker-*.tar.gz` | 공식 POM, PyPI 릴리스 JSON과 지원 wheel, 지원 Oracle RPM을 담습니다. 각 압축은 최대 20개 항목과 64 MB 제한을 적용하며 Tracker 검증기를 통과한 뒤 저장합니다. |
 | `*.tar.gz.sha256` | 반입 전에 각 압축의 무결성을 확인합니다. |
 | `catalog.sqlite3`, `indexes/` | 수집한 색인과 항목 상태를 작업 폴더에 저장합니다. |
 
@@ -60,7 +60,7 @@ python3 scripts/collect-compatibility-data.py \
 ## 폐쇄망에서 확인
 
 1. `shasum -a 256 -c tracker-official-compatibility.tar.gz.sha256` 또는 Linux의 `sha256sum -c tracker-official-compatibility.tar.gz.sha256`으로 전송받은 압축의 해시를 확인합니다.
-2. Tracker의 **설정 → 공식 호환성 자료**에서 단건 수집 압축 또는 `tracker-*.tar.gz` 하나를 선택해 **반입하고 검증**을 누릅니다. 압축 파일의 한도는 16 MiB, 압축 해제 자료의 한도는 32 MiB입니다.
+2. Tracker의 **설정 → 공식 호환성 자료**에서 단건 수집 압축 또는 `tracker-*.tar.gz` 하나를 선택해 **반입하고 검증**을 누릅니다. 압축 파일은 64 MB, 압축 해제 자료는 128 MiB까지 반입할 수 있습니다. 브라우저의 업로드 및 검증 대기 시간은 300초입니다.
 3. **선언 근거 보기**와 **원본과 검증 해시**를 열면 기관별 근거와 URL, SHA-256을 확인할 수 있습니다.
 
 ## 후보 버전 검토에서 확인

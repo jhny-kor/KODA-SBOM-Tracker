@@ -13,7 +13,7 @@ import secrets
 import tempfile
 import uuid
 from collections import defaultdict
-from contextlib import asynccontextmanager
+from contextlib import ExitStack, asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal
@@ -25,9 +25,9 @@ from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, 
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import Text, cast, delete, func, inspect, or_, select, text
+from sqlalchemy import BigInteger, Text, case, cast, delete, func, inspect, or_, select, text
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session, defer, selectinload
 from starlette.concurrency import run_in_threadpool
 
 from .external_api import router as external_router
@@ -40,6 +40,8 @@ from .compatibility_sources import MAX_ARCHIVE_BYTES as MAX_COMPATIBILITY_ARCHIV
 from .config import get_settings, session_cookie_name
 from .comparison import compare_components, compare_records
 from .db import Base, SessionLocal, engine, ensure_component_search_support, ensure_environment_active_column, ensure_ldap_subject_attribute_column, ensure_native_policy_columns, ensure_postgres_manager_enum, ensure_sbom_media_type_column, ensure_sbom_size_bytes_column, ensure_sbom_source_metadata_column, ensure_user_approval_state_column, ensure_user_identity_columns, get_db
+from .db import ensure_sbom_split_document_column
+from .large_sbom import CYCLONEDX_JSON, LARGE_DOCUMENT_THRESHOLD, LargeSbom, stage_large_sbom
 from .models import (
     AnalysisRevision,
     ApiToken,
@@ -56,6 +58,7 @@ from .models import (
     RolePolicy,
     RunComponent,
     SbomRun,
+    SbomDocumentRecord,
     SbomPolicyRevision,
     Service,
     User,
@@ -65,6 +68,7 @@ from .models import (
 from .sbom_normalization import mark_current
 from .sbom import (
     SbomValidationError,
+    artifact_path,
     component_count,
     parse_sbom_upload_document,
     sbom_document_path,
@@ -89,7 +93,7 @@ from .security import (
     PERMISSION_CATALOG,
 )
 from .services import audit, create_components, enqueue
-from .policies import PolicyDocument, get_policy_document, validate_policy_expressions, validate_expression, preview_expression, policy_context_for_run, components_with_dependency_graph
+from .policies import PolicyDocument, get_policy_document, validate_policy_expressions, validate_expression, preview_expression, policy_context_for_run, policy_components_for_run
 from . import package_metadata_models, vulnerability_intelligence_models
 from .vulnerability_intelligence_api import router as vulnerability_intelligence_router
 from .private_vulnerability_api import router as private_vulnerability_router
@@ -369,6 +373,7 @@ async def lifespan(_: FastAPI):
     ensure_sbom_source_metadata_column(engine)
     ensure_sbom_media_type_column(engine)
     ensure_sbom_size_bytes_column(engine)
+    ensure_sbom_split_document_column(engine)
     ensure_native_policy_columns(engine)
     # v1 uses create_all for a fresh install, but keep the one additive field
     # introduced by the vulnerability-data lifecycle backward compatible with
@@ -508,16 +513,22 @@ def _prune_scheduled_runs(days: int = 90) -> int:
                     continue
                 paths.append(artifact)
             db.execute(delete(RunComponent).where(RunComponent.run_id == run.id))
+            db.execute(delete(SbomDocumentRecord).where(SbomDocumentRecord.run_id == run.id))
             db.execute(delete(AnalysisRevision).where(AnalysisRevision.run_id == run.id))
             db.execute(delete(Job).where(Job.run_id == run.id))
             db.delete(run)
             deleted += 1
         db.commit()
-    for path in paths:
-        try:
-            path.unlink(missing_ok=True)
-        except OSError:
-            logger.exception("scheduled artifact cleanup failed: %s", path)
+    if paths:
+        with SessionLocal() as db:
+            _lock_sbom_artifacts(db)
+            for path in paths:
+                if db.scalar(select(SbomRun.id).where(SbomRun.artifact_path == str(path)).limit(1)):
+                    continue
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:
+                    logger.exception("scheduled artifact cleanup failed: %s", path)
     return deleted
 
 
@@ -870,6 +881,7 @@ def _enforce_upload_capacity(
     raw_sha256: str | None = None,
     size_bytes: int = 0,
     component_count: int = 0,
+    unpacked_bytes: int = 0,
 ) -> None:
     settings = get_settings()
     queued = db.scalar(
@@ -898,13 +910,19 @@ def _enforce_upload_capacity(
         raise HTTPException(507, "서비스별 누적 구성요소 보관 한도를 초과했습니다")
     if not raw_sha256 or size_bytes <= 0:
         return
+    unpacked = case((SbomRun.split_document.is_(True),
+                     cast(SbomRun.normalized_bom["_trackerUnpackedBytes"].as_string(), BigInteger)), else_=0)
+    ingested_size = case(
+        (unpacked > SbomRun.size_bytes, unpacked),
+        else_=SbomRun.size_bytes,
+    )
     ingested_bytes = db.scalar(
-        select(func.coalesce(func.sum(SbomRun.size_bytes), 0))
+        select(func.coalesce(func.sum(ingested_size), 0))
         .select_from(SbomRun)
         .join(Release, SbomRun.release_id == Release.id)
         .where(Release.service_id == service_id)
     ) or 0
-    if int(ingested_bytes) + size_bytes > settings.max_service_ingested_bytes:
+    if int(ingested_bytes) + max(size_bytes, unpacked_bytes) > settings.max_service_ingested_bytes:
         raise HTTPException(507, "서비스별 누적 SBOM 데이터 한도를 초과했습니다")
     already_stored = db.scalar(
         select(SbomRun.id)
@@ -1375,10 +1393,11 @@ def validate_cel_policy(body: CelValidationRequest, db: Session = Depends(get_db
     try:
         result = validate_expression(body.expression, body.target)
         if body.runId:
-            run = _load_run(db, body.runId, include_components=True, include_analyses=True)
+            run = _load_run(db, body.runId, include_analyses=True)
             latest = max(run.analyses, key=lambda item: item.sequence, default=None)
             from .vulnerability_intelligence import enrich_findings
-            result.update(preview_expression(body.expression, body.target, enrich_components(db, components_with_dependency_graph(run.normalized_bom)), enrich_findings(db, latest.findings if latest else []), policy_context_for_run(run, db)))
+            components = policy_components_for_run(db, run, [body.expression] if body.target != "project" else ())
+            result.update(preview_expression(body.expression, body.target, enrich_components(db, components), enrich_findings(db, latest.findings if latest else []), policy_context_for_run(run, db)))
         return result
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
@@ -1913,6 +1932,12 @@ def provision_koda_repository(
     }
 
 
+def _lock_sbom_artifacts(db: Session) -> None:
+    if db.bind and db.bind.dialect.name == "postgresql":
+        key = int.from_bytes(hashlib.sha256(b"sbom-upload-admission").digest()[:8], "big", signed=True)
+        db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": key})
+
+
 def _persist_run(
     db: Session,
     *,
@@ -1931,14 +1956,12 @@ def _persist_run(
     raw_sha256: str,
     source: str = "",
     source_metadata: dict | None = None,
+    large_document: LargeSbom | None = None,
 ) -> dict:
     source_value, metadata = _validated_source_metadata(principal, source, source_metadata)
     if len(json.dumps(metadata, ensure_ascii=False).encode("utf-8")) > 64 * 1024:
         raise HTTPException(422, "예약 점검 메타데이터가 너무 큽니다")
-    if db.bind and db.bind.dialect.name == "postgresql":
-        lock_material = b"sbom-upload-admission"
-        advisory_key = int.from_bytes(hashlib.sha256(lock_material).digest()[:8], "big", signed=True)
-        db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": advisory_key})
+    _lock_sbom_artifacts(db)
     if idempotency_key:
         existing = _find_idempotent_run(
             db, principal=principal, idempotency_key=idempotency_key, service_id=service.id
@@ -1950,7 +1973,8 @@ def _persist_run(
         service.id,
         raw_sha256=raw_sha256,
         size_bytes=size_bytes,
-        component_count=component_count(payload),
+        component_count=large_document.component_count if large_document else component_count(payload),
+        unpacked_bytes=large_document.unpacked_bytes if large_document else 0,
     )
     release = db.scalar(
         select(Release).where(
@@ -1964,7 +1988,12 @@ def _persist_run(
         db.add(release)
         db.flush()
     round_number = int(db.scalar(select(func.max(SbomRun.round_number)).where(SbomRun.release_id == release.id)) or 0) + 1
-    sha256, path = store_artifact_file(get_settings().artifact_dir, staged_path, digest=raw_sha256)
+    artifact_dir = get_settings().artifact_dir
+    sha256 = raw_sha256
+    if large_document is None:
+        _, path = store_artifact_file(artifact_dir, staged_path, digest=sha256)
+    else:
+        path = artifact_path(artifact_dir, sha256)
     run = SbomRun(
         release_id=release.id,
         round_number=round_number,
@@ -1976,6 +2005,7 @@ def _persist_run(
         size_bytes=size_bytes,
         artifact_path=str(path),
         normalized_bom=payload,
+        split_document=large_document is not None,
         uploaded_by=principal.id if isinstance(principal, User) else None,
         idempotency_actor=actor,
         idempotency_key=idempotency_key,
@@ -1985,11 +2015,16 @@ def _persist_run(
     )
     db.add(run)
     db.flush()
+    if large_document is not None:
+        large_document.persist(db, run.id)
     create_components(db, run)
     mark_current(db, run)
     job = enqueue(db, "process_run", run.id)
     audit(db, actor, "sbom.upload", "sbom_run", run.id, {"sha256": sha256, "round": round_number})
     try:
+        if large_document is not None:
+            db.flush()
+            store_artifact_file(artifact_dir, staged_path, digest=sha256)
         db.commit()
     except IntegrityError as exc:
         raise HTTPException(409, "회차 또는 idempotency 키가 충돌했습니다. 요청을 재시도하세요") from exc
@@ -2058,40 +2093,53 @@ async def upload_sbom(
 
     def validate_and_persist():
         settings = get_settings()
-        with sbom_document_path(staged_path, max_bytes=max_bytes, workbook=workbook) as document:
-            payload, document_media_type = parse_sbom_upload_document(document)
-            validate_component_count(payload, settings.max_sbom_components)
-            input_format = "json" if document_media_type.endswith("+json") else "xml"
-            validate_file_with_cyclonedx_cli(
-                document,
-                settings.cyclonedx_cli_binary,
-                input_format=input_format,
-                parsed_document=(payload, document_media_type),
+        with ExitStack() as staging:
+            large_document = None
+            with sbom_document_path(staged_path, max_bytes=max_bytes, workbook=workbook, keep_legacy=True) as document:
+                if document.stat().st_size > LARGE_DOCUMENT_THRESHOLD and not workbook:
+                    _enforce_upload_capacity(
+                        db, service.id, raw_sha256=raw_sha256, size_bytes=size_bytes,
+                        unpacked_bytes=document.stat().st_size,
+                    )
+                    large_document = staging.enter_context(stage_large_sbom(
+                        document, settings.artifact_dir, max_components=settings.max_sbom_components,
+                        binary=settings.cyclonedx_cli_binary,
+                    ))
+                    payload = large_document.compatibility_view
+                    document_media_type = CYCLONEDX_JSON
+                else:
+                    payload, document_media_type = parse_sbom_upload_document(document)
+                    validate_component_count(payload, settings.max_sbom_components)
+                    input_format = "json" if document_media_type.endswith("+json") else "xml"
+                    validate_file_with_cyclonedx_cli(
+                        document, settings.cyclonedx_cli_binary, input_format=input_format,
+                        parsed_document=(payload, document_media_type),
+                    )
+                media_type = WORKBOOK_MEDIA_TYPE if workbook else sbom_upload_media_type(staged_path, document_media_type)
+            selected_environment = environment
+            if source_value == "scheduled":
+                selected_environment = _scheduled_environment(
+                    db, service=service, requested=environment, metadata=parsed_source_metadata
+                )
+            return _persist_run(
+                db,
+                principal=principal,
+                actor=actor,
+                service=service,
+                environment=selected_environment,
+                release_version=release_version,
+                staged_path=staged_path,
+                size_bytes=size_bytes,
+                payload=payload,
+                media_type=media_type,
+                filename=sbom.filename or "sbom",
+                note=note,
+                idempotency_key=idempotency_key,
+                raw_sha256=raw_sha256,
+                source=source_value,
+                source_metadata=parsed_source_metadata,
+                large_document=large_document,
             )
-            media_type = WORKBOOK_MEDIA_TYPE if workbook else sbom_upload_media_type(staged_path, document_media_type)
-        selected_environment = environment
-        if source_value == "scheduled":
-            selected_environment = _scheduled_environment(
-                db, service=service, requested=environment, metadata=parsed_source_metadata
-            )
-        return _persist_run(
-            db,
-            principal=principal,
-            actor=actor,
-            service=service,
-            environment=selected_environment,
-            release_version=release_version,
-            staged_path=staged_path,
-            size_bytes=size_bytes,
-            payload=payload,
-            media_type=media_type,
-            filename=sbom.filename or "sbom",
-            note=note,
-            idempotency_key=idempotency_key,
-            raw_sha256=raw_sha256,
-            source=source_value,
-            source_metadata=parsed_source_metadata,
-        )
 
     try:
         await sbom.close()
@@ -2138,13 +2186,18 @@ def _run_payload(
     component_count: int | None = None,
     component_type_counts: dict[str, int] | None = None,
     native_reanalysis_pending: bool = False,
+    analysis_revisions: list[AnalysisRevision] | None = None,
 ) -> dict:
-    latest = max(item.analyses, key=lambda analysis: analysis.sequence, default=None)
+    revisions = item.analyses if analysis_revisions is None else analysis_revisions
+    latest = max(revisions, key=lambda analysis: analysis.sequence, default=None)
     findings = project_cve_findings(latest.findings if latest else [])
     severity_counts: dict[str, int] = defaultdict(int)
     for finding in findings:
         severity = str(finding.get("severity") or "unknown").lower()
         severity_counts[severity if severity in {"critical", "high", "medium", "low", "info"} else "unknown"] += 1
+    matched_components = (latest.metrics or {}).get("registeredVulnerableComponentCount") if latest else None
+    if not isinstance(matched_components, int):
+        matched_components = vulnerable_component_count(item.normalized_bom, findings) if findings else 0
     return {
         "id": item.id,
         "runUrl": (
@@ -2172,7 +2225,7 @@ def _run_payload(
         "componentCount": component_count if component_count is not None else len(item.components),
         "componentTypeCounts": component_type_counts or {},
         "vulnerabilityCount": len(findings),
-        "vulnerableComponentCount": vulnerable_component_count(item.normalized_bom, findings),
+        "vulnerableComponentCount": matched_components,
         "severityCounts": dict(severity_counts),
         "kevCount": sum(1 for finding in findings if finding.get("kev") is True),
         "policyViolationCount": _policy_count(latest),
@@ -2232,14 +2285,16 @@ def list_runs(
     _=Depends(require_permission("runs.view")),
 ) -> dict:
     query = select(SbomRun).options(
+        defer(SbomRun.normalized_bom),
         selectinload(SbomRun.release).selectinload(Release.service),
         selectinload(SbomRun.release).selectinload(Release.environment),
-        selectinload(SbomRun.analyses).defer(AnalysisRevision.policies).defer(AnalysisRevision.policy_snapshot),
     )
+    if service_id or environment_id:
+        query = query.join(Release)
     if service_id:
-        query = query.join(Release).where(Release.service_id == service_id)
+        query = query.where(Release.service_id == service_id)
     if environment_id:
-        query = query.join(Release).where(Release.environment_id == environment_id)
+        query = query.where(Release.environment_id == environment_id)
     if state:
         query = query.where(SbomRun.state == state)
     if source:
@@ -2257,9 +2312,23 @@ def list_runs(
                 SbomRun.components.any(RunComponent.search_text.ilike(pattern.lower())),
             )
         )
-    total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
-    items = list(db.scalars(query.order_by(SbomRun.created_at.desc()).offset((page - 1) * size).limit(size)).unique())
+    total = db.scalar(select(func.count()).select_from(query.with_only_columns(SbomRun.id, maintain_column_froms=True).subquery())) or 0
+    items = list(db.scalars(query.order_by(SbomRun.created_at.desc(), SbomRun.id.desc()).offset((page - 1) * size).limit(size)).unique())
     run_ids = [item.id for item in items]
+    revisions: dict[str, list[AnalysisRevision]] = {}
+    if run_ids:
+        latest = (
+            select(AnalysisRevision.run_id, func.max(AnalysisRevision.sequence).label("sequence"))
+            .where(AnalysisRevision.run_id.in_(run_ids))
+            .group_by(AnalysisRevision.run_id)
+            .subquery()
+        )
+        for revision in db.scalars(
+            select(AnalysisRevision)
+            .join(latest, (AnalysisRevision.run_id == latest.c.run_id) & (AnalysisRevision.sequence == latest.c.sequence))
+            .options(defer(AnalysisRevision.policies), defer(AnalysisRevision.policy_snapshot))
+        ):
+            revisions[revision.run_id] = [revision]
     native_pending_ids = set(db.scalars(select(NativeReanalysisPending.run_id).where(NativeReanalysisPending.run_id.in_(run_ids)))) if run_ids else set()
     component_counts = dict(
         db.execute(
@@ -2281,6 +2350,7 @@ def list_runs(
                 component_count=component_counts.get(item.id, 0),
                 component_type_counts=component_type_counts.get(item.id, {}),
                 native_reanalysis_pending=item.id in native_pending_ids,
+                analysis_revisions=revisions.get(item.id, []),
             )
             for item in items
         ],
@@ -2539,6 +2609,7 @@ def delete_run(
     _=Depends(require_permission("sbom.delete")),
     _csrf=Depends(require_csrf),
 ) -> dict:
+    _lock_sbom_artifacts(db)
     run = _load_run(db, run_id, for_update=True)
     jobs = list(db.scalars(select(Job).where(Job.run_id == run.id)))
     if run.state not in {ProcessingState.COMPLETED, ProcessingState.FAILED, ProcessingState.ARCHIVED} or any(job.state in {JobState.QUEUED, JobState.RUNNING} for job in jobs):
@@ -2570,6 +2641,7 @@ def delete_run(
     }
     try:
         db.execute(delete(RunComponent).where(RunComponent.run_id == run.id))
+        db.execute(delete(SbomDocumentRecord).where(SbomDocumentRecord.run_id == run.id))
         db.execute(delete(AnalysisRevision).where(AnalysisRevision.run_id == run.id))
         db.execute(delete(Job).where(Job.run_id == run.id))
         db.delete(run)

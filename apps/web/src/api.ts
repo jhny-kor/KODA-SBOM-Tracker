@@ -101,7 +101,7 @@ export type RunQuery = {
   source?: string;
 };
 
-export async function fetchRuns(options: RunQuery = {}): Promise<PageResult<SbomRun>> {
+export async function fetchRuns(options: RunQuery = {}, signal?: AbortSignal): Promise<PageResult<SbomRun>> {
   const page = options.page || 1;
   const size = options.size || 10;
   if (previewMode) {
@@ -133,7 +133,7 @@ export async function fetchRuns(options: RunQuery = {}): Promise<PageResult<Sbom
   if (options.environmentId) params.set("environment_id", options.environmentId);
   if (options.state) params.set("state", options.state);
   if (options.source) params.set("source", options.source);
-  return request<PageResult<SbomRun>>(`/api/v1/sbom-runs?${params}`);
+  return request<PageResult<SbomRun>>(`/api/v1/sbom-runs?${params}`, { signal });
 }
 
 export async function fetchRun(runId: string): Promise<SbomRunDetail> {

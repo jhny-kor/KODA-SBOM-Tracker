@@ -11,7 +11,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Mapped, Session, mapped_column, load_only
 
 from .compatibility_bundle import parse_compatibility_bundle
-from .compatibility_sources import AUTHORITIES, MAX_ARCHIVE_BYTES
+from .compatibility_sources import AUTHORITIES, MAX_ARCHIVE_BYTES, MAX_ARCHIVE_MB
 from .db import Base, get_db
 from .models import new_id, now
 from .security import has_any_permission, require_csrf, require_permission
@@ -158,7 +158,7 @@ def import_bundle(file: UploadFile = File(...), db: Session = Depends(get_db), u
     try:
         raw = file.file.read(MAX_ARCHIVE_BYTES + 1)
         if len(raw) > MAX_ARCHIVE_BYTES:
-            raise HTTPException(413, "호환성 자료 압축은 최대 16 MiB입니다")
+            raise HTTPException(413, f"호환성 자료 압축은 최대 {MAX_ARCHIVE_MB} MB입니다")
         digest = hashlib.sha256(raw).hexdigest()
         lookup = select(CompatibilityBundle).where(CompatibilityBundle.sha256 == digest)
         row = db.scalar(lookup)

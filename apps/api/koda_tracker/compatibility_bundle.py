@@ -18,7 +18,8 @@ from xml.etree.ElementTree import ParseError
 
 from .compatibility_rpm import parse_rpm
 from .compatibility_sources import (
-    AUTHORITIES, FILE_LIMITS, MAX_ARCHIVE_BYTES, MAX_ITEMS, MAX_MANIFEST_BYTES, MAX_UNPACKED_BYTES,
+    AUTHORITIES, FILE_LIMITS, MAX_ARCHIVE_BYTES, MAX_ARCHIVE_MB, MAX_ITEMS, MAX_MANIFEST_BYTES,
+    MAX_UNPACKED_BYTES, MAX_UNPACKED_MIB,
     REQUIRED_FILES, canonical_python_name, maven_pom_url, oracle_rpm_location, pypi_release_url, pypi_wheel_filename,
 )
 
@@ -60,11 +61,11 @@ class Manifest(BaseModel):
 
 def _tar_files(raw: bytes) -> dict[str, bytes]:
     if len(raw) > MAX_ARCHIVE_BYTES:
-        raise ValueError("호환성 자료 압축은 최대 16 MiB입니다")
+        raise ValueError(f"호환성 자료 압축은 최대 {MAX_ARCHIVE_MB} MB입니다")
     with gzip.GzipFile(fileobj=BytesIO(raw)) as stream:
         content = stream.read(MAX_UNPACKED_BYTES + 1)
     if len(content) > MAX_UNPACKED_BYTES:
-        raise ValueError("압축 해제 크기가 32 MiB를 넘습니다")
+        raise ValueError(f"압축 해제 크기가 {MAX_UNPACKED_MIB} MiB를 넘습니다")
     files = {}
     with tarfile.open(fileobj=BytesIO(content), mode="r:", ignore_zeros=True) as archive:
         for entry in archive:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import re
 from collections import Counter
+from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Literal
 
@@ -439,6 +440,72 @@ def components_with_dependency_graph(bom: dict) -> list[dict]:
     return components
 
 
+_COMPONENT_IDENTIFIER = re.compile(r"(?<![A-Za-z0-9_])component(?![A-Za-z0-9_])")
+_CEL_MEMBER = re.compile(r"\s*\.\s*([A-Za-z_][A-Za-z0-9_]*)")
+_CEL_LITERAL_SUBSCRIPT = re.compile(r'''\s*\[\s*(?:"([^"\\\r\n]*)"|'([^'\\\r\n]*)')\s*\]''')
+_CEL_CALL_OR_COMMENT = re.compile(r"\s*(?:\(|//|/\*)")
+_MAX_SPLIT_POLICY_PROPERTY_BYTES = 16 * 1024**2
+_MAX_SPLIT_POLICY_PROPERTIES = 100_000
+
+
+def _literal_member(expression: str, start: int) -> tuple[str, int] | None:
+    match = _CEL_MEMBER.match(expression, start)
+    if match is not None and not _CEL_CALL_OR_COMMENT.match(expression, match.end()):
+        return match[1], match.end()
+    match = _CEL_LITERAL_SUBSCRIPT.match(expression, start)
+    if match is None:
+        return None
+    return next(value for value in match.groups() if value is not None), match.end()
+
+
+def _property_selectors(expressions: Iterable[str]) -> set[str] | None:
+    """Literal selectors are safe to project. Other uses need the complete map."""
+    keys = set()
+    for expression in expressions:
+        # Count occurrences inside strings/comments too. Ambiguous syntax may
+        # request more data but cannot hide a dynamic property access.
+        for identifier in _COMPONENT_IDENTIFIER.finditer(expression):
+            member = _literal_member(expression, identifier.end())
+            if member is None:
+                return None
+            if member[0] == "properties":
+                selector = _literal_member(expression, member[1])
+                if selector is None:
+                    return None
+                keys.add(selector[0])
+    return keys
+
+
+def policy_components_for_run(db: Session, run: SbomRun, expressions: Iterable[str] = ()) -> list[dict]:
+    components = components_with_dependency_graph(getattr(run, "normalized_bom", None) or {})
+    if not getattr(run, "split_document", False):
+        return components
+    keys = _property_selectors(expressions)
+    if keys is not None and not keys:
+        return components
+
+    from .large_sbom import iter_large_records
+
+    raw_components = (component for root in iter_large_records(db, run.id, "components")
+                      for component in iter_components([root]))
+    size = count = 0
+    for component, raw in zip(components, raw_components, strict=True):
+        if any(component.get(key) != raw.get(key) for key in ("bom-ref", "type", "name", "version", "purl")):
+            raise CelPolicyError("저장된 대용량 SBOM 구성요소가 정책 데이터와 일치하지 않습니다")
+        properties = [] if keys is None else [entry for entry in component.get("properties", []) if entry["name"] not in keys]
+        for entry in raw.get("properties", []):
+            name = entry["name"]
+            if keys is not None and name not in keys:
+                continue
+            size += len(name.encode()) + len(entry.get("value", "").encode()) + 16
+            count += 1
+            if size > _MAX_SPLIT_POLICY_PROPERTY_BYTES or count > _MAX_SPLIT_POLICY_PROPERTIES:
+                raise CelPolicyError("대용량 SBOM의 CEL 속성 데이터가 처리 한도를 초과했습니다")
+            properties.append(entry)
+        component["properties"] = properties
+    return components
+
+
 def preview_expression(expression: str, target: str, components: list[dict], findings: list[dict], project_context: dict | None = None) -> dict:
     validate_expression(expression, target)
     contexts = build_cel_contexts(components, findings, project_context, targets={target}, include_peer_vulnerabilities="vulnerabilities" in expression)
@@ -614,7 +681,10 @@ def evaluate_revision(db: Session, run: SbomRun, revision: AnalysisRevision) -> 
         revision.policy_version = policy.version
         revision.policy_snapshot = snapshot
         document = PolicyDocument.model_validate(snapshot)
-        components = components_with_dependency_graph(getattr(run, "normalized_bom", None) or {})
+        project_context = policy_context_for_run(run, db)
+        expressions = (rule.expression for rule in document.rules if rule.kind == "cel" and rule.enabled
+                       and rule.target != "project" and _rule_applies(rule, project_context))
+        components = policy_components_for_run(db, run, expressions)
         from .package_metadata import enrich_components, metadata_summary
         if isinstance(run, SbomRun):
             components = enrich_components(db, components)
@@ -634,7 +704,6 @@ def evaluate_revision(db: Session, run: SbomRun, revision: AnalysisRevision) -> 
         sources = revision.data_sources or {}
         kev_source = sources.get("cisaKev") or {}
         available_sources = {"kev"} if isinstance(kev_source, dict) and kev_source.get("available") is True else set()
-        project_context = policy_context_for_run(run, db)
         # An analysis uses the exact immutable quality evidence it evaluated;
         # a later manual quality rerun must not change this policy snapshot.
         quality_source = (revision.data_sources or {}).get("sbomQuality")

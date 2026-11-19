@@ -52,6 +52,7 @@ export type QualitySummary = {
   qualityStatus: "pass" | "warn" | "fail" | "failed";
   fieldStatus: Record<string, unknown>;
   sourceBasis?: "verified_original_artifact" | "stored_normalized_json";
+  documentLayout?: "split_cyclonedx";
 };
 export type QualityDomainScore = {
   score: number | null;

@@ -119,6 +119,43 @@ def test_import_is_isolated_idempotent_and_downloadable():
         assert client.get("/api/v1/services").json() == before
         assert existing_service in {row["id"] for row in before}
 
+
+def test_import_accepts_a_valid_archive_larger_than_the_previous_limit():
+    manifest, _ = example()
+    manifest["items"] = []
+    files = {}
+    for name in ("largea", "largeb"):
+        filename = f"{name}-1.0-py3-none-any.whl"
+        wheel_url = f"https://files.pythonhosted.org/packages/00/00/{'0' * 60}/{filename}"
+        wheel_path = "files/" + filename
+        release_path = f"files/{name}.json"
+        with BytesIO() as output:
+            with ZipFile(output, "w") as wheel:
+                wheel.writestr(f"{name}-1.0.dist-info/METADATA", f"Name: {name}\nVersion: 1.0\n\n")
+                wheel.writestr(f"{name}-1.0.dist-info/WHEEL", "Wheel-Version: 1.0\nTag: py3-none-any\n\n")
+                wheel.writestr("resource.bin", hashlib.shake_256(name.encode()).digest(9 * 1024 * 1024))
+            files[wheel_path] = output.getvalue()
+        wheel_file = descriptor("wheel", wheel_path, wheel_url, files[wheel_path])
+        files[release_path] = json.dumps({
+            "info": {"name": name, "version": "1.0"},
+            "urls": [{"filename": filename, "url": wheel_url, "size": wheel_file["size"],
+                      "digests": {"sha256": wheel_file["sha256"]}, "packagetype": "bdist_wheel"}],
+        }).encode()
+        manifest["items"].append({
+            "ecosystem": "python", "package": name, "version": "1.0",
+            "files": [descriptor("pypi_release", release_path, f"https://pypi.org/pypi/{name}/1.0/json",
+                                 files[release_path]), wheel_file],
+        })
+
+    archive = make_archive(manifest, files)
+    assert len(archive) > 16 * 1024 * 1024
+    with TestClient(app) as client:
+        response = client.post("/api/v1/compatibility-data/import", headers=_login(client),
+                               files={"file": ("official.tar.gz", archive, "application/gzip")})
+        assert response.status_code == 200, response.text
+        assert response.json()["itemCount"] == 2
+
+
 def test_rpm_references_require_the_oracle_package_full_version_and_architecture():
     rpm = _rpm()
     manifest = {"schemaVersion": 1, "profile": "official-v1", "collectedAt": "2026-11-08T03:10:00Z", "items": [

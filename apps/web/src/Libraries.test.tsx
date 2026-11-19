@@ -58,6 +58,17 @@ describe("library inventory", () => {
         fireEvent.click(screen.getByRole("button", { name: "초기화" }));
         await waitFor(() => expect(api.fetchLibraries).toHaveBeenLastCalledWith(expect.objectContaining({ q: "", environmentId: "", version: "" })));
     });
+    it("defaults to ten rows and returns to page one when the row count changes", async () => {
+        vi.mocked(api.fetchLibraries).mockResolvedValue({ ...page, total: 42 });
+        render(<LibrariesPage />);
+        const size = screen.getByRole("combobox", { name: "라이브러리 목록 페이지당 행 수" });
+        expect(size).toHaveValue("10");
+        await waitFor(() => expect(api.fetchLibraries).toHaveBeenLastCalledWith(expect.objectContaining({ page: 1, size: 10 })));
+        fireEvent.click(await screen.findByRole("button", { name: "라이브러리 목록 다음 페이지" }));
+        await waitFor(() => expect(api.fetchLibraries).toHaveBeenLastCalledWith(expect.objectContaining({ page: 2, size: 10 })));
+        fireEvent.change(size, { target: { value: "25" } });
+        await waitFor(() => expect(api.fetchLibraries).toHaveBeenLastCalledWith(expect.objectContaining({ page: 1, size: 25 })));
+    });
     it("exposes historical evidence and related findings via accessible tabs", async () => {
         render(<LibrariesPage />);
         await screen.findByRole("table", { name: "라이브러리 보유 환경" });
@@ -85,7 +96,8 @@ describe("library inventory", () => {
         vi.mocked(api.fetchLibraries).mockResolvedValue({ ...page, items: [row, { ...row, key: "http", name: "sample-http" }] });
         vi.mocked(api.fetchLibrary).mockImplementation(key => key === "json" ? new Promise(resolve => { resolveOld = resolve; }) : Promise.resolve({ ...detail, key: "http", name: "sample-http", coordinate: "pkg:npm/sample-http" }));
         render(<LibrariesPage />);
-        fireEvent.click(await screen.findByRole("button", { name: "sample-http" }));
+        const httpRow = (await screen.findByRole("button", { name: "sample-http" })).closest("tr")!;
+        fireEvent.click(within(httpRow).getAllByRole("cell")[2]);
         expect(await screen.findByRole("heading", { name: "sample-http" })).toBeInTheDocument();
         resolveOld(detail);
         await waitFor(() => expect(screen.queryByRole("heading", { name: "sample-json" })).not.toBeInTheDocument());

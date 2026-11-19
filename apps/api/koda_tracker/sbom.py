@@ -149,13 +149,15 @@ def sbom_upload_media_type(path: Path, document_media_type: str) -> str:
 
 
 _JSON_BYTES_STRING = re.compile(rb'["\\]')
-_JSON_WHITESPACE_RUN = re.compile(rb"[ \t\r\n]+")
+_JSON_BYTES_SPACE_OR_QUOTE = re.compile(rb'[ \t\r\n]+|"')
+_JSON_PUNCTUATION = b'"{}[],:'
 
 
 def _compact_large_json(source, destination) -> None:
-    """Collapse insignificant JSON whitespace without changing strings or syntax."""
+    """Remove formatting whitespace without merging tokens or changing strings."""
     written = 0
-    in_string = escaped = previous_space = False
+    in_string = escaped = pending_space = False
+    previous_byte = None
     while chunk := source.read(1024 * 1024):
         output = bytearray()
         start = int(escaped)
@@ -179,17 +181,28 @@ def _compact_large_json(source, destination) -> None:
                 output.extend(chunk[start:position])
                 start = position
                 continue
-            quote = chunk.find(b'"', position)
-            limit = len(chunk) if quote == -1 else quote
-            plain = _JSON_WHITESPACE_RUN.sub(b" ", chunk[position:limit])
-            output.extend(plain[1:] if previous_space and plain.startswith(b" ") else plain)
-            if quote == -1:
-                previous_space = (plain.endswith(b" ") if plain else previous_space)
+            match = _JSON_BYTES_SPACE_OR_QUOTE.search(chunk, position)
+            end = match.start() if match is not None else len(chunk)
+            if end > position:
+                # Keep one space between scalar fragments, including invalid
+                # input like [1 2] that would otherwise become [12].
+                if (pending_space and previous_byte is not None and previous_byte not in _JSON_PUNCTUATION
+                        and chunk[position] not in _JSON_PUNCTUATION):
+                    output.append(32)
+                output.extend(chunk[position:end])
+                previous_byte = chunk[end - 1]
+                pending_space = False
+            if match is None:
                 break
-            output.append(34)
-            in_string = True
-            previous_space = False
-            start = position = quote + 1
+            position = match.end()
+            if chunk[end] == 34:
+                output.append(34)
+                in_string = True
+                previous_byte = 34
+                pending_space = False
+                start = position
+            else:
+                pending_space = True
         written += len(output)
         _check_upload_document_size(written)
         destination.write(output)
@@ -202,7 +215,7 @@ def _document_for_parsing(path: Path, spool: Path, *, keep_legacy: bool):
         return
     with path.open("rb") as source:
         prefix = source.read(4096)
-        if not prefix.lstrip().startswith((b"{", b"[")):
+        if not prefix.lstrip().startswith((b"{", b"[")) or json.detect_encoding(prefix) != "utf-8":
             yield path
             return
         source.seek(0)
@@ -771,11 +784,11 @@ def store_artifact_file(base: Path, source: Path, *, digest: str) -> tuple[str, 
     target = artifact_path(base, digest)
     target.parent.mkdir(parents=True, exist_ok=True)
     if not target.exists():
-        with tempfile.NamedTemporaryFile(dir=target.parent, prefix=f".{digest}.", delete=False) as candidate:
-            with source.open("rb") as staged:
-                shutil.copyfileobj(staged, candidate, length=1024 * 1024)
-            temp = Path(candidate.name)
+        candidate = tempfile.NamedTemporaryFile(dir=target.parent, prefix=f".{digest}.", delete=False)
+        temp = Path(candidate.name)
         try:
+            with candidate, source.open("rb") as staged:
+                shutil.copyfileobj(staged, candidate, length=1024 * 1024)
             temp.replace(target)
         finally:
             temp.unlink(missing_ok=True)

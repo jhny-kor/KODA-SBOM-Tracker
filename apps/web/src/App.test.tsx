@@ -403,6 +403,8 @@ describe("KODA SBOM Tracker", () => {
     expect(screen.getByRole("heading", { name: "1.4.2 · 3차" })).toBeInTheDocument();
     const detail = screen.getByRole("dialog", { name: "1.4.2 · 3차" });
     expect(detail).toHaveClass("detail-modal");
+    const policy = within(detail).getByRole("region", { name: "정책 및 분석 요약" });
+    expect(policy.nextElementSibling).toBe(within(detail).getByRole("heading", { name: "SBOM 품질" }).closest("section"));
     expect(within(detail).getByText("취약 구성요소", { selector: "dt" }).nextElementSibling).toHaveTextContent("4개");
     expect(screen.queryByText("SHA-256")).not.toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "구성요소 검색" })).toBeInTheDocument();
@@ -411,7 +413,10 @@ describe("KODA SBOM Tracker", () => {
     expect(await screen.findByText("높음")).toHaveClass("severity-pill", "high");
     expect(screen.getByRole("cell", { name: "9.8" })).toBeInTheDocument();
     expect(screen.getByRole("cell", { name: "KEV" })).toBeInTheDocument();
-    expect(screen.getByRole("cell", { name: "4.5.14, 5.0.0" })).toBeInTheDocument();
+    expect(within(detail).getByRole("columnheader", { name: "CWE" })).toBeInTheDocument();
+    expect(within(detail).getByRole("columnheader", { name: "EPSS" })).toBeInTheDocument();
+    const versions = within(detail).getByText("4.5.14").closest("td")!;
+    expect(Array.from(versions.children, (line) => line.textContent)).toEqual(["4.5.14", "5.0.0"]);
     expect(screen.getAllByText("결제 API").length).toBeGreaterThan(0);
   });
   it("opens the exact history comparison pair and clears it when navigating away", async () => {

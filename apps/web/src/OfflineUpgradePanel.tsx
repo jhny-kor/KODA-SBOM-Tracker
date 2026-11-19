@@ -180,7 +180,7 @@ function OfficialReferenceCell({ candidate }: { candidate: Candidate }) {
 
 function BatchResult({ runId, result }: { runId: string; result: Batch }) {
   const showReferences = result.candidates.some(candidate => candidate.officialReferences !== undefined);
-  return <section aria-label="후보 버전 검토 결과">
+  return <section className="run-detail-group" aria-label="후보 버전 검토 결과">
     <h3>{labels[result.ecosystem]} 후보 버전 검토 결과</h3>
     <p className="wrap">{result.coordinate} · {result.platform.server} · {result.platform.os} / {result.platform.architecture}</p>
     <p>배포 기준 버전 <strong>{result.currentVersions.join(", ")}</strong></p>

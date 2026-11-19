@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
-from contextlib import nullcontext
+from contextlib import ExitStack
 import os
 import subprocess
+import tempfile
 from collections import Counter
 from pathlib import Path
 
@@ -11,6 +12,8 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from .config import get_settings
+from .large_sbom import iter_large_records
+from .large_sbom_scan import grype_cyclonedx_view, scan_large_sbom
 from .collection_coverage import coverage_for_bom
 from .models import (
     AnalysisRevision,
@@ -21,7 +24,7 @@ from .models import (
     RunComponent,
     SbomRun,
 )
-from .sbom import MAX_UPLOAD_DOCUMENT_BYTES, SBOM_ARCHIVE_MEDIA_TYPES, iter_components, licenses_for, normalized_identity, sbom_document_path, sbom_nis_scan_path, sha256_for
+from .sbom import MAX_UPLOAD_DOCUMENT_BYTES, SBOM_ARCHIVE_MEDIA_TYPES, SbomValidationError, iter_components, licenses_for, normalized_identity, sbom_document_path, sbom_nis_scan_path, sha256_for
 from . import package_metadata_models
 from .package_metadata import enqueue_components
 from . import workflow_models  # Register workflow tables before standalone create_all callers.
@@ -31,7 +34,7 @@ from .sbom_nis import NIS_SBOM_MEDIA_TYPE
 from .sbom_workbook import WORKBOOK_MEDIA_TYPE
 from .policies import evaluate_revision
 from .quality import evaluate_quality, revision_payload as quality_payload
-from .vulnerability import active_bundle, load_context, normalize_finding
+from .vulnerability import active_bundle, load_context, normalize_finding, project_cve_findings, vulnerable_component_count
 from .cpe_analysis import enrich_cpe_findings
 
 
@@ -51,6 +54,8 @@ def create_components(db: Session, run: SbomRun, *, refresh: bool = False) -> No
             bom_ref = str(raw.get("bom-ref") or "")
             identity = f"{identity}|bom-ref:{bom_ref}" if bom_ref else f"{identity}|ambiguous:{index}"
             status = "review_required"
+        if getattr(run, "split_document", False) and (len(identity) > 1024 or "\x00" in identity):
+            raise SbomValidationError("SBOM 구성요소의 정규화 식별자가 저장 한도를 초과했습니다")
         group_name = str(raw.get("group") or "")
         name = str(raw.get("name") or raw.get("bom-ref") or "unknown")
         version = str(raw.get("version") or "")
@@ -129,84 +134,51 @@ def _analyze_offline(db: Session, run: SbomRun) -> AnalysisRevision:
         env["GRYPE_DB_VALIDATE_AGE"] = "false"
         env["GRYPE_CHECK_FOR_APP_UPDATE"] = "false"
         env["GRYPE_EXTERNAL_SOURCES_ENABLE"] = "false"
-        source = Path(run.artifact_path)
-        media_type = getattr(run, "media_type", "")
-        prepared_input = (
-            media_type == WORKBOOK_MEDIA_TYPE
-            or media_type in SBOM_ARCHIVE_MEDIA_TYPES.values()
-            or (media_type.endswith("+json") and getattr(run, "size_bytes", 0) > MAX_UPLOAD_DOCUMENT_BYTES)
-        )
-        document = (
-            sbom_document_path(
-                source, max_bytes=settings.max_upload_bytes, workbook=media_type == WORKBOOK_MEDIA_TYPE, keep_legacy=True,
+        split_document = getattr(run, "split_document", False)
+        finding_bytes = 0
+
+        def record_match(match: dict) -> None:
+            nonlocal finding_bytes
+            finding = _grype_finding(match, context, component_refs)
+            if split_document:
+                finding_bytes += len(json.dumps(finding, ensure_ascii=False).encode())
+                if finding_bytes > 64 * 1024**2:
+                    raise ValueError("대용량 SBOM 취약점 결과가 저장 크기 한도를 초과했습니다")
+            findings.append(finding)
+
+        if split_document:
+            if quality["state"] != "completed":
+                raise ValueError(quality.get("error") or "원본 SBOM 또는 인덱스 검증을 완료하지 못했습니다")
+            tool_version = scan_large_sbom(
+                run.normalized_bom,
+                lambda: iter_large_records(db, run.id, "components"),
+                binary=settings.grype_binary,
+                env=env,
+                spool=settings.artifact_dir,
+                on_match=record_match,
             )
-            if prepared_input
-            else nullcontext(source)
-        )
-        with document as selected:
-            scanner_document = (
-                sbom_nis_scan_path(selected)
-                if media_type == NIS_SBOM_MEDIA_TYPE or media_type in SBOM_ARCHIVE_MEDIA_TYPES.values()
-                else nullcontext(selected)
-            )
-            with scanner_document as grype_input:
-                process = subprocess.run(
-                    [settings.grype_binary, f"sbom:{grype_input}", "-o", "json"],
-                    text=True,
-                    capture_output=True,
-                    timeout=300,
-                    env=env,
-                    check=False,
-                )
-        if process.returncode == 0:
-            payload = json.loads(process.stdout)
-            for match in payload.get("matches", []):
-                vuln = match.get("vulnerability", {})
-                artifact = match.get("artifact", {})
-                artifact_ref = artifact.get("id")
-                findings.append(
-                    {
-                        # Grype emits CVE aliases next to ``vulnerability``
-                        # for GHSA matches. Keep them before canonicalization
-                        # so CVE projection, KEV and NVD enrichment agree.
-                        **normalize_finding({
-                            **vuln,
-                            "relatedVulnerabilities": [
-                                *(vuln.get("relatedVulnerabilities") or []),
-                                *(match.get("relatedVulnerabilities") or []),
-                            ],
-                        }, context),
-                        "component": artifact.get("purl") or artifact.get("name"),
-                        "version": artifact.get("version"),
-                        # Preserve an exact input reference when the scanner
-                        # returns it. Generated scanner IDs are not BOM refs.
-                        **({"bomRef": artifact_ref} if isinstance(artifact_ref, str)
-                           and artifact_ref in component_refs else {}),
-                        "fixedIn": [
-                            str(item.get("version") if isinstance(item, dict) else item)
-                            for item in vuln.get("fix", {}).get("versions", [])
-                            if item
-                        ],
-                    }
-                )
-            if isinstance(run, SbomRun):
-                findings, cpe_evidence = enrich_cpe_findings(
-                    components_for_cpe, context, findings
-                )
-                revision.data_sources = {**revision.data_sources, "cpeApplicability": cpe_evidence}
-                private_findings, private_snapshot = match_private_vulnerabilities(
-                    db, (run.normalized_bom or {}).get("components", [])
-                )
-                findings.extend(private_findings)
-                revision.data_sources = {**revision.data_sources, "privateVulnerabilityDb": private_snapshot}
-            revision.state = JobState.COMPLETED
-            revision.tool_version = str(payload.get("descriptor", {}).get("version", "grype"))
+            revision.data_sources = {**revision.data_sources, "sbomDocument": {"storage": "split_cyclonedx", "sha256": run.sha256}}
         else:
-            revision.state = JobState.FAILED
-            revision.error = process.stderr[-2000:] or "Grype 분석 실패"
+            payload = _grype_document(run, settings, env)
+            for match in payload.get("matches", []):
+                record_match(match)
+            tool_version = str(payload.get("descriptor", {}).get("version", "grype"))
+        if isinstance(run, SbomRun):
+            findings, cpe_evidence = enrich_cpe_findings(components_for_cpe, context, findings)
+            revision.data_sources = {**revision.data_sources, "cpeApplicability": cpe_evidence}
+            private_findings, private_snapshot = match_private_vulnerabilities(
+                db, (run.normalized_bom or {}).get("components", [])
+            )
+            findings.extend(private_findings)
+            revision.data_sources = {**revision.data_sources, "privateVulnerabilityDb": private_snapshot}
+        revision.state = JobState.COMPLETED
+        revision.tool_version = tool_version
     except Exception as exc:
         revision.state = JobState.FAILED
         revision.error = str(exc)[-2000:]
+        if getattr(run, "split_document", False):
+            findings.clear()
+
         from .data_updates import DataUpdateError
         if isinstance(exc,DataUpdateError):
             revision.data_sources = {**revision.data_sources,"vulnerabilityDataStatus":{"status":"unavailable","reason":revision.error}}
@@ -218,12 +190,82 @@ def _analyze_offline(db: Session, run: SbomRun) -> AnalysisRevision:
     decisions = approved_for_run(db, run)
     revision.findings = [{**finding, **({"vex": {**review_dict(decisions[identity(finding)]), "suppressed": decisions[identity(finding)].state in SUPPRESS_STATES}} if identity(finding) in decisions else {})} for finding in findings]
     evaluate_revision(db, run, revision)
+    if getattr(run, "split_document", False):
+        revision.metrics = {
+            **(revision.metrics or {}),
+            "registeredVulnerableComponentCount": vulnerable_component_count(
+                run.normalized_bom, project_cve_findings(revision.findings)
+            ),
+        }
     from .workflows import apply_vex_reviews, notify_analysis
     apply_vex_reviews(db, run, revision)
     notify_analysis(db, run, revision)
     _derive_state(run, revision)
     db.flush()
     return revision
+
+
+def _grype_document(run, settings, env: dict) -> dict:
+    source = Path(run.artifact_path)
+    media_type = getattr(run, "media_type", "")
+    prepared_input = (
+        media_type == WORKBOOK_MEDIA_TYPE
+        or media_type in SBOM_ARCHIVE_MEDIA_TYPES.values()
+        or (media_type.endswith("+json") and getattr(run, "size_bytes", 0) > MAX_UPLOAD_DOCUMENT_BYTES)
+    )
+    with ExitStack() as cleanup:
+        if getattr(run, "spec_version", "") == "1.7":
+            converted = cleanup.enter_context(tempfile.NamedTemporaryFile(
+                "w", suffix=".cdx.json", encoding="utf-8", dir=settings.artifact_dir,
+            ))
+            json.dump(grype_cyclonedx_view(run.normalized_bom), converted,
+                      ensure_ascii=False, separators=(",", ":"))
+            converted.flush()
+            grype_input = Path(converted.name)
+        else:
+            grype_input = source
+            if prepared_input:
+                grype_input = cleanup.enter_context(sbom_document_path(
+                    source, max_bytes=settings.max_upload_bytes, workbook=media_type == WORKBOOK_MEDIA_TYPE,
+                    keep_legacy=True,
+                ))
+            if media_type == NIS_SBOM_MEDIA_TYPE or media_type in SBOM_ARCHIVE_MEDIA_TYPES.values():
+                grype_input = cleanup.enter_context(sbom_nis_scan_path(grype_input))
+        process = subprocess.run(
+            [settings.grype_binary, f"sbom:{grype_input}", "-o", "json"],
+            text=True,
+            capture_output=True,
+            timeout=300,
+            env=env,
+            check=False,
+        )
+    if process.returncode:
+        raise ValueError(process.stderr[-2000:] or "Grype 분석 실패")
+    return json.loads(process.stdout)
+
+
+def _grype_finding(match: dict, context, component_refs: set[str]) -> dict:
+    vulnerability = match.get("vulnerability", {})
+    artifact = match.get("artifact", {})
+    artifact_ref = artifact.get("id")
+    # GHSA aliases may be exposed next to the vulnerability in Grype output.
+    return {
+        **normalize_finding({
+            **vulnerability,
+            "relatedVulnerabilities": [
+                *(vulnerability.get("relatedVulnerabilities") or []),
+                *(match.get("relatedVulnerabilities") or []),
+            ],
+        }, context),
+        "component": artifact.get("purl") or artifact.get("name"),
+        "version": artifact.get("version"),
+        **({"bomRef": artifact_ref} if isinstance(artifact_ref, str) and artifact_ref in component_refs else {}),
+        "fixedIn": [
+            str(item.get("version") if isinstance(item, dict) else item)
+            for item in vulnerability.get("fix", {}).get("versions", [])
+            if item
+        ],
+    }
 
 
 def _metadata_value(path: Path, key: str) -> str | None:

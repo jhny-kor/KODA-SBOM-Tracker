@@ -13,7 +13,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
-from sqlalchemy import MetaData, create_engine, inspect, select, text
+from sqlalchemy import MetaData, Table, create_engine, inspect, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from koda_tracker import config, db as database, main, security
@@ -59,6 +59,7 @@ def _legacy_installation(engine, artifact, ldap_key):
     with engine.begin() as connection:
         for statement in LEGACY_DDL:
             connection.execute(text(statement))
+    runs = Table("sbom_runs", MetaData(), autoload_with=engine)
     with Session(engine) as session:
         session.add_all([
             User(id="old-admin", username="upgrade-admin", role=Role.ADMIN, password_hash=password_hash, active=True, approval_state="approved", auth_source="local", created_at=stamp),
@@ -69,16 +70,18 @@ def _legacy_installation(engine, artifact, ldap_key):
         session.flush()
         session.add(Release(id="old-release", service_id="old-service", environment_id="old-prod", version="2026.10.1"))
         session.flush()
-        session.add_all([
-            SbomRun(id="old-run", release_id="old-release", round_number=3, state=ProcessingState.COMPLETED, analysis_state=JobState.COMPLETED,
-                    source="manual", source_metadata={"originalSource": "preserved"}, original_filename="기존-업로드-SBOM.json",
-                    media_type="application/json", spec_version="1.6", serial_number="urn:uuid:legacy-upgrade",
-                    sha256=sha, size_bytes=len(original), artifact_path=str(artifact), normalized_bom=bom, uploaded_by="old-admin",
-                    idempotency_actor="user:old-admin", idempotency_key="legacy-upload", note="기존 검토 메모", created_at=stamp),
-            SbomRun(id="old-archive", release_id="old-release", round_number=1, state=ProcessingState.ARCHIVED, analysis_state=JobState.COMPLETED,
-                    source="manual", source_metadata={}, original_filename="기존-보관-SBOM.json", media_type="application/json", spec_version="1.6",
-                    sha256=sha, size_bytes=len(original), artifact_path=str(artifact), normalized_bom=bom, uploaded_by="old-admin",
-                    archived_at=stamp, archive_reason="기존 보관 사유", created_at=stamp - timedelta(days=365)),
+        common = dict(release_id="old-release", analysis_state=JobState.COMPLETED.name, source="manual",
+                      media_type="application/json", spec_version="1.6", sha256=sha, size_bytes=len(original),
+                      artifact_path=str(artifact), normalized_bom=bom, uploaded_by="old-admin", note="",
+                      serial_number=None, idempotency_actor=None, idempotency_key=None, archived_at=None, archive_reason=None)
+        session.execute(runs.insert(), [
+            dict(common, id="old-run", round_number=3, state=ProcessingState.COMPLETED.name,
+                 source_metadata={"originalSource": "preserved"}, original_filename="기존-업로드-SBOM.json",
+                 serial_number="urn:uuid:legacy-upgrade", idempotency_actor="user:old-admin", idempotency_key="legacy-upload",
+                 note="기존 검토 메모", created_at=stamp),
+            dict(common, id="old-archive", round_number=1, state=ProcessingState.ARCHIVED.name,
+                 source_metadata={}, original_filename="기존-보관-SBOM.json",
+                 archived_at=stamp, archive_reason="기존 보관 사유", created_at=stamp - timedelta(days=365)),
         ])
         session.flush()
         session.add_all([
@@ -172,8 +175,10 @@ def test_existing_database_survives_real_startup_restart_and_new_administration(
             with TestClient(main.app) as client:
                 _assert_existing_records_preserved(upgraded_engine, before)
                 assert "environment_administrators" in inspect(upgraded_engine).get_table_names()
+                assert "sbom_document_records" in inspect(upgraded_engine).get_table_names()
                 assert artifact.read_bytes() == original
                 with sessions() as session:
+                    assert session.get(SbomRun, "old-run").split_document is False
                     ldap = main._ldap_row_config(session.get(LdapSettings, "default"))
                     assert ldap.host == "directory.example.invalid" and ldap.bind_password == "fixture LDAP bind password"
                 client.cookies.set("koda_session", "legacy-reader-session")

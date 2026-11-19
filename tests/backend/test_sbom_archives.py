@@ -188,16 +188,39 @@ def test_archive_document_budget_rejects_without_storing_run_or_artifact(context
 
 @pytest.mark.parametrize("compressed", [False, True])
 def test_padded_json_is_compacted_for_validation_and_keeps_original(context, monkeypatch, compressed):
-    document = JSON + b" " * 8192
+    payload = json.loads(JSON)
+    payload["components"] = [{"type": "library", "name": 'Sample library "A"', "version": "1  2"}]
+    document = json.dumps(payload, indent=2).encode() + b" " * 8192
+    compact_limit = len(json.dumps(payload, separators=(",", ":")).encode())
     raw = archive_bytes("zip", [("bom.json", document)]) if compressed else document
-    monkeypatch.setattr(sbom_module, "MAX_UPLOAD_DOCUMENT_BYTES", 256)
+    monkeypatch.setattr(sbom_module, "MAX_UPLOAD_DOCUMENT_BYTES", compact_limit)
 
     response = upload(context, raw)
 
     assert response.status_code == 202, response.text
     run = context.db.get(SbomRun, response.json()["runId"])
     assert Path(run.artifact_path).read_bytes() == raw
-    assert run.normalized_bom["specVersion"] == "1.6"
+    assert run.normalized_bom == payload
+    assert run.sha256 == hashlib.sha256(raw).hexdigest()
+
+
+@pytest.mark.parametrize("chunk_size", [1, 2, 3, 7, 128])
+def test_json_compaction_preserves_strings_and_invalid_scalar_boundaries(chunk_size):
+    class ChunkedReader(io.BytesIO):
+        def read(self, size=-1):
+            return super().read(min(size, chunk_size))
+
+    payload = {"key with spaces": ['two  spaces \\ "quote"', {"integer": 123, "boolean": True}], "empty": []}
+    document = json.dumps(payload, indent=2).encode()
+    compact = io.BytesIO()
+    sbom_module._compact_large_json(ChunkedReader(document), compact)
+    assert compact.getvalue() == json.dumps(payload, separators=(",", ":")).encode()
+
+    compact = io.BytesIO()
+    sbom_module._compact_large_json(ChunkedReader(b'{ "x" : [ 1 \r\n 2 ] }'), compact)
+    assert compact.getvalue() == b'{"x":[1 2]}'
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(compact.getvalue())
 
 
 def test_archive_keeps_queue_component_and_idempotency_admission(context, monkeypatch):
@@ -309,6 +332,46 @@ def test_archive_grype_uses_temporary_document_and_preserves_analysis_history(co
     assert first.data_sources["sbomQuality"]["originalSha256"] == item.sha256
     assert len(seen) == 2 and all(not path.exists() for path in seen)
     assert item.artifact_path == original_path and Path(original_path).read_bytes() == compressed
+
+
+@pytest.mark.parametrize("archive", [False, True], ids=["plain", "zip"])
+@pytest.mark.parametrize("xml", [False, True], ids=["json", "xml"])
+def test_cyclonedx17_uses_grype_compatible_view_without_changing_original(context, monkeypatch, archive, xml):
+    component = {"type": "library", "name": "sample", "version": "1", "bom-ref": "pkg", "purl": "pkg:npm/sample@1"}
+    source = (
+        b'<bom xmlns="http://cyclonedx.org/schema/bom/1.7" version="1"><components>'
+        b'<component type="library" bom-ref="pkg"><name>sample</name><version>1</version>'
+        b'<purl>pkg:npm/sample@1</purl></component></components></bom>'
+        if xml else json.dumps({
+            "$schema": "http://cyclonedx.org/schema/bom-1.7.schema.json",
+            "bomFormat": "CycloneDX", "specVersion": "1.7", "version": 1,
+            "components": [component],
+        }).encode()
+    )
+    original = archive_bytes("zip", [("inventory", source)]) if archive else source
+    response = upload(context, original)
+    assert response.status_code == 202, response.text
+    run = context.db.get(SbomRun, response.json()["runId"])
+    observed = []
+    original_run = services.subprocess.run
+
+    def grype(command, **kwargs):
+        if command[0] != context.settings.grype_binary:
+            return original_run(command, **kwargs)
+        scan_input = Path(command[1].removeprefix("sbom:"))
+        document = json.loads(scan_input.read_bytes())
+        assert document["specVersion"] == "1.6" and "$schema" not in document
+        assert document["components"] == [component]
+        observed.append(scan_input)
+        return SimpleNamespace(returncode=0, stdout='{"matches":[],"descriptor":{"version":"fixture"}}', stderr="")
+
+    monkeypatch.setattr(services.subprocess, "run", grype)
+    revision = services.analyze_offline(context.db, run)
+    assert revision.state == JobState.COMPLETED
+    assert run.spec_version == run.normalized_bom["specVersion"] == "1.7"
+    assert Path(run.artifact_path).read_bytes() == original
+    assert revision.data_sources["sbomQuality"]["originalSha256"] == hashlib.sha256(original).hexdigest()
+    assert len(observed) == 1 and not observed[0].exists()
 
 
 def test_data_upload_staging_uses_opaque_suffix_and_cleanup_is_exact(tmp_path, monkeypatch):

@@ -38,15 +38,28 @@ def test_upload_limit_defaults_match_gateway_and_ui() -> None:
 
     assert "max_upload_bytes: int = 5 * 1024**3" in config
     assert 'id="sbom-upload-limit"' in ui
-    assert '"100 MiB"' in ui and '"5 GiB (문서 파싱 제한 별도)"' in ui
+    assert "최대 100 MiB" in ui and "압축 해제 후 최대 5 GiB" in ui
+    assert "128 MiB 초과 문서는 CycloneDX 1.6/1.7 UTF-8 JSON" in ui
     assert "client_max_body_size 5122m;" in (ROOT / "deploy/nginx/gateway.conf.template").read_text()
 
 
-def test_compatibility_and_review_imports_have_dedicated_gateway_limits() -> None:
+def test_file_upload_gateway_limits_and_idle_timeouts() -> None:
     gateway = (ROOT / "deploy/nginx/gateway.conf.template").read_text()
-    for endpoint, limit in (("compatibility-data/import", "16448k"), ("upgrade-batches/import", "1m")):
-        location = gateway.split(f"location = /api/v1/{endpoint} {{", 1)[1].split("}", 1)[0]
+    locations = (
+        ("= /api/v1/sbom-runs", "5122m", "600s", "600s", "1h"),
+        ("= /api/v1/vulnerability-data-bundles/upload", "2049m", "600s", "600s", "600s"),
+        ("= /api/v1/compatibility-data/import", "64065536", "300s", "300s", "300s"),
+        ("= /api/v1/upgrade-batches/import", "1m", "300s", "300s", "300s"),
+        ("= /api/v1/vulnerability-intelligence/import-csv", "65m", "300s", "300s", "300s"),
+        ("~ ^/api/v1/(offline-intelligence/import|sbom-runs/[^/]+/vex-import)$", "64k", "300s", "300s", "300s"),
+        ("~ ^/api/v1/(package-metadata/import|vulnerability-intelligence/import)$", "65m", "300s", "300s", "600s"),
+    )
+    for selector, limit, body_timeout, send_timeout, read_timeout in locations:
+        location = gateway.split(f"location {selector} {{", 1)[1].split("}", 1)[0]
         assert f"client_max_body_size {limit};" in location
+        assert f"client_body_timeout {body_timeout};" in location
+        assert f"proxy_send_timeout {send_timeout};" in location
+        assert f"proxy_read_timeout {read_timeout};" in location
 
 
 def test_bootstrap_example_is_not_a_known_credential_and_local_init_generates_secrets() -> None:

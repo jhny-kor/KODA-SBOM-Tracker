@@ -1,3 +1,4 @@
+import { ResizableTable } from "./ResizableTable";
 import { useEffect, useState, type FormEvent } from "react";
 import { request } from "./api";
 import { formatSeoulDateTime } from "./format";
@@ -53,25 +54,25 @@ export default function ExternalReadTokens({ services, environments }: { service
     </div></div>
     <div className="integration-status-body">
       {error && <p className="form-message" role="alert">{error}</p>}
-      {tokens && <form className="run-metadata-form" onSubmit={event => void issue(event)}>
+      {tokens && <form className="run-metadata-form external-token-form" onSubmit={event => void issue(event)}>
         <div className="run-metadata-fields">
           <label>연동 이름<input name="name" required maxLength={128} /></label>
           <label>서비스<select name="service" required defaultValue=""><option value="">선택</option>{services.filter(item => item.active !== false).map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
           <label>환경<select name="environment" required defaultValue=""><option value="" disabled>선택</option>{environments.filter(item => item.active !== false).map(item => <option key={item.id} value={item.id}>{item.name}</option>)}<option value="all">모든 활성 환경</option></select></label>
           <label>유효 기간(일)<input name="days" type="number" min={1} max={90} defaultValue={30} required /></label>
+          <button className="primary" disabled={busy}>조회 토큰 발급</button>
         </div>
-        <button className="primary" disabled={busy}>조회 토큰 발급</button>
       </form>}
       {issued && <div className="token-reveal"><strong>발급한 조회 토큰 · 이 화면에서 한 번 확인</strong><code>{issued}</code><button type="button" className="secondary compact" onClick={() => setIssued("")}>닫기</button></div>}
     </div>
     {tokens && <div className="table-scroll" role="region" aria-label="외부 조회 토큰 목록" tabIndex={0}>
-      <table><thead><tr><th>연동 이름</th><th>서비스</th><th>환경</th><th>만료</th><th>관리</th></tr></thead><tbody>
+      <ResizableTable className="external-token-table"><thead><tr><th>연동 이름</th><th>서비스</th><th>환경</th><th>만료</th><th>관리</th></tr></thead><tbody>
         {tokens.map(token => <tr key={token.id}><td>{token.name}</td><td>{services.find(item => item.id === token.serviceId)?.name ?? token.serviceId}</td>
           <td>{token.environmentId ? environments.find(item => item.id === token.environmentId)?.name ?? token.environmentId : "모든 활성 환경"}</td>
           <td>{formatSeoulDateTime(token.expiresAt)}</td><td>{token.revokedAt ? "폐기됨" : Date.parse(token.expiresAt) <= Date.now() ? "만료됨"
             : <button type="button" className="secondary compact" disabled={busy} onClick={() => void revoke(token.id)}>폐기</button>}</td></tr>)}
         {!tokens.length && <tr><td colSpan={5}>발급된 조회 토큰이 없습니다.</td></tr>}
-      </tbody></table>
+      </tbody></ResizableTable>
     </div>}
   </section>;
 }

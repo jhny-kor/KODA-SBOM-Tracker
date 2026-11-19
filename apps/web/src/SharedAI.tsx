@@ -1,3 +1,4 @@
+import { ResizableTable } from "./ResizableTable";
 import { useEffect, useState, type FormEvent } from "react";
 import { request } from "./api";
 
@@ -51,15 +52,15 @@ export function SharedAISettingsPanel() {
   const addressChanged = baseUrl.trim().replace(/\/+$/, "") !== (settings?.baseUrl ?? "");
   return <section className="card" aria-label="공통 AI 연결">
     <h2>공통 AI 연결</h2>
-    <p>관리자가 등록한 사내 OpenAI 호환 모델을 KODA와 Tracker의 점검 요약에 사용합니다.</p>
+    <p>관리자가 등록한 사내 모델을 KODA와 Tracker의 점검 요약에 사용합니다.</p>
     {error && <p className="form-message" role="alert">{error}</p>}
     {status && <p className="form-message" role="status">{status}</p>}
     {settings && <form className="run-metadata-form" onSubmit={event => void save(event)}>
-      <label>사내 AI 서버 주소
+      <label className="shared-ai-server-field">사내 AI 서버 주소
         <input type="url" required value={baseUrl} maxLength={512} disabled={busy}
           placeholder="https://ai-gateway.internal/v1" onChange={event => { setBaseUrl(event.target.value); setClearKey(false); setApiKey(""); }} />
       </label>
-      <p className="muted">OpenAI 호환 서버의 /v1 주소를 입력하세요.</p>
+      <p className="muted">사내 AI 서버의 /v1 주소를 입력하세요.</p>
       <div className="run-metadata-fields">
         <label>모델 ID<input required value={model} maxLength={128} disabled={busy} onChange={event => setModel(event.target.value)} /></label>
         <label>AI API 키<input type="password" autoComplete="new-password" value={apiKey} maxLength={4096} disabled={busy || clearKey} placeholder={settings.hasKey && !addressChanged ? "등록됨 · 교체할 때만 입력" : "서버가 키를 요구할 때 입력"} onChange={event => setApiKey(event.target.value)} /></label>
@@ -120,7 +121,7 @@ export function ComparisonAIBriefing(props: { baseRunId: string; targetRunId: st
     ...(props.baseAnalysisId ? { baseAnalysisId: props.baseAnalysisId } : {}),
     ...(props.targetAnalysisId ? { targetAnalysisId: props.targetAnalysisId } : {}),
   });
-  return <section className="run-metadata-section" aria-label="사내 AI 릴리스 브리핑">
+  return <section className="run-metadata-section comparison-ai-briefing" aria-label="사내 AI 릴리스 브리핑">
     <button className="secondary" type="button" disabled={busy} onClick={() => void run()}>{busy ? "브리핑 생성 중…" : "사내 AI 릴리스 브리핑"}</button>
     <p className="muted">비교 결과의 건수와 변경 목록(영역별 최대 30건)을 사내 모델에 보냅니다. 해시·회차 ID·원본은 보내지 않으며 응답은 검토 참고용입니다.</p>
     {error && <p className="form-message" role="alert">{error}</p>}
@@ -164,11 +165,11 @@ export function IdentityAISuggestions({ runId, identityKey }: { runId: string; i
     {result && !result.candidates.length && <p className="muted">{result.reason || "식별 후보가 없습니다."}</p>}
     {result && !!result.candidates.length && <>
       <p className="muted">후보는 NVD {result.dataAsOf || "기준일 미상"} 자료에서 이름 규칙으로만 찾고, AI는 순위와 근거만 붙입니다. 확인한 CPE를 원본 SBOM의 cpe 필드에 넣고 다시 업로드해야 분석에 반영됩니다.</p>
-      <table><thead><tr><th>CPE</th><th>이름 일치</th><th>관련 CVE</th><th>AI 신뢰도·근거</th></tr></thead>
+      <ResizableTable><thead><tr><th>CPE</th><th>이름 일치</th><th>관련 CVE</th><th>AI 신뢰도·근거</th></tr></thead>
         <tbody>{result.candidates.map(item => <tr key={item.id}>
           <td className="mono wrap">{item.cpe}</td><td>{item.match === "exact" ? "정확" : "부분"}</td><td>{item.cveCount}</td>
           <td style={preWrap}>{item.confidence ? `${confidenceLabel[item.confidence]} · ${item.reason}` : "AI 순위 없음"}</td>
-        </tr>)}</tbody></table>
+        </tr>)}</tbody></ResizableTable>
     </>}
   </div>;
 }

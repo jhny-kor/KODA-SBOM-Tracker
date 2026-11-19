@@ -461,15 +461,22 @@ def evaluate_quality(db: Session, run: SbomRun, actor='worker', force=False):
         import hashlib
         artifact = Path(run.artifact_path)
         source_basis = 'stored_normalized_json'
-        if 'xml' in run.media_type or artifact.exists():
+        split_document = getattr(run, 'split_document', False)
+        if split_document or 'xml' in run.media_type or artifact.exists():
             with artifact.open('rb') as source:
                 actual_sha256 = hashlib.file_digest(source, 'sha256').hexdigest()
             if actual_sha256 != run.sha256:
                 raise ValueError('원본 SBOM SHA-256 불일치')
-            bom, _ = parse_sbom_file(artifact, workbook=run.media_type == WORKBOOK_MEDIA_TYPE)
+            if not split_document:
+                bom, _ = parse_sbom_file(artifact, workbook=run.media_type == WORKBOOK_MEDIA_TYPE)
+            else:
+                from .large_sbom import verify_large_record_counts
+                verify_large_record_counts(db, run.id, bom)
             source_basis = 'verified_original_artifact'
         issues, summary = diagnose(bom, profile, now())
         summary['sourceBasis'] = source_basis
+        if split_document:
+            summary['documentLayout'] = 'split_cyclonedx'
         state = 'completed'
     except Exception as exc:
         issues = []; state = 'failed'; error = str(exc)[:2000]

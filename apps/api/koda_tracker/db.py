@@ -135,6 +135,13 @@ def ensure_sbom_size_bytes_column(bind=engine) -> None:
             return
 
 
+def ensure_sbom_split_document_column(bind=engine) -> None:
+    if "split_document" not in {column["name"] for column in inspect(bind).get_columns("sbom_runs")}:
+        guard = "IF NOT EXISTS " if bind.dialect.name == "postgresql" else ""
+        with bind.begin() as connection:
+            connection.execute(text(f"ALTER TABLE sbom_runs ADD COLUMN {guard}split_document BOOLEAN NOT NULL DEFAULT FALSE"))
+
+
 def ensure_native_policy_columns(bind=engine) -> None:
     """Preserve historical findings; old revisions remain explicitly unevaluated."""
     if "analysis_revisions" not in inspect(bind).get_table_names():

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
 
 PREFIX = "koda:asset:"
 KINDS = {"device", "firmware", "device-driver", "application", "library", "container", "operating-system"}
@@ -65,20 +66,17 @@ def apply_spdx_asset(package, component):
     component["properties"].extend({"name": PREFIX + key, "value": val} for key, val in sorted(properties.items()))
 
 
-def validate_asset_properties(document):
-    """Preserve evidence values and require unambiguous in-document parent links."""
-    if not isinstance(document, dict):
-        return
-    pending = list(document.get("components", []))
-    identities, links = set(), []
-    while pending:
-        component = pending.pop()
-        if not isinstance(component, dict):
-            continue
-        pending.extend(component.get("components", []))
+class AssetPropertyValidator:
+    """Check component evidence incrementally, then resolve its parent links."""
+
+    def __init__(self, *, track_references: bool = True):
+        self.references: set[str] | None = set() if track_references else None
+        self.links: list[tuple[str | None, str]] = []
+
+    def observe(self, component: dict) -> None:
         identity = component.get("bom-ref")
-        if isinstance(identity, str):
-            identities.add(identity)
+        if self.references is not None and isinstance(identity, str):
+            self.references.add(identity)
         evidence = {}
         for prop in component.get("properties", []):
             if not isinstance(prop, dict) or not isinstance(prop.get("name"), str) or not prop["name"].startswith(PREFIX):
@@ -95,17 +93,37 @@ def validate_asset_properties(document):
                 raise ValueError("KODA asset property limit exceeded")
             parent = evidence.get(PREFIX + "parent-id")
             if parent:
-                links.append((identity, parent))
-    parents = dict(links)
-    for child, parent in links:
-        if parent not in identities or child == parent:
-            raise ValueError("Invalid KODA asset parent reference")
-    checked = set()
-    for child, _ in links:
-        seen = set()
-        while child in parents and child not in checked:
-            if child in seen:
-                raise ValueError("Cyclic KODA asset parent reference")
-            seen.add(child)
-            child = parents[child]
-        checked.update(seen)
+                self.links.append((identity, parent))
+
+    def finish(self, contains_reference: Callable[[str], bool] | None = None) -> None:
+        if contains_reference is None:
+            if self.references is None:
+                raise ValueError("A reference lookup is required for KODA asset parent links")
+            contains_reference = self.references.__contains__
+        parents = dict(self.links)
+        for child, parent in self.links:
+            if not contains_reference(parent) or child == parent:
+                raise ValueError("Invalid KODA asset parent reference")
+        checked = set()
+        for child, _ in self.links:
+            seen = set()
+            while child in parents and child not in checked:
+                if child in seen:
+                    raise ValueError("Cyclic KODA asset parent reference")
+                seen.add(child)
+                child = parents[child]
+            checked.update(seen)
+
+
+def validate_asset_properties(document):
+    """Preserve evidence values and require unambiguous in-document parent links."""
+    if not isinstance(document, dict):
+        return
+    pending = list(document.get("components", []))
+    validator = AssetPropertyValidator()
+    while pending:
+        component = pending.pop()
+        if isinstance(component, dict):
+            pending.extend(component.get("components", []))
+            validator.observe(component)
+    validator.finish()

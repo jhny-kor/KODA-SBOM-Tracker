@@ -13,7 +13,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "apps/api"))
 
 from koda_tracker.compatibility_sources import (
-    FILE_LIMITS, MAX_ARCHIVE_BYTES, MAX_ITEMS, MAX_UNPACKED_BYTES, canonical_python_name,
+    FILE_LIMITS, MAX_ARCHIVE_BYTES, MAX_ARCHIVE_MB, MAX_ITEMS, MAX_UNPACKED_BYTES, canonical_python_name,
     maven_pom_url, oracle_rpm_location, pypi_release_url, pypi_wheel_filename,
 )
 
@@ -105,7 +105,7 @@ def encode_bundle(items, originals):
             entry.mode = 0o644
             archive.addfile(entry, BytesIO(raw))
     if data.tell() > MAX_ARCHIVE_BYTES:
-        raise ValueError("결과 압축 크기가 16 MiB를 넘습니다. 수집 대상을 나누세요")
+        raise ValueError(f"결과 압축 크기가 {MAX_ARCHIVE_MB} MB를 넘습니다. 수집 대상을 나누세요")
     return data.getvalue(), manifest
 
 

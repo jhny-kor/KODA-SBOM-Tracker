@@ -1,3 +1,4 @@
+import { ResizableTable } from "./ResizableTable";
 import { useEffect, useState } from "react";
 import { previewMode } from "./api";
 import { ScrollingText } from "./ScrollingText";
@@ -49,7 +50,7 @@ export default function EnvironmentAdministrators() {
     {message && <p role="status" className="form-message">{message}</p>}
     {!data && !error && <p role="status">환경과 사용자 정보를 불러오는 중…</p>}
     {data && <div className="environment-admin-grid">
-      <div className="table-frame"><table><thead><tr><th>환경</th><th>지정 관리자</th></tr></thead><tbody>{data.environments.map(env => <tr key={env.id} className={selected === env.id ? "selected" : ""}><td><button className="environment-row-button" aria-pressed={selected === env.id} disabled={busy} onClick={() => { setSelected(env.id); setMessage(""); setError(""); }}><ScrollingText focusable={false}>{`${env.name}${env.active === false ? " (비활성)" : ""}`}</ScrollingText></button></td><td><ScrollingText>{env.administrators.map(user => `${user.username}${user.active && user.status === "active" ? "" : " (권한 비활성)"}`).join(", ") || "미지정"}</ScrollingText></td></tr>)}</tbody></table>{!data.environments.length && <p className="empty-state">등록된 환경이 없습니다. 서비스·환경에서 환경을 먼저 등록하세요.</p>}</div>
+      <div className="table-frame"><ResizableTable><thead><tr><th>환경</th><th>지정 관리자</th></tr></thead><tbody>{data.environments.map(env => <tr key={env.id} className={selected === env.id ? "selected" : ""}><td><button className="environment-row-button" aria-pressed={selected === env.id} disabled={busy} onClick={() => { setSelected(env.id); setMessage(""); setError(""); }}><ScrollingText focusable={false}>{`${env.name}${env.active === false ? " (비활성)" : ""}`}</ScrollingText></button></td><td><ScrollingText>{env.administrators.map(user => `${user.username}${user.active && user.status === "active" ? "" : " (권한 비활성)"}`).join(", ") || "미지정"}</ScrollingText></td></tr>)}</tbody></ResizableTable>{!data.environments.length && <p className="empty-state">등록된 환경이 없습니다. 서비스·환경에서 환경을 먼저 등록하세요.</p>}</div>
       {environment && <form className="environment-admin-editor" onSubmit={event => { event.preventDefault(); void save(); }}>
         <h3><ScrollingText>{`${environment.name} 환경 관리자 지정`}</ScrollingText></h3>
         <p className="muted">승인된 활성 사용자 중 여러 명을 선택할 수 있습니다. 계정의 SBOM 조회 권한도 필요합니다.</p>

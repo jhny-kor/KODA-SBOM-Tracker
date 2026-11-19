@@ -1,10 +1,13 @@
+import { ResizableTable } from "./ResizableTable";
 import { useEffect, useState, type FormEvent } from "react";
 import { request } from "./api";
 import { formatSeoulDateTime } from "./format";
 import { EvidenceFacts, SourceFiles, SourceLink, type ReferenceItem } from "./OfficialCompatibilityEvidence";
 
 const endpoint = "/api/v1/compatibility-data";
-const maxArchiveSize = 16 * 1024 * 1024;
+const maxArchiveMegabytes = 64;
+const maxArchiveSize = maxArchiveMegabytes * 1_000_000;
+const archiveUploadTimeout = 300_000;
 const ecosystemNames = { maven: "Java/Maven", python: "Python", elf: "Linux C" };
 type Ecosystem = keyof typeof ecosystemNames;
 type Authority = { id: string; ecosystem: Ecosystem; organization: string; name: string; url: string };
@@ -23,7 +26,7 @@ function BundleDetails({ bundle }: { bundle: Bundle }) {
     <p className="wrap">압축파일 SHA-256 <code>{bundle.sha256}</code></p>
     <a className="secondary" href={`${endpoint}/${encodeURIComponent(bundle.id)}/archive`}>반입 원본 압축 내려받기</a>
     <div className="table-scroll" role="region" aria-label="반입 자료 가로 스크롤" tabIndex={0}>
-      <table className="official-compatibility-table"><thead><tr><th>기술</th><th>패키지·버전</th><th>지정 공식 출처</th><th>호환성 근거</th><th>원본 URL·SHA-256</th></tr></thead>
+      <ResizableTable className="official-compatibility-table"><thead><tr><th>기술</th><th>패키지·버전</th><th>지정 공식 출처</th><th>호환성 근거</th><th>원본 URL·SHA-256</th></tr></thead>
         <tbody>{bundle.items.map(item => <tr key={`${item.ecosystem}/${item.package}/${item.version}/${item.architecture ?? ""}/${item.files[0]?.path ?? ""}`}>
           <td>{ecosystemNames[item.ecosystem]}</td>
           <td><strong>{item.package}</strong><br />{item.version}{item.architecture ? ` · ${item.architecture}` : ""}</td>
@@ -31,7 +34,7 @@ function BundleDetails({ bundle }: { bundle: Bundle }) {
           <td className="wrap" style={{ maxWidth: "28rem" }}><EvidenceFacts item={item} /></td>
           <td className="wrap" style={{ maxWidth: "30rem" }}><SourceFiles files={item.files} /></td>
         </tr>)}</tbody>
-      </table>
+      </ResizableTable>
     </div>
   </section>;
 }
@@ -84,7 +87,7 @@ export default function OfficialCompatibilityData({ canManage }: { canManage: bo
     event.preventDefault();
     if (!canManage || !file || busy) return;
     if (!file.name.toLowerCase().endsWith(".tar.gz") || !file.size || file.size > maxArchiveSize) {
-      setError("비어 있지 않은 16 MiB 이하의 .tar.gz 파일을 선택하세요.");
+      setError(`비어 있지 않은 ${maxArchiveMegabytes} MB 이하의 .tar.gz 파일을 선택하세요.`);
       return;
     }
     const form = event.currentTarget;
@@ -94,7 +97,9 @@ export default function OfficialCompatibilityData({ canManage }: { canManage: bo
     setMessage("");
     setError("");
     try {
-      const result = await request<Bundle>(`${endpoint}/import`, { method: "POST", body });
+      const result = await request<Bundle>(`${endpoint}/import`, {
+        method: "POST", body, signal: AbortSignal.timeout(archiveUploadTimeout),
+      });
       setBundle(result);
       const { id, sha256, collectedAt, importedAt, items } = result;
       setCatalog(previous => previous && ({ ...previous, bundles: [
@@ -105,7 +110,9 @@ export default function OfficialCompatibilityData({ canManage }: { canManage: bo
       form.reset();
       setFile(null);
     } catch (cause) {
-      setError(errorMessage(cause));
+      setError(cause instanceof Error && cause.name === "TimeoutError"
+        ? "업로드와 검증 대기 시간이 300초를 넘었습니다. 반입 이력을 먼저 확인하세요."
+        : errorMessage(cause));
     } finally {
       setBusy(false);
     }
@@ -120,21 +127,21 @@ export default function OfficialCompatibilityData({ canManage }: { canManage: bo
       {catalog && <section aria-label="지정 공식 출처">
         <h3>지정 공식 출처</h3>
         <div className="table-scroll" role="region" aria-label="지정 출처 가로 스크롤" tabIndex={0}>
-          <table><thead><tr><th>기술</th><th>기관</th><th>공식 저장소</th></tr></thead>
+          <ResizableTable><thead><tr><th>기술</th><th>기관</th><th>공식 저장소</th></tr></thead>
             <tbody>{catalog.authorities.map(authority => <tr key={authority.id}>
               <td>{ecosystemNames[authority.ecosystem]}</td><td><strong>{authority.organization}</strong></td>
               <td><SourceLink url={authority.url} label={authority.name} /></td>
             </tr>)}</tbody>
-          </table>
+          </ResizableTable>
         </div>
       </section>}
       {canManage && <form onSubmit={event => void importBundle(event)}>
-        <div className="button-row">
+        <div className="compatibility-upload-controls">
           <label>호환성 자료 압축파일 <input type="file" accept=".tar.gz" required disabled={busy}
             onChange={event => setFile(event.target.files?.[0] ?? null)} /></label>
           <button className="primary" disabled={busy || !file}>반입하고 검증</button>
         </div>
-        <p className="muted">지원 형식 .tar.gz · 최대 16 MiB</p>
+        <p className="muted">지원 형식 .tar.gz · 최대 {maxArchiveMegabytes} MB</p>
       </form>}
       {busy && <p role="status">자료 확인 중…</p>}
       {message && <p className="form-message" role="status">{message}</p>}

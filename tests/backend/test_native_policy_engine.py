@@ -264,6 +264,26 @@ def test_pending_source_reanalysis_remains_visible_after_older_job_completes(db,
     assert run.state == ProcessingState.COMPLETED  # response overlay never rewrites evidence
 
 
+def test_run_list_uses_latest_revision_when_service_and_environment_are_filtered(db, tmp_path):
+    from koda_tracker.main import list_runs
+
+    run = make_run(db, tmp_path)
+    run.state, run.analysis_state = ProcessingState.COMPLETED, JobState.COMPLETED
+    db.add_all([
+        AnalysisRevision(run_id=run.id, sequence=1, state=JobState.COMPLETED,
+                         findings=[{"id": "CVE-2026-10000", "severity": "Critical"}]),
+        AnalysisRevision(run_id=run.id, sequence=2, state=JobState.COMPLETED,
+                         findings=[{"id": "CVE-2026-10001", "severity": "Low"}]),
+    ])
+    db.flush()
+    result = list_runs(service_id=run.release.service_id, environment_id=run.release.environment_id,
+                       state=None, source=None, q=None, page=1, size=10, db=db, _=None)
+
+    assert result["total"] == 1
+    assert result["items"][0]["severityCounts"] == {"low": 1}
+    assert len(run.analyses) == 2
+
+
 def test_real_private_advisory_flows_through_grype_policy_metrics_and_snapshot(db, tmp_path, monkeypatch):
     from koda_tracker.private_vulnerability import AdvisoryDocument
     from koda_tracker.private_vulnerability_models import PrivateVulnerability

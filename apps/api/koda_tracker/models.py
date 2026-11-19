@@ -12,9 +12,11 @@ from sqlalchemy import (
     Enum,
     ForeignKey,
     Integer,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
+    false,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -173,6 +175,7 @@ class SbomRun(Base):
     size_bytes: Mapped[int] = mapped_column(BigInteger)
     artifact_path: Mapped[str] = mapped_column(Text)
     normalized_bom: Mapped[dict] = mapped_column(JSON)
+    split_document: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
     uploaded_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     idempotency_actor: Mapped[str | None] = mapped_column(String(128), nullable=True)
     idempotency_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
@@ -204,6 +207,14 @@ class RunComponent(Base):
     sha256: Mapped[str] = mapped_column(String(64), default="")
     licenses: Mapped[list] = mapped_column(JSON, default=list)
     properties: Mapped[list] = mapped_column(JSON, default=list)
+
+
+class SbomDocumentRecord(Base):
+    __tablename__ = "sbom_document_records"
+    run_id: Mapped[str] = mapped_column(ForeignKey("sbom_runs.id", ondelete="CASCADE"), primary_key=True)
+    section: Mapped[str] = mapped_column(String(16), primary_key=True)
+    ordinal: Mapped[int] = mapped_column(Integer, primary_key=True)
+    compressed_json: Mapped[bytes] = mapped_column(LargeBinary)
 
 
 class AnalysisRevision(Base):

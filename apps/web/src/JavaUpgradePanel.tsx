@@ -132,7 +132,7 @@ function JavaUpgradeForm({ runId, serviceId, canManage }: { runId: string; servi
 
 function AssessmentResult({ result }: { result: Assessment }) {
   const cves = result.vulnerabilityComparison;
-  return <section aria-label="Java/Maven 버전 영향 결과">
+  return <section className="run-detail-group" aria-label="Java/Maven 버전 영향 결과">
     <h3>{result.status === "declared_conflict" ? "입력한 최소 Java 요구 버전과 충돌" : "호환성 확인 필요"}</h3>
     <p>현재 {result.currentVersions.join(", ") || "확인 불가"} → 후보 {result.candidateVersions.join(", ")} · {result.deployment.environmentName} / {result.deployment.target} / Java {result.deployment.javaMajor}</p>
     <p className="muted">실행 테스트 미수행. 그래프가 비어 있거나 경로가 일부만 확인되면 해당 의존성은 추가로 검증해야 합니다.</p>
