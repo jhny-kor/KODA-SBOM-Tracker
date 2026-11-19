@@ -275,6 +275,11 @@ def _normalize_json(payload):
             return to_cyclonedx(payload), "application/spdx+json"
         except (ValueError, TypeError, RecursionError) as exc:
             raise SbomValidationError(str(exc)) from exc
+    from .asset_evidence import validate_asset_properties
+    try:
+        validate_asset_properties(payload)
+    except (ValueError, TypeError) as exc:
+        raise SbomValidationError(str(exc)) from exc
     return payload, "application/vnd.cyclonedx+json"
 
 

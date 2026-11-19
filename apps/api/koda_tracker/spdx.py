@@ -13,6 +13,7 @@ from datetime import datetime
 from urllib.parse import urlsplit
 
 from .collection_coverage import spdx_coverage_properties
+from .asset_evidence import apply_spdx_asset, validate_asset_properties
 
 _ID = re.compile(r"^SPDXRef-[A-Za-z0-9.-]+$")
 _CHECKSUMS = {"SHA1": ("SHA-1", 40), "SHA224": ("SHA-224", 56), "SHA256": ("SHA-256", 64),
@@ -70,7 +71,7 @@ def to_cyclonedx(document: dict) -> dict:
             raise ValueError("SPDX package name and downloadLocation are required")
         if "filesAnalyzed" in package and not isinstance(package["filesAnalyzed"], bool):
             raise ValueError("SPDX filesAnalyzed must be a boolean")
-        component = {"type": {"APPLICATION": "application", "FRAMEWORK": "framework", "LIBRARY": "library", "CONTAINER": "container", "OPERATING-SYSTEM": "operating-system", "DEVICE": "device", "FIRMWARE": "firmware", "FILE": "file"}.get(package.get("primaryPackagePurpose"), "library"),
+        component = {"type": {"APPLICATION": "application", "FRAMEWORK": "framework", "LIBRARY": "library", "CONTAINER": "container", "OPERATING-SYSTEM": "operating-system", "OPERATING_SYSTEM": "operating-system", "DEVICE": "device", "FIRMWARE": "firmware", "FILE": "file"}.get(package.get("primaryPackagePurpose"), "library"),
                      "bom-ref": identifier, "name": name,
                      "properties": [{"name": "koda:spdx:package", "value": _json(package)}]}
         version = package.get("versionInfo")
@@ -123,6 +124,7 @@ def to_cyclonedx(document: dict) -> dict:
                 component["externalReferences"].append({"type": kind, "url": value})
         if not component["externalReferences"]:
             component.pop("externalReferences")
+        apply_spdx_asset(package, component)
         components.append(component)
         by_id[identifier] = component
     for key in ("files", "snippets"):
@@ -165,6 +167,7 @@ def to_cyclonedx(document: dict) -> dict:
     for identifier in _array(document.get("documentDescribes", []), "documentDescribes"):
         if not known_id(identifier):
             raise ValueError("SPDX documentDescribes references an unknown element")
+    validate_asset_properties({"components": components})
     original_metadata = {key: value for key, value in document.items() if key not in {"packages", "relationships"}}
     return {"bomFormat": "CycloneDX", "specVersion": "1.6", "version": 1,
             "serialNumber": "urn:uuid:" + str(uuid.uuid5(uuid.NAMESPACE_URL, namespace)),
