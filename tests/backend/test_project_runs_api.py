@@ -21,6 +21,7 @@ from koda_tracker.models import (
 from koda_tracker.project_catalog import project_for_run
 from koda_tracker.project_catalog_api import router
 from koda_tracker.project_catalog_models import NativeProject, NativeReanalysisPending, ProjectRunLink
+from koda_tracker.environment_admin_models import EnvironmentAdministrator
 from koda_tracker.security import current_principal
 
 
@@ -35,6 +36,8 @@ def context():
         principal = User(id="reader", username="reader", password_hash="unused", role=Role.MANAGER)
         policy = RolePolicy(role=Role.MANAGER, permissions=["catalog.manage", "runs.view"])
         db.add_all([service, environment, release, principal, policy])
+        db.flush()
+        db.add(EnvironmentAdministrator(environment_id=environment.id, user_id=principal.id, assigned_by="admin"))
         db.commit()
         app = FastAPI()
         app.include_router(router)

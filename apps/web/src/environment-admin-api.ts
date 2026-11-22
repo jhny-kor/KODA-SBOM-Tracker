@@ -68,3 +68,20 @@ export function updateRunMetadata(runId: string, metadata: Partial<RunMetadata>)
     method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(metadata),
   });
 }
+
+
+export function addRunComponent(runId: string, component: { name: string; version: string }) {
+  return request<{ id: string; name: string; version: string }>(
+    `/api/v1/sbom-runs/${encodeURIComponent(runId)}/components`,
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(component) },
+  );
+}
+
+export function correctRunComponent(runId: string, componentId: string, correction: { expectedRevision: number } & (
+  { name: string | null; version: string | null } | { removed: boolean }
+)) {
+  return request<{ name: string; version: string; correctionRevision: number; removed?: boolean }>(
+    `/api/v1/sbom-runs/${encodeURIComponent(runId)}/components/${encodeURIComponent(componentId)}`,
+    { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(correction) },
+  );
+}

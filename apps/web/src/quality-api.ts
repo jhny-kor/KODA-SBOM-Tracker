@@ -96,14 +96,14 @@ export type QualityIssue = {
 };
 export type QualityPage<T> = { items: T[]; total: number; page: number; size: number };
 
-export function fetchQualityRevisions(runId: string, page = 1) {
-  return request<QualityPage<QualityRevision>>(`/api/v1/sbom-runs/${encodeURIComponent(runId)}/quality-revisions?page=${page}&size=20`);
+export function fetchQualityRevisions(runId: string, page = 1, size = 10) {
+  return request<QualityPage<QualityRevision>>(`/api/v1/sbom-runs/${encodeURIComponent(runId)}/quality-revisions?page=${page}&size=${size}`);
 }
 export function createQualityRevision(runId: string) {
   return request<QualityRevision>(`/api/v1/sbom-runs/${encodeURIComponent(runId)}/quality-revisions`, { method: "POST" });
 }
-export function fetchQualityIssues(runId: string, revisionId: string, page: number, severity: string, ruleId: string) {
-  const params = new URLSearchParams({ revisionId, page: String(page), size: "20" });
+export function fetchQualityIssues(runId: string, revisionId: string, page: number, severity: string, ruleId: string, size = 10) {
+  const params = new URLSearchParams({ revisionId, page: String(page), size: String(size) });
   if (severity) params.set("severity", severity);
   if (ruleId) params.set("ruleId", ruleId);
   return request<QualityPage<QualityIssue>>(`/api/v1/sbom-runs/${encodeURIComponent(runId)}/quality-issues?${params}`);
@@ -132,7 +132,7 @@ export function saveQualityProfile(projectId: string, profile: QualityProfile, t
 export function fetchEffectiveQualityProfile(runId: string) {
   return request<EffectiveQualityProfile>(`/api/v1/sbom-runs/${encodeURIComponent(runId)}/quality-profile`);
 }
-export function fetchQualityTagProfiles(sourceId: string, page = 1) {
-  const params = new URLSearchParams({ sourceId, page: String(page), size: "20" });
+export function fetchQualityTagProfiles(sourceId: string, page = 1, size = 10) {
+  const params = new URLSearchParams({ sourceId, page: String(page), size: String(size) });
   return request<QualityPage<QualityProfile>>(`/api/v1/quality-tag-profiles?${params}`);
 }

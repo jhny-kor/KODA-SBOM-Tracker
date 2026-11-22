@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from koda_tracker.db import Base, get_db
+from koda_tracker.environment_admin_models import EnvironmentAdministrator
 from koda_tracker.models import AnalysisRevision, ApiToken, AuditEvent, Environment, JobState, Release, Role, SbomRun, Service, User, UserSession
 from koda_tracker.security import digest
 from koda_tracker.ssvc import MODEL, OPTIONS, decision_table, evaluate
@@ -41,6 +42,8 @@ def setup(monkeypatch):
     run = SbomRun(id="run", release_id="r", round_number=1, analysis_state=JobState.COMPLETED, original_filename="a.json", media_type="application/json", spec_version="1.6", sha256="a"*64, size_bytes=12, artifact_path="unused", normalized_bom={})
     revision = AnalysisRevision(id="revision", run_id="run", sequence=1, state=JobState.COMPLETED, findings=[copy.deepcopy(FINDING)], data_as_of="2026-10-19")
     db.add_all([run, revision,
+                EnvironmentAdministrator(environment_id="e", user_id="u", assigned_by="admin"),
+                EnvironmentAdministrator(environment_id="e", user_id="v", assigned_by="admin"),
                 UserSession(id_hash=digest("session"), user_id="u", csrf_hash=digest("csrf"), expires_at=datetime.now(UTC)+timedelta(hours=1)),
                 UserSession(id_hash=digest("viewer"), user_id="v", csrf_hash=digest("csrf"), expires_at=datetime.now(UTC)+timedelta(hours=1)),
                 ApiToken(id="token", name="other service", token_hash=digest("token"), service_id="elsewhere")])

@@ -12,6 +12,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .models import AnalysisRevision, JobState, Release, SbomRun, now
+from .security import environment_scope, run_scope
 from .project_catalog_models import NativeCollectionConfig, NativeProject, NativeReanalysisPending, ProjectRunLink
 from .vulnerability import project_cve_findings
 
@@ -44,8 +45,8 @@ def collection_config(project: NativeProject) -> dict:
     return {"collectionLogic": config.logic if config else "NONE", "collectionTag": config.tag if config else None}
 
 
-def collection_metrics(db: Session, root: NativeProject) -> dict:
-    nodes = list(db.scalars(select(NativeProject).where(NativeProject.source_id == root.source_id).limit(10001)))
+def collection_metrics(db: Session, root: NativeProject, *, principal=None) -> dict:
+    nodes = list(db.scalars(select(NativeProject).where(NativeProject.source_id == root.source_id, environment_scope(principal, NativeProject.environment_id)).limit(10001)))
     if len(nodes) > 10000:
         raise ValueError("Collection 원본 범위가 10,000개 프로젝트 제한을 초과했습니다")
     children = defaultdict(list)
@@ -78,7 +79,7 @@ def collection_metrics(db: Session, root: NativeProject) -> dict:
                     continue
             stack.append((child, path | {node.id}, all_descendants))
     project_ids = set(selected)
-    linked = list(db.execute(select(ProjectRunLink.project_id, SbomRun).join(SbomRun, SbomRun.id == ProjectRunLink.run_id).where(ProjectRunLink.project_id.in_(project_ids), SbomRun.archived_at.is_(None)))) if project_ids else []
+    linked = list(db.execute(select(ProjectRunLink.project_id, SbomRun).join(SbomRun, SbomRun.id == ProjectRunLink.run_id).where(ProjectRunLink.project_id.in_(project_ids), SbomRun.archived_at.is_(None), run_scope(principal)))) if project_ids else []
     candidates = defaultdict(dict)
     for project_id, run in linked:
         candidates[project_id][run.id] = run
@@ -101,7 +102,7 @@ def collection_metrics(db: Session, root: NativeProject) -> dict:
     for node in selected.values():
         selected_coordinates[(node.service_id, node.environment_id, node.version)].append(node.id)
     ambiguous_projects = set()
-    inherited = db.execute(select(Release, SbomRun).join(SbomRun, SbomRun.release_id == Release.id).where(Release.service_id.in_(service_ids), SbomRun.archived_at.is_(None))) if service_ids else []
+    inherited = db.execute(select(Release, SbomRun).join(SbomRun, SbomRun.release_id == Release.id).where(Release.service_id.in_(service_ids), SbomRun.archived_at.is_(None), environment_scope(principal, Release.environment_id))) if service_ids else []
     for release, run in inherited:
         # Explicit ownership was collected above, and must never be replaced by
         # coordinate inheritance, even when it belongs to another source.

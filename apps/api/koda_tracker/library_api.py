@@ -20,7 +20,7 @@ from .db import get_db
 from .models import AnalysisRevision, Environment, JobState, ProcessingState, Release, RunComponent, SbomRun, Service
 from .package_metadata import iso
 from .project_catalog_models import NativeReanalysisPending
-from .security import require_permission
+from .security import environment_scope, require_permission
 
 router = APIRouter(prefix="/api/v1/libraries", tags=["Library inventory"])
 RELATED_RUN_LIMIT = 1000
@@ -70,12 +70,13 @@ def _coordinate(key: str) -> str:
         raise HTTPException(422, "라이브러리 식별자가 올바르지 않습니다") from exc
 
 
-def _latest_runs(db: Session, environment_id: str | None = None) -> set[str]:
+def _latest_runs(db: Session, principal, environment_id: str | None = None) -> set[str]:
     query = select(SbomRun.id, func.row_number().over(
         partition_by=(Release.service_id, Release.environment_id),
         order_by=(SbomRun.created_at.desc(), SbomRun.id.desc()),
     ).label("position")).join(Release).where(
         SbomRun.state == ProcessingState.COMPLETED, SbomRun.archived_at.is_(None),
+        environment_scope(principal, Release.environment_id),
     )
     if environment_id:
         query = query.where(Release.environment_id == environment_id)
@@ -83,7 +84,7 @@ def _latest_runs(db: Session, environment_id: str | None = None) -> set[str]:
     return set(db.scalars(select(ranked.c.id).where(ranked.c.position == 1)))
 
 
-def _rows(db: Session, *, environment_id: str | None = None, q: str = "", version: str = "", alternate_hints: tuple[str, ...] = ()):
+def _rows(db: Session, principal, *, environment_id: str | None = None, q: str = "", version: str = "", alternate_hints: tuple[str, ...] = ()):
     query = select(
         RunComponent.name, RunComponent.group_name, RunComponent.component_type, RunComponent.purl,
         RunComponent.version, RunComponent.identity_status, RunComponent.bom_ref,
@@ -91,7 +92,9 @@ def _rows(db: Session, *, environment_id: str | None = None, q: str = "", versio
         SbomRun.archived_at, Release.version.label("release_version"),
         Service.id.label("service_id"), Service.name.label("service_name"),
         Environment.id.label("environment_id"), Environment.name.label("environment_name"),
-    ).join(SbomRun, RunComponent.run_id == SbomRun.id).join(Release).join(Service).join(Environment)
+    ).join(SbomRun, RunComponent.run_id == SbomRun.id).join(Release).join(Service).join(Environment).where(
+        environment_scope(principal, Release.environment_id)
+    )
     if environment_id:
         query = query.where(Environment.id == environment_id)
     hints = {hint for hint in (q, *alternate_hints) if hint}
@@ -129,10 +132,10 @@ def list_libraries(
     page: int = Query(1, ge=1), size: int = Query(20, ge=1, le=100),
     db: Session = Depends(get_db), _=Depends(require_permission("runs.view")),
 ):
-    current = _latest_runs(db, environmentId)
+    current = _latest_runs(db, _, environmentId)
     groups: dict[str, dict] = {}
     ecosystems: set[str] = set()
-    for row in _rows(db, environment_id=environmentId, q=q.strip(), version=version.strip()):
+    for row in _rows(db, _, environment_id=environmentId, q=q.strip(), version=version.strip()):
         coordinate = package_coordinate(row["purl"], row["component_type"], row["group_name"], row["name"])
         kind = _ecosystem(coordinate)
         ecosystems.add(kind)
@@ -176,7 +179,7 @@ def library_detail(
     db: Session = Depends(get_db), _=Depends(require_permission("runs.view")),
 ):
     coordinate = _coordinate(key)
-    current = _latest_runs(db, environmentId)
+    current = _latest_runs(db, _, environmentId)
     matches = []
     # Narrow by package name before canonical comparison; no original SBOM JSON
     # or analysis documents are materialized during package lookup.
@@ -185,7 +188,7 @@ def library_detail(
     # would miss an original PURL such as Foo_Bar when its key is foo-bar.
     lookup_hint = re.split(r"[-_.]+", name_hint)[0] if coordinate.startswith("pkg:pypi/") else name_hint
     encoded_hint = coordinate.split("?", 1)[0].split("#", 1)[0].rsplit("/", 1)[-1] if coordinate.startswith("pkg:") else ""
-    for row in _rows(db, environment_id=environmentId, q=lookup_hint, alternate_hints=(encoded_hint,)):
+    for row in _rows(db, _, environment_id=environmentId, q=lookup_hint, alternate_hints=(encoded_hint,)):
         if package_coordinate(row["purl"], row["component_type"], row["group_name"], row["name"]) == coordinate:
             matches.append(_observation(row, current))
     if not matches:

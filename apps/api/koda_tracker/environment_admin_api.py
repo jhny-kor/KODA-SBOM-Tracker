@@ -4,16 +4,16 @@ from __future__ import annotations
 import hashlib
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictBool
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session, defer, selectinload
 
 from .db import get_db
 from .environment_admin_models import EnvironmentAdministrator
-from .models import ApiToken, Environment, Job, JobState, ProcessingState, Release, Role, RolePolicy, SbomRun, Service, User
+from .models import ApiToken, Environment, Job, JobState, ProcessingState, Release, Role, RolePolicy, RunComponent, RunComponentCorrection, RunManualComponent, SbomRun, Service, User
 from .project_catalog_models import NativeProject, NativeReanalysisPending, ProjectRunLink
-from .security import DEFAULT_ROLE_PERMISSIONS, current_principal, require_csrf
+from .security import DEFAULT_ROLE_PERMISSIONS, current_principal, require_csrf, require_run_scope
 from .services import audit
 
 router = APIRouter(prefix="/api/v1", tags=["Environment administration"])
@@ -116,7 +116,7 @@ def replace_environment_administrators(environment_id: str, body: EnvironmentAdm
 
 
 def _run(db: Session, run_id: str, *, lock: bool = False) -> SbomRun:
-    query = select(SbomRun).where(SbomRun.id == run_id).options(selectinload(SbomRun.release))
+    query = select(SbomRun).where(SbomRun.id == run_id).options(defer(SbomRun.normalized_bom), selectinload(SbomRun.release))
     if lock:
         query = query.with_for_update(of=SbomRun).execution_options(populate_existing=True)
     run = db.scalar(query)
@@ -140,6 +140,7 @@ def run_edit_permission(run_id: str, db: Session = Depends(get_db), principal=De
     user = _human(principal)
     if not _can_view(db, user):
         raise HTTPException(403, "SBOM 조회 권한이 필요합니다")
+    require_run_scope(db, user, run_id)
     run = _run(db, run_id)
     allowed = _authorized(db, user, run.release.environment_id)
     editable_ids = _editable_environments(db, user) if allowed else []
@@ -161,6 +162,7 @@ def update_run_metadata(run_id: str, body: RunMetadataRequest, db: Session = Dep
     user = _human(principal)
     if not _can_view(db, user):
         raise HTTPException(403, "SBOM 조회 권한이 필요합니다")
+    require_run_scope(db, user, run_id)
     if not body.model_fields_set or any(getattr(body, field) is None for field in body.model_fields_set):
         raise HTTPException(422, "수정할 항목을 입력하세요. null 값은 사용할 수 없습니다")
     if body.releaseVersion is not None and not body.releaseVersion.strip():
@@ -233,3 +235,143 @@ def update_run_metadata(run_id: str, body: RunMetadataRequest, db: Session = Dep
         if isinstance(exc, IntegrityError):
             raise HTTPException(409, "회차 또는 릴리스가 변경되었습니다. 다시 조회하세요") from exc
         raise
+
+
+class ManualComponentRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(max_length=512)
+    version: str = Field(max_length=255)
+
+
+class ComponentCorrectionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str | None = Field(max_length=512)
+    version: str | None = Field(max_length=255)
+    expectedRevision: int = Field(ge=0)
+
+
+class ComponentRemovalRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    removed: StrictBool
+    expectedRevision: int = Field(ge=0)
+
+
+def _component_write_run(db: Session, principal: User | ApiToken, run_id: str) -> tuple[User, SbomRun]:
+    user = _human(principal)
+    if not _can_view(db, user):
+        raise HTTPException(403, "SBOM 조회 권한이 필요합니다")
+    require_run_scope(db, user, run_id)
+    initial = _run(db, run_id)
+    environment_id = initial.release.environment_id
+    # Match the lock order used for grants and SBOM environment changes.
+    db.scalar(select(Environment.id).where(Environment.id == environment_id).with_for_update())
+    user = _human(db.scalar(select(User).where(User.id == user.id).with_for_update().execution_options(populate_existing=True)))
+    run = _run(db, run_id, lock=True)
+    if run.release.environment_id != environment_id:
+        raise HTTPException(409, "회차 환경이 변경되었습니다. 다시 조회하세요")
+    if not _authorized(db, user, environment_id):
+        raise HTTPException(404, "SBOM 회차를 찾을 수 없습니다")
+    if run.archived_at is not None or run.state == ProcessingState.ARCHIVED:
+        raise HTTPException(409, "보관된 회차의 구성요소는 변경할 수 없습니다")
+    return user, run
+
+
+def _has_component_control_chars(*values: str | None) -> bool:
+    return any(value is not None and any(ord(char) < 32 or ord(char) == 127 for char in value) for value in values)
+
+
+@router.post("/sbom-runs/{run_id}/components", status_code=201)
+def add_run_component(run_id: str, body: ManualComponentRequest, db: Session = Depends(get_db),
+                      principal=Depends(current_principal), _csrf=Depends(require_csrf)):
+    name, version = body.name.strip(), body.version.strip()
+    if not name or not version or _has_component_control_chars(body.name, body.version):
+        raise HTTPException(422, "구성요소 이름과 버전을 입력하세요. 제어 문자는 사용할 수 없습니다")
+    user, run = _component_write_run(db, principal, run_id)
+    key = hashlib.sha256("\0".join((run.id, name, version)).encode()).hexdigest()
+    component_id = f"manual:{key}"
+    duplicate_message = "같은 이름과 버전의 수동 추가 항목이 있습니다. 삭제했다면 삭제된 항목에서 복원하세요"
+    if db.get(RunManualComponent, component_id) is not None:
+        raise HTTPException(409, duplicate_message)
+    db.add(RunManualComponent(id=component_id, run_id=run.id, name=name, version=version))
+    audit(db, user.username, "sbom.component.add", "sbom_run", run.id, {
+        "identityKey": component_id, "name": name, "version": version,
+    })
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        if db.get(RunManualComponent, component_id) is not None:
+            raise HTTPException(409, duplicate_message) from exc
+        raise
+    return {"id": component_id, "name": name, "version": version}
+
+
+@router.patch("/sbom-runs/{run_id}/components/{component_id}")
+def correct_component(run_id: str, component_id: str, body: ComponentCorrectionRequest | ComponentRemovalRequest,
+                      db: Session = Depends(get_db), principal=Depends(current_principal),
+                      _csrf=Depends(require_csrf)):
+    user, run = _component_write_run(db, principal, run_id)
+    if isinstance(body, ComponentCorrectionRequest):
+        name = body.name.strip() if body.name is not None else None
+        version = body.version.strip() if body.version is not None else None
+        if name == "" or _has_component_control_chars(body.name, body.version):
+            raise HTTPException(422, "구성요소 이름은 비어 있을 수 없으며 제어 문자는 사용할 수 없습니다")
+
+    if component_id.startswith("manual:"):
+        component = db.scalar(select(RunManualComponent).where(
+            RunManualComponent.id == component_id, RunManualComponent.run_id == run.id,
+        ))
+        if component and isinstance(body, ComponentCorrectionRequest) and version == "":
+            raise HTTPException(422, "수동 추가 구성요소의 버전을 입력하세요")
+    else:
+        component = db.scalar(select(RunComponent).where(RunComponent.id == component_id, RunComponent.run_id == run.id))
+        if component and db.scalar(select(RunComponent.id).where(
+            RunComponent.run_id == run.id, RunComponent.identity_key == component.identity_key, RunComponent.id != component.id
+        ).limit(1)):
+            raise HTTPException(409, "원본에 동일한 구성요소 식별자가 여러 개 있어 개별 변경할 수 없습니다")
+    if component is None:
+        raise HTTPException(404, "구성요소를 찾을 수 없습니다")
+
+    correction = db.get(RunComponentCorrection, (run.id, component.identity_key))
+    revision = correction.revision if correction else 0
+    if revision != body.expectedRevision:
+        raise HTTPException(409, "다른 사용자가 구성요소를 먼저 변경했습니다. 다시 조회하세요")
+    before = (correction.name, correction.version, correction.removed) if correction else (None, None, False)
+    if isinstance(body, ComponentRemovalRequest):
+        next_name, next_version = before[:2]
+        removed = body.removed
+        action = "sbom.component.remove" if removed else "sbom.component.restore"
+    else:
+        if before[2]:
+            raise HTTPException(409, "삭제한 구성요소는 복원한 후 수정할 수 있습니다")
+        next_name = None if name == component.name else name
+        next_version = None if version == component.version else version
+        removed = False
+        action = "sbom.component.correct"
+    if before != (next_name, next_version, removed):
+        if correction is None:
+            correction = RunComponentCorrection(run_id=run.id, identity_key=component.identity_key)
+            db.add(correction)
+        correction.name, correction.version, correction.removed = next_name, next_version, removed
+        correction.revision = revision = revision + 1
+        audit(db, user.username, action, "sbom_run", run.id, {
+            "identityKey": component.identity_key,
+            "before": {"name": component.name if before[0] is None else before[0],
+                       "version": component.version if before[1] is None else before[1],
+                       "removed": before[2]},
+            "after": {"name": component.name if next_name is None else next_name,
+                      "version": component.version if next_version is None else next_version,
+                      "removed": removed},
+            "revision": revision,
+        })
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(409, "구성요소가 변경되었습니다. 다시 조회하세요") from exc
+    result = {"name": component.name if next_name is None else next_name,
+              "version": component.version if next_version is None else next_version,
+              "correctionRevision": revision}
+    if isinstance(body, ComponentRemovalRequest):
+        result["removed"] = removed
+    return result

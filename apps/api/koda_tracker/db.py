@@ -142,6 +142,15 @@ def ensure_sbom_split_document_column(bind=engine) -> None:
             connection.execute(text(f"ALTER TABLE sbom_runs ADD COLUMN {guard}split_document BOOLEAN NOT NULL DEFAULT FALSE"))
 
 
+def ensure_component_correction_removal_column(bind=engine) -> None:
+    if "removed" not in {column["name"] for column in inspect(bind).get_columns("run_component_corrections")}:
+        guard = "IF NOT EXISTS " if bind.dialect.name == "postgresql" else ""
+        with bind.begin() as connection:
+            connection.execute(text(
+                f"ALTER TABLE run_component_corrections ADD COLUMN {guard}removed BOOLEAN NOT NULL DEFAULT FALSE"
+            ))
+
+
 def ensure_native_policy_columns(bind=engine) -> None:
     """Preserve historical findings; old revisions remain explicitly unevaluated."""
     if "analysis_revisions" not in inspect(bind).get_table_names():

@@ -1,3 +1,4 @@
+import { RunDetailCard } from "./RunDetailCard";
 import { useEffect, useState, type FormEvent } from "react";
 import { request } from "./api";
 
@@ -23,11 +24,9 @@ const reasonLabel: Record<string, string> = {
 };
 
 export default function JavaUpgradePanel({ runId, serviceId, canManage }: { runId: string; serviceId: string; canManage: boolean }) {
-  const [opened, setOpened] = useState(false);
-  return <details className="run-metadata-section" onToggle={event => setOpened(event.currentTarget.open)}>
-    <summary>Java/Maven 버전 영향 검토</summary>
-    {opened && <JavaUpgradeForm runId={runId} serviceId={serviceId} canManage={canManage} />}
-  </details>;
+  return <RunDetailCard title="Java/Maven 버전 영향 검토" initiallyExpanded={false}>
+    <JavaUpgradeForm runId={runId} serviceId={serviceId} canManage={canManage} />
+  </RunDetailCard>;
 }
 
 function JavaUpgradeForm({ runId, serviceId, canManage }: { runId: string; serviceId: string; canManage: boolean }) {
@@ -92,7 +91,7 @@ function JavaUpgradeForm({ runId, serviceId, canManage }: { runId: string; servi
   }
 
   const baseline = deployments?.find(item => item.id === deploymentId);
-  return <div className="run-metadata-form">
+  return <div className="run-metadata-form run-review-form">
     <p className="muted">실제 배포에 사용한 SBOM과 서버·환경을 기준으로 후보 버전의 영향을 검토합니다. 배포 기준에 연결된 회차만 영향 목록에 집계합니다.</p>
     {error && <p className="form-message" role="alert">{error}</p>}
     {status && <p className="form-message" role="status">{status}</p>}

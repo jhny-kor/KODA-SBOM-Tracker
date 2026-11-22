@@ -6,12 +6,13 @@ from datetime import UTC, datetime, timedelta
 
 from argon2 import PasswordHasher
 from fastapi import Depends, Header, HTTPException, Request
-from sqlalchemy import select
+from sqlalchemy import false, select, true
 from sqlalchemy.orm import Session
 
 from .config import get_settings
 from .db import get_db
-from .models import ApiToken, Role, RolePolicy, User, UserSession
+from .environment_admin_models import EnvironmentAdministrator
+from .models import ApiToken, Release, Role, RolePolicy, SbomRun, User, UserSession
 
 ph = PasswordHasher()
 
@@ -106,14 +107,47 @@ def has_any_permission(db: Session, user: User, *permissions: str) -> bool:
     return not set(granted).isdisjoint(permissions)
 
 
+def environment_scope(principal, environment_column):
+    """Apply assignments to interactive accounts; integrations use their own scopes."""
+    if not isinstance(principal, User):
+        return true()
+    if not principal.active or principal.approval_state != "approved":
+        return false()
+    if principal.role == Role.ADMIN:
+        return true()
+    return select(EnvironmentAdministrator.environment_id).where(
+        EnvironmentAdministrator.environment_id == environment_column,
+        EnvironmentAdministrator.user_id == principal.id,
+    ).exists()
+
+
+def run_scope(principal):
+    if not isinstance(principal, User) or (
+        principal.role == Role.ADMIN and principal.active and principal.approval_state == "approved"
+    ):
+        return true()
+    return SbomRun.release.has(environment_scope(principal, Release.environment_id))
+
+
+def require_run_scope(db: Session, principal, run_id: str):
+    if isinstance(principal, User) and principal.role == Role.ADMIN and principal.active and principal.approval_state == "approved":
+        return
+    if isinstance(principal, User) and not db.scalar(select(SbomRun.id).where(SbomRun.id == run_id, run_scope(principal))):
+        raise HTTPException(404, "SBOM 회차를 찾을 수 없습니다")
+
+
 def require_permission(*permissions: str, allow_service_token: bool = False):
-    def dependency(principal: User | ApiToken = Depends(current_principal), db: Session = Depends(get_db)):
+    def dependency(request: Request, principal: User | ApiToken = Depends(current_principal), db: Session = Depends(get_db)):
         if isinstance(principal, ApiToken):
             if allow_service_token:
                 return principal
             raise HTTPException(403, "권한이 없습니다")
         if not has_any_permission(db, principal, *permissions):
             raise HTTPException(403, "권한이 없습니다")
+        # Run-addressed endpoints share the same access rule, including
+        # auxiliary reads and mutations such as quality, VEX and exports.
+        if run_id := request.path_params.get("run_id"):
+            require_run_scope(db, principal, run_id)
         return principal
     return dependency
 

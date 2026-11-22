@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, expect, it } from "vitest";
 import { CpeCoverage } from "./CpeCoverage";
 import { latestAnalysisRevision } from "./analysisRevision";
@@ -102,4 +102,18 @@ it("separates NVD component outcomes from collector issues and CVE counts", () =
   expect(within(nvd).getByText("적용 조건 판정에 필요한 근거 부족 · 1건")).toBeInTheDocument();
   expect(screen.getByText("영향 확인 CVE").nextSibling).toHaveTextContent("0개");
   expect(screen.getByText(/미평가·미판정 항목을 취약점 없음으로 집계해서는 안 됩니다/)).toBeInTheDocument();
+});
+
+it("pages unresolved records independently of the CPE summary", () => {
+  const unresolved = Array.from({ length: 12 }, (_, index) => ({ id: `cve-${index + 1}`, reason: "조건 미확인" }));
+  render(<CpeCoverage analysis={analysis({ ...summary, unresolved })} />);
+  fireEvent.click(screen.getByText("미판정 근거 보기 (최대 100개)"));
+  expect(screen.getByText("cve-10: 조건 미확인")).toBeVisible();
+  expect(screen.queryByText("cve-11: 조건 미확인")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "CPE 미판정 근거 다음 페이지" }));
+  expect(screen.getByText("cve-11: 조건 미확인")).toBeVisible();
+  expect(screen.getByRole("table", { name: "CPE 평가 항목별 현황" })).toBeVisible();
+  fireEvent.change(screen.getByLabelText("CPE 미판정 근거 페이지당 행 수"), { target: { value: "25" } });
+  expect(screen.getByText("cve-1: 조건 미확인")).toBeVisible();
+  expect(screen.getByText("cve-12: 조건 미확인")).toBeVisible();
 });

@@ -10,7 +10,7 @@ from .db import get_db
 from .models import AnalysisRevision, Environment, Release, RunComponent, SbomRun, Service, now
 from .project_catalog_models import NativeProject, NativeReanalysisPending, ProjectRunLink
 from .project_catalog import CatalogError, link_run, project_payload, set_latest, tags_of, validate_hierarchy
-from .security import require_admin, require_csrf, require_permission
+from .security import require_admin, require_csrf, require_permission, environment_scope
 from .services import audit
 
 router = APIRouter(prefix="/api/v1", tags=["Project catalog"])
@@ -71,7 +71,7 @@ def _refresh_quality_scope(db: Session, source_id: str) -> int:
 
 @router.get("/project-catalog")
 def list_projects(sourceId: str | None = None, page: int = Query(1, ge=1), size: int = Query(50, ge=1, le=200), db: Session = Depends(get_db), _=Depends(require_permission("catalog.manage"))):
-    query = select(NativeProject)
+    query = select(NativeProject).where(environment_scope(_, NativeProject.environment_id))
     if sourceId:
         query = query.where(NativeProject.source_id == sourceId)
     count = db.scalar(select(func.count()).select_from(query.subquery())) or 0
@@ -180,7 +180,7 @@ def list_project_runs(
     # Import lazily because main registers this router during module loading.
     from .main import _run_payload
 
-    project = db.get(NativeProject, project_id)
+    project = db.scalar(select(NativeProject).where(NativeProject.id == project_id, environment_scope(_runs, NativeProject.environment_id)))
     if project is None:
         raise HTTPException(404, "프로젝트가 없습니다")
     linked = select(ProjectRunLink.run_id).where(
@@ -205,7 +205,7 @@ def list_project_runs(
             Release.environment_id == project.environment_id,
             Release.version == project.version,
         ))
-    query = select(SbomRun).join(Release).where(association)
+    query = select(SbomRun).join(Release).where(association, environment_scope(_runs, Release.environment_id))
     total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
     items = list(db.scalars(query.options(
         selectinload(SbomRun.release).selectinload(Release.service),
@@ -236,10 +236,10 @@ def list_project_runs(
 
 @router.get("/project-catalog/{project_id}/metrics")
 def get_collection_metrics(project_id: str, db: Session = Depends(get_db), _=Depends(require_permission("catalog.manage"))):
-    p = db.get(NativeProject, project_id)
+    p = db.scalar(select(NativeProject).where(NativeProject.id == project_id, environment_scope(_, NativeProject.environment_id)))
     if p is None:
         raise HTTPException(404, "프로젝트가 없습니다")
     try:
-        return collection_metrics(db, p)
+        return collection_metrics(db, p, principal=_)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc

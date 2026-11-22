@@ -18,11 +18,9 @@ it("shows scoped history and distinguishes conditions from actual build and run 
         { version: "2.8", conditionStatus: "conditions_met", reasons: ["Java 11 요구사항 충족"], build: { status: "passed", reference: "CI #28" }, runtime: { status: "failed" } },
         { version: "2.9", conditionStatus: "conflict", reasons: ["후보 요구 Java 17"], build: { status: "not_reported" }, runtime: { status: "not_reported" } },
       ] });
-  const { container } = render(<OfflineUpgradePanel runId="base" canManage={false} />);
+  render(<OfflineUpgradePanel runId="base" canManage={false} />);
   expect(apiRequest).not.toHaveBeenCalled();
-  const details = container.querySelector("details")!;
-  details.open = true;
-  fireEvent(details, new Event("toggle"));
+  fireEvent.click(screen.getByRole("button", { name: "폐쇄망 후보 버전 일괄 검토" }));
   fireEvent.click(await screen.findByRole("button", { name: "결과 보기" }));
   expect(await screen.findByText(/조건 충족 최고 버전/)).toHaveTextContent("2.8");
   expect(screen.getByText(/빌드·실행 모두 통과한 최고 버전/)).toHaveTextContent("2.7");

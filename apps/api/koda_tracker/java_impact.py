@@ -12,7 +12,7 @@ from .db import Base, get_db
 from .library_api import package_coordinate
 from .external_api import read_token, require_run, router as external_router
 from .models import AnalysisRevision, Environment, JobState, ProcessingState, Release, RunComponent, SbomRun, Service, new_id, now
-from .security import require_csrf, require_permission
+from .security import require_csrf, require_permission, environment_scope, require_run_scope
 from .services import audit
 from .version_ordering import MavenVersion
 
@@ -88,8 +88,8 @@ def _registered_deployments():
 
 
 @router.get("/deployments", dependencies=[Depends(_view)])
-def deployments(serviceId: str | None = None, db: Session = Depends(get_db)):
-    q = _registered_deployments()
+def deployments(serviceId: str | None = None, db: Session = Depends(get_db), principal=Depends(_view)):
+    q = _registered_deployments().where(environment_scope(principal, Release.environment_id))
     if serviceId:
         q = q.where(JavaDeployment.service_id == serviceId)
     rows = list(db.scalars(q.order_by(JavaDeployment.recorded_at.desc(), JavaDeployment.id).limit(_MAX_DEPLOYMENTS + 1)))
@@ -98,6 +98,7 @@ def deployments(serviceId: str | None = None, db: Session = Depends(get_db)):
 
 @router.put("/deployments", dependencies=[Depends(_manage), Depends(require_csrf)])
 def register_deployment(body: DeploymentRequest, db: Session = Depends(get_db), user=Depends(_manage)):
+    require_run_scope(db, user, body.runId)
     run = _completed(db, body.runId)
     release = run.release
     if not release.environment.active:
@@ -120,8 +121,9 @@ def register_deployment(body: DeploymentRequest, db: Session = Depends(get_db), 
 @router.delete("/deployments/{deployment_id}", dependencies=[Depends(_manage), Depends(require_csrf)])
 def delete_deployment(deployment_id: str, db: Session = Depends(get_db), user=Depends(_manage)):
     d = db.get(JavaDeployment, deployment_id)
-    if d is None:
+    if not d or not d.run_id:
         raise HTTPException(404, "배포 기준을 찾을 수 없습니다")
+    require_run_scope(db, user, d.run_id)
     audit(db, user.username, "java_deployment.delete", "java_deployment", d.id, {})
     db.delete(d)
     db.commit()
@@ -129,10 +131,10 @@ def delete_deployment(deployment_id: str, db: Session = Depends(get_db), user=De
 
 
 @router.get("/candidates", dependencies=[Depends(_view)])
-def candidates(serviceId: str, db: Session = Depends(get_db)):
+def candidates(serviceId: str, db: Session = Depends(get_db), principal=Depends(_view)):
     q = select(SbomRun).join(Release).join(Environment).where(
         Release.service_id == serviceId, Environment.active.is_(True), SbomRun.state == ProcessingState.COMPLETED,
-        SbomRun.archived_at.is_(None),
+        SbomRun.archived_at.is_(None), environment_scope(principal, Release.environment_id),
     ).order_by(SbomRun.created_at.desc(), SbomRun.id).limit(101)
     runs = list(db.scalars(q))
     return {"items": [{"runId": run.id, "releaseVersion": run.release.version, "roundNumber": run.round_number,
@@ -246,8 +248,8 @@ def _compare_cves(db: Session, base, candidate):
 
 
 @router.post("/assessments", dependencies=[Depends(_view), Depends(require_csrf)])
-def assess(body: AssessmentRequest, db: Session = Depends(get_db)):
-    return _assess(body, db)
+def assess(body: AssessmentRequest, db: Session = Depends(get_db), principal=Depends(_view)):
+    return _assess(body, db, principal=principal)
 
 
 @external_router.post("/upgrade-assessments")
@@ -255,7 +257,7 @@ def external_assess(body: AssessmentRequest, db: Session = Depends(get_db), toke
     return _assess(body, db, token)
 
 
-def _assess(body: AssessmentRequest, db: Session, token=None):
+def _assess(body: AssessmentRequest, db: Session, token=None, *, principal=None):
     d = db.get(JavaDeployment, body.deploymentId)
     if d is None:
         raise HTTPException(404, "배포 기준을 찾을 수 없습니다")
@@ -266,6 +268,10 @@ def _assess(body: AssessmentRequest, db: Session, token=None):
         require_run(db, token, d.run_id)
         if body.candidateRunId:
             require_run(db, token, body.candidateRunId)
+    if d.run_id:
+        require_run_scope(db, principal, d.run_id)
+    if body.candidateRunId:
+        require_run_scope(db, principal, body.candidateRunId)
     base = _completed(db, d.run_id)
     if (base.release.service_id, base.release.environment_id) != (d.service_id, d.environment_id):
         raise HTTPException(409, "SBOM의 서비스·환경이 바뀌었습니다. 배포 기준을 다시 등록하세요")
@@ -292,6 +298,7 @@ def _assess(body: AssessmentRequest, db: Session, token=None):
             JavaDeployment.service_id == token.service_id, Environment.active.is_(True))
         if token.environment_id:
             q = q.where(JavaDeployment.environment_id == token.environment_id)
+    q = q.where(environment_scope(principal, Release.environment_id))
     affected = {}
     rows = db.execute(q.limit(1001)).all()
     for deployment, version, purl in rows[:1000]:

@@ -44,7 +44,7 @@ export default function EnvironmentAdministrators() {
     finally { setBusy(false); }
   }
   return <section className="environment-admin-panel" aria-label="환경별 관리자 설정">
-    <div className="page-heading"><div><h2>환경별 관리자</h2><p className="muted">전체 관리자가 환경별 담당자를 지정합니다. 지정된 사용자는 담당 환경의 SBOM 등록 정보를 수정할 수 있습니다.</p></div></div>
+    <div className="page-heading"><div><h2>환경별 관리자</h2><p className="muted">전체 관리자는 모든 환경의 SBOM을 조회합니다. 다른 사용자는 SBOM 조회 권한이 있고 환경별 관리자로 지정된 환경의 SBOM만 조회할 수 있습니다.</p></div></div>
     {previewMode && <p className="preview-note" role="note">가상 사용자 샘플입니다. 실제 권한을 변경하거나 저장하지 않습니다.</p>}
     {error && <p role="alert" className="form-message">{error} {!data && <button className="secondary" onClick={() => { setError(""); setAttempt(value => value + 1); }}>다시 시도</button>}</p>}
     {message && <p role="status" className="form-message">{message}</p>}
@@ -53,7 +53,7 @@ export default function EnvironmentAdministrators() {
       <div className="table-frame"><ResizableTable><thead><tr><th>환경</th><th>지정 관리자</th></tr></thead><tbody>{data.environments.map(env => <tr key={env.id} className={selected === env.id ? "selected" : ""}><td><button className="environment-row-button" aria-pressed={selected === env.id} disabled={busy} onClick={() => { setSelected(env.id); setMessage(""); setError(""); }}><ScrollingText focusable={false}>{`${env.name}${env.active === false ? " (비활성)" : ""}`}</ScrollingText></button></td><td><ScrollingText>{env.administrators.map(user => `${user.username}${user.active && user.status === "active" ? "" : " (권한 비활성)"}`).join(", ") || "미지정"}</ScrollingText></td></tr>)}</tbody></ResizableTable>{!data.environments.length && <p className="empty-state">등록된 환경이 없습니다. 서비스·환경에서 환경을 먼저 등록하세요.</p>}</div>
       {environment && <form className="environment-admin-editor" onSubmit={event => { event.preventDefault(); void save(); }}>
         <h3><ScrollingText>{`${environment.name} 환경 관리자 지정`}</ScrollingText></h3>
-        <p className="muted">승인된 활성 사용자 중 여러 명을 선택할 수 있습니다. 계정의 SBOM 조회 권한도 필요합니다.</p>
+        <p className="muted">승인된 활성 사용자 중 여러 명을 지정할 수 있습니다. 지정된 사용자는 이 환경의 SBOM을 조회하고 등록 정보를 수정할 수 있습니다.</p>
         <fieldset disabled={busy || environment.active === false}><legend>관리자로 지정할 사용자</legend>
           {data.users.map(user => <label key={user.id} className="environment-user-choice"><input type="checkbox" checked={current.includes(user.id)} onChange={event => { const checked = event.target.checked; setDrafts(previous => ({ ...previous, [selected]: checked ? [...(previous[selected] || []), user.id] : (previous[selected] || []).filter(id => id !== user.id) })); setMessage(""); }} /><span><strong><ScrollingText focusable={false}>{user.username}</ScrollingText></strong><small>{({ admin: "전체 관리자", manager: "매니저", analyst: "분석자", uploader: "업로더", viewer: "조회자" } as Record<string, string>)[user.role] || user.role}</small></span></label>)}
           {!data.users.length && <p>지정 가능한 승인 사용자가 없습니다.</p>}

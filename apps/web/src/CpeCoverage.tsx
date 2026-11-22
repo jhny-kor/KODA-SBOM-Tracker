@@ -1,3 +1,6 @@
+import { DetailPagination } from "./DetailPagination";
+import { RunDetailCard } from "./RunDetailCard";
+import { useDetailPage } from "./useDetailPage";
 import type { AnalysisRevisionSummary, CoverageReasonCount, SbomRunDetail } from "./types";
 import "./quality.css";
 
@@ -58,12 +61,14 @@ const componentReasons: Record<string, string> = {
 const count = (value: unknown, unit = "") => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value.toLocaleString() + unit : "확인 불가";
 
 function CoverageReasons({ items, labels, title }: { items: CoverageReasonCount[]; labels: Record<string, string>; title: string }) {
+  const { start, end, pagination } = useDetailPage(items.length);
   if (!items.length) return null;
   return <details>
     <summary>{title}</summary>
-    <ul className="paths">{items.map(({ code, count: total }) => <li key={code}>
+    <ul className="paths">{items.slice(start, end).map(({ code, count: total }) => <li key={code}>
       {Object.hasOwn(labels, code) ? labels[code] : code} · {count(total, "건")}
     </li>)}</ul>
+    {items.length > 10 && <DetailPagination label={title} {...pagination} />}
   </details>;
 }
 
@@ -86,6 +91,8 @@ function CollectionCoverage({ collectionCoverage: coverage, collectionCoverageSt
 
 export function CpeCoverage({ analysis, loading = false, collectionCoverage, collectionCoverageState }: CollectionEvidence & { analysis?: AnalysisRevisionSummary; loading?: boolean }) {
   const summary = analysis?.dataSources?.cpeApplicability;
+  const unresolved = summary?.unresolved?.slice(0, 100) ?? [];
+  const unresolvedPage = useDetailPage(unresolved.length);
   const components = summary?.componentCoverage;
   const revisionCoverage = analysis?.dataSources?.collectionCoverage;
   const revisionCoverageState = analysis?.dataSources?.collectionCoverageState;
@@ -94,8 +101,7 @@ export function CpeCoverage({ analysis, loading = false, collectionCoverage, col
   const countsIncomplete = [summary?.invalidCpes, summary?.unmatchedProducts, summary?.unknownCves].some(value => typeof value !== "number" || !Number.isSafeInteger(value) || value !== 0);
   const scopeIncomplete = status !== "completed" || countsIncomplete || Boolean(components && (components.inconclusive !== 0 || components.notEvaluated !== 0));
 
-  return <section className="workflow-panel cpe-coverage tracker-view" aria-label="오프라인 CPE 평가 범위">
-    <h3>오프라인 CPE 평가 범위</h3>
+  return <RunDetailCard className="workflow-panel cpe-coverage tracker-view" title="오프라인 CPE 평가 범위">
     {loading ? <p>최신 분석의 CPE 평가 범위를 불러오는 중입니다.</p> : <>
       <CollectionCoverage collectionCoverage={revisionCoverage ?? collectionCoverage} collectionCoverageState={revisionCoverageState ?? collectionCoverageState} />
       {!analysis ? <p>분석 리비전이 없습니다. CPE 평가 여부를 확인할 수 없습니다.</p> : <>
@@ -120,11 +126,13 @@ export function CpeCoverage({ analysis, loading = false, collectionCoverage, col
           <tr className="cpe-coverage-wide"><th scope="row">인벤토리 전체성</th><td colSpan={3}>{summary.inventoryComplete === true ? "완전한 인벤토리로 평가됨" : "확인되지 않음 · 누락 환경 조건은 판정 불가로 처리"}</td></tr>
         </tbody></table></div>
         {reason && <p>평가 사유: {reasons[reason] || reason}</p>}
-        {!!summary.unresolved?.length && <details><summary>미판정 근거 보기 (최대 100개)</summary><ul className="paths">{summary.unresolved.slice(0, 100).map((item, index) => <li key={`${item.id}-${index}`}>{item.id}{item.oracleHomeId && <> · <code>{item.oracleHomeId}</code></>}: {item.reason}</li>)}</ul></details>}
+        {unresolved.length > 0 && <details><summary>미판정 근거 보기 (최대 100개)</summary><ul className="paths">{unresolved.slice(unresolvedPage.start, unresolvedPage.end).map((item, index) => <li key={`${item.id}-${unresolvedPage.start + index}`}>{item.id}{item.oracleHomeId && <> · <code>{item.oracleHomeId}</code></>}: {item.reason}</li>)}</ul>
+          <DetailPagination label="CPE 미판정 근거" {...unresolvedPage.pagination} />
+        </details>}
         {scopeIncomplete && <p>식별자 또는 적용 자료가 부족하거나 조건을 확정하지 못했습니다. 미평가·미판정 항목을 취약점 없음으로 집계해서는 안 됩니다.</p>}
         <p>제공한 CPE와 반입한 NVD 적용 조건을 기준으로 평가합니다. 발견 0건은 전체 제품·환경의 안전을 보장하지 않습니다.</p>
       </>}
       </>}
     </>}
-  </section>;
+  </RunDetailCard>;
 }

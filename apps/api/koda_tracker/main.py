@@ -16,7 +16,7 @@ from collections import defaultdict
 from contextlib import ExitStack, asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 from urllib.parse import quote, urlparse
 from zoneinfo import ZoneInfo
 
@@ -40,7 +40,7 @@ from .compatibility_sources import MAX_ARCHIVE_BYTES as MAX_COMPATIBILITY_ARCHIV
 from .config import get_settings, session_cookie_name
 from .comparison import compare_components, compare_records
 from .db import Base, SessionLocal, engine, ensure_component_search_support, ensure_environment_active_column, ensure_ldap_subject_attribute_column, ensure_native_policy_columns, ensure_postgres_manager_enum, ensure_sbom_media_type_column, ensure_sbom_size_bytes_column, ensure_sbom_source_metadata_column, ensure_user_approval_state_column, ensure_user_identity_columns, get_db
-from .db import ensure_sbom_split_document_column
+from .db import ensure_component_correction_removal_column, ensure_sbom_split_document_column
 from .large_sbom import CYCLONEDX_JSON, LARGE_DOCUMENT_THRESHOLD, LargeSbom, stage_large_sbom
 from .models import (
     AnalysisRevision,
@@ -57,6 +57,8 @@ from .models import (
     Role,
     RolePolicy,
     RunComponent,
+    RunComponentCorrection,
+    RunManualComponent,
     SbomRun,
     SbomDocumentRecord,
     SbomPolicyRevision,
@@ -80,6 +82,8 @@ from .sbom import (
 from .collection_coverage import coverage_for_bom
 from .sbom_workbook import MAX_WORKBOOK_BYTES, METADATA_LABELS, WORKBOOK_MEDIA_TYPE
 from .security import (
+    require_run_scope,
+    run_scope,
     current_principal,
     digest,
     hash_password,
@@ -374,6 +378,7 @@ async def lifespan(_: FastAPI):
     ensure_sbom_media_type_column(engine)
     ensure_sbom_size_bytes_column(engine)
     ensure_sbom_split_document_column(engine)
+    ensure_component_correction_removal_column(engine)
     ensure_native_policy_columns(engine)
     # v1 uses create_all for a fresh install, but keep the one additive field
     # introduced by the vulnerability-data lifecycle backward compatible with
@@ -512,7 +517,9 @@ def _prune_scheduled_runs(days: int = 90) -> int:
                     logger.error("scheduled artifact is not a regular file; retaining run: %s", run.id)
                     continue
                 paths.append(artifact)
+            db.execute(delete(RunComponentCorrection).where(RunComponentCorrection.run_id == run.id))
             db.execute(delete(RunComponent).where(RunComponent.run_id == run.id))
+            db.execute(delete(RunManualComponent).where(RunManualComponent.run_id == run.id))
             db.execute(delete(SbomDocumentRecord).where(SbomDocumentRecord.run_id == run.id))
             db.execute(delete(AnalysisRevision).where(AnalysisRevision.run_id == run.id))
             db.execute(delete(Job).where(Job.run_id == run.id))
@@ -2288,7 +2295,7 @@ def list_runs(
         defer(SbomRun.normalized_bom),
         selectinload(SbomRun.release).selectinload(Release.service),
         selectinload(SbomRun.release).selectinload(Release.environment),
-    )
+    ).where(run_scope(_))
     if service_id or environment_id:
         query = query.join(Release)
     if service_id:
@@ -2439,6 +2446,33 @@ def get_run(
     return payload
 
 
+def _inspector_component_payload(
+    component: RunComponent | RunManualComponent, override: RunComponentCorrection | None, removed: bool
+) -> dict:
+    payload = {
+        "id": component.id,
+        "identityKey": component.identity_key,
+        "name": component.name if override is None or override.name is None else override.name,
+        "version": component.version if override is None or override.version is None else override.version,
+        "originalName": component.name,
+        "originalVersion": component.version,
+        "correctionRevision": override.revision if override else 0,
+        "removed": removed,
+    }
+    if isinstance(component, RunManualComponent):
+        return {**payload, "manual": True, "identityStatus": "manual"}
+    return {
+        **payload,
+        "identityStatus": component.identity_status,
+        "componentType": component.component_type,
+        "group": component.group_name,
+        "purl": component.purl,
+        "bomRef": component.bom_ref,
+        "licenses": component.licenses,
+        "properties": component.properties,
+    }
+
+
 @app.get("/api/v1/sbom-runs/{run_id}/components")
 def get_run_components(
     run_id: str,
@@ -2447,36 +2481,56 @@ def get_run_components(
     size: int = Query(default=10, ge=1, le=100),
     db: Session = Depends(get_db),
     _=Depends(require_permission("runs.view")),
+    removed: Annotated[bool, Query()] = False,
 ) -> dict:
-    if db.get(SbomRun, run_id) is None:
+    if db.scalar(select(SbomRun.id).where(SbomRun.id == run_id)) is None:
         raise HTTPException(404, "SBOM 회차를 찾을 수 없습니다")
-    query = select(RunComponent).where(RunComponent.run_id == run_id)
-    if q:
-        query = query.where(RunComponent.search_text.ilike(f"%{q.strip().lower()}%"))
+    correction = RunComponentCorrection
+    match_removed = correction.removed.is_(True) if removed else correction.removed.is_not(True)
+    query = select(RunComponent, correction).outerjoin(
+        correction,
+        (correction.run_id == RunComponent.run_id) & (correction.identity_key == RunComponent.identity_key),
+    ).where(RunComponent.run_id == run_id, match_removed)
+    has_component = select(RunComponent.id).where(
+        RunComponent.run_id == correction.run_id, RunComponent.identity_key == correction.identity_key,
+    ).exists()
+    pattern = f"%{q.strip().lower()}%" if q else None
+    corrected_search = func.coalesce(correction.name, "") + " " + func.coalesce(correction.version, "")
+    if pattern is not None:
+        query = query.where(or_(RunComponent.search_text.ilike(pattern), corrected_search.ilike(pattern)))
+
+    offset = (page - 1) * size
+    # The inspector puts newly added rows first. External inventory keeps its original row source and ordering.
+    manual_total = 0
+    items = []
+    if isinstance(_, User):
+        manual = RunManualComponent
+        manual_query = select(manual, correction).outerjoin(
+            correction, (correction.run_id == manual.run_id) & (correction.identity_key == manual.id),
+        ).where(manual.run_id == run_id, match_removed)
+        if pattern is not None:
+            manual_query = manual_query.where(
+                (func.coalesce(correction.name, manual.name) + " " + func.coalesce(correction.version, manual.version)).ilike(pattern)
+            )
+        manual_total = db.scalar(select(func.count()).select_from(manual_query.subquery())) or 0
+        if offset < manual_total:
+            manual_rows = db.execute(manual_query.order_by(manual.created_at.desc(), manual.id).offset(offset).limit(size))
+            items.extend(_inspector_component_payload(component, override, removed) for component, override in manual_rows)
+        has_component = or_(has_component, select(manual.id).where(
+            manual.run_id == correction.run_id, manual.id == correction.identity_key,
+        ).exists())
+
     total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
-    components = db.scalars(
-        query.order_by(RunComponent.name, RunComponent.version).offset((page - 1) * size).limit(size)
-    )
-    return {
-        "items": [
-            {
-                "identityKey": component.identity_key,
-                "identityStatus": component.identity_status,
-                "componentType": component.component_type,
-                "group": component.group_name,
-                "name": component.name,
-                "version": component.version,
-                "purl": component.purl,
-                "bomRef": component.bom_ref,
-                "licenses": component.licenses,
-                "properties": component.properties,
-            }
-            for component in components
-        ],
-        "page": page,
-        "size": size,
-        "total": total,
-    }
+    if original_size := size - len(items):
+        components = db.execute(query.order_by(
+            func.coalesce(correction.name, RunComponent.name), func.coalesce(correction.version, RunComponent.version),
+            RunComponent.id,
+        ).offset(max(0, offset - manual_total)).limit(original_size))
+        items.extend(_inspector_component_payload(component, override, removed) for component, override in components)
+    removed_total = db.scalar(select(func.count()).select_from(correction).where(
+        correction.run_id == run_id, correction.removed.is_(True), has_component,
+    )) or 0
+    return {"items": items, "page": page, "size": size, "total": total + manual_total, "removedTotal": removed_total}
 
 
 def _finding_sort_key(finding: dict) -> tuple:
@@ -2640,7 +2694,9 @@ def delete_run(
         "deleted": True,
     }
     try:
+        db.execute(delete(RunComponentCorrection).where(RunComponentCorrection.run_id == run.id))
         db.execute(delete(RunComponent).where(RunComponent.run_id == run.id))
+        db.execute(delete(RunManualComponent).where(RunManualComponent.run_id == run.id))
         db.execute(delete(SbomDocumentRecord).where(SbomDocumentRecord.run_id == run.id))
         db.execute(delete(AnalysisRevision).where(AnalysisRevision.run_id == run.id))
         db.execute(delete(Job).where(Job.run_id == run.id))
@@ -2689,6 +2745,8 @@ def get_job(job_id: str, db: Session = Depends(get_db), principal=Depends(requir
             run = db.get(SbomRun, job.run_id) if job.run_id else None
             if not run or run.uploaded_by != principal.id:
                 raise HTTPException(403, "자신이 생성한 작업만 조회할 수 있습니다")
+        elif job.run_id:
+            require_run_scope(db, principal, job.run_id)
     return {"id": job.id, "kind": job.kind, "runId": job.run_id, "state": job.state, "attempts": job.attempts, "error": job.error}
 
 
@@ -2701,6 +2759,8 @@ def compare_runs(
     db: Session = Depends(get_db),
     _=Depends(require_permission("compare.view")),
 ) -> dict:
+    require_run_scope(db, _, base_run_id)
+    require_run_scope(db, _, target_run_id)
     base = _load_run(db, base_run_id, include_components=True, include_analyses=True)
     target = _load_run(db, target_run_id, include_components=True, include_analyses=True)
 
@@ -2756,7 +2816,7 @@ def brief_comparison(
     _=Depends(require_permission("compare.view")),
     _csrf=Depends(require_csrf),
 ) -> dict:
-    comparison = compare_runs(body.baseRunId, body.targetRunId, body.baseAnalysisId, body.targetAnalysisId, db=db, _=None)
+    comparison = compare_runs(body.baseRunId, body.targetRunId, body.baseAnalysisId, body.targetAnalysisId, db=db, _=_)
     return comparison_briefing(db, comparison)
 
 

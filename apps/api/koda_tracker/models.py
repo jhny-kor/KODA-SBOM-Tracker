@@ -209,6 +209,31 @@ class RunComponent(Base):
     properties: Mapped[list] = mapped_column(JSON, default=list)
 
 
+class RunManualComponent(Base):
+    __tablename__ = "run_manual_components"
+
+    id: Mapped[str] = mapped_column(String(71), primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("sbom_runs.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(512))
+    version: Mapped[str] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+    @property
+    def identity_key(self) -> str:
+        return self.id
+
+
+class RunComponentCorrection(Base):
+    __tablename__ = "run_component_corrections"
+
+    run_id: Mapped[str] = mapped_column(ForeignKey("sbom_runs.id", ondelete="CASCADE"), primary_key=True)
+    identity_key: Mapped[str] = mapped_column(String(1024), primary_key=True)
+    name: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    version: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    revision: Mapped[int] = mapped_column(Integer)
+    removed: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+
+
 class SbomDocumentRecord(Base):
     __tablename__ = "sbom_document_records"
     run_id: Mapped[str] = mapped_column(ForeignKey("sbom_runs.id", ondelete="CASCADE"), primary_key=True)

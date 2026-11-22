@@ -21,8 +21,9 @@ from .data_updates import DataUpdateError, assert_approved_release, release_read
 from .db import get_db
 from .models import AnalysisRevision, Environment, Release, RolePolicy, SbomRun, Service
 from .offline_cpe import _compare, _fields, evaluate
+from .nvd_catalog_products import cna_names, cna_products, cpe_leaves
 from .nvd_record_index import cache_directory, cached_nvd_records, nvd_description as _description
-from .security import DEFAULT_ROLE_PERMISSIONS, require_permission
+from .security import DEFAULT_ROLE_PERMISSIONS, require_permission, run_scope
 from .vulnerability import _nvd_details, _safe_bundle_file, active_bundle, cvss_score
 
 router = APIRouter(prefix="/api/v1/cve-catalog", tags=["cve-catalog"])
@@ -41,46 +42,6 @@ def _http_url(value):
 
 
 
-def _cna_products(record):
-    """Keep each NVD affectedData contributor separate from its products.
-
-    The NVD 2.2 schema wraps CVE Program product records in
-    ``affected: [{source, affectedData: [...]}]``. Older local imports may contain
-    the bare CVE Program ``containers.cna.affected`` product list instead.
-    """
-    containers = record.get("containers") if isinstance(record.get("containers"), dict) else {}
-    cna = containers.get("cna") if isinstance(containers.get("cna"), dict) else {}
-    provider = cna.get("providerMetadata") if isinstance(cna.get("providerMetadata"), dict) else {}
-    fallback_source = str(record.get("sourceIdentifier") or provider.get("shortName") or provider.get("orgId") or "출처 미제공")
-    affected = record.get("affected")
-    if affected is None:
-        affected = cna.get("affected")
-    if isinstance(affected, dict):
-        affected = affected.get("products", affected.get("affected", [affected]))
-    products = []
-    for item in affected if isinstance(affected, list) else []:
-        if not isinstance(item, dict):
-            continue
-        if isinstance(item.get("affectedData"), list):
-            products.extend((product, str(item.get("source") or fallback_source)) for product in item["affectedData"] if isinstance(product, dict))
-        elif any(field in item for field in ("vendor", "product", "packageName")):
-            products.append((item, fallback_source))
-    return products
-
-
-def _cpe_leaves(value, depth=0):
-    if depth > 24:
-        return
-    if isinstance(value, list):
-        for item in value:
-            yield from _cpe_leaves(item, depth + 1)
-    elif isinstance(value, dict):
-        if isinstance(value.get("criteria"), str):
-            yield value
-        for key in ("nodes", "children", "cpeMatch"):
-            yield from _cpe_leaves(value.get(key), depth + 1)
-
-
 def _range_label(version):
     start = str(version.get("version") or "미제공")
     end = version.get("lessThan")
@@ -94,11 +55,12 @@ def _range_label(version):
 
 def products_for(record):
     products = []
-    for product, source_identifier in _cna_products(record):
+    for product, source_identifier in cna_products(record):
+        vendor, name = cna_names(product)
         versions = product.get("versions") if isinstance(product.get("versions"), list) else []
-        products.append({"source": "cna", "sourceIdentifier": source_identifier, "vendor": str(product.get("vendor") or "미제공"), "product": str(product.get("product") or product.get("packageName") or "미제공"), "ranges": [{"label": _range_label(v), "status": str(v.get("status") or "unknown"), "versionType": str(v.get("versionType") or "미제공")} for v in versions if isinstance(v, dict)], "defaultStatus": product.get("defaultStatus", "unknown"), "condition": "발행기관 공지 · 원문 조건 확인", "raw": product})
+        products.append({"source": "cna", "sourceIdentifier": source_identifier, "vendor": vendor, "product": name, "ranges": [{"label": _range_label(v), "status": str(v.get("status") or "unknown"), "versionType": str(v.get("versionType") or "미제공")} for v in versions if isinstance(v, dict)], "defaultStatus": product.get("defaultStatus", "unknown"), "condition": "발행기관 공지 · 원문 조건 확인", "raw": product})
     seen = set()
-    for match in _cpe_leaves(record.get("configurations")):
+    for match in cpe_leaves(record.get("configurations")):
         try:
             fields = _fields(match["criteria"])
         except (ValueError, KeyError):
@@ -172,8 +134,9 @@ def version_match(record, products, version):
     return "match" if "match" in outcomes else "unknown" if not outcomes or "unknown" in outcomes else "outside"
 
 
-def _summary(identifier, record):
-    products = products_for(record)
+def _summary(identifier, record, products=None):
+    if products is None:
+        products = products_for(record)
     return {"id": identifier, "description": _description(record), "published": record.get("published"), "lastModified": record.get("lastModified"), "status": record.get("vulnStatus", "Unknown"), "cvss": cvss_score({"nvdCvss": record.get("cvss") or record.get("metrics") or {}}), "products": products, "versionMatch": "not_requested"}
 
 
@@ -223,29 +186,44 @@ def catalog_release():
 @router.get("")
 def search_cves(q: str = Query("", max_length=256), vendor: str = Query("", max_length=256), product: str = Query("", max_length=256), version: str = Query("", max_length=128), page: int = Query(1, ge=1), size: int = Query(20, ge=1, le=100), principal=Depends(_reader)):
     with catalog_release() as (records, index, metadata):
+        query, vendor, product = (value.strip().casefold() for value in (q, vendor, product))
+        version = version.strip()
+        start = (page - 1) * size
         rows = []
         total = 0
-        start = (page - 1) * size
-        for identifier, record in index.items(q.strip().casefold()):
-            if not _identifier.fullmatch(identifier):
+        filtered = bool(vendor or product or version)
+        if _identifier.fullmatch(query):
+            identifier = query.upper()
+            record = records.get(identifier)
+            candidates = [(identifier, record)] if record is not None else []
+        elif not filtered:
+            total, candidates = index.catalog_page(query, start, size)
+        else:
+            candidates = index.catalog_candidates(query, vendor, product)
+        paginated = not filtered and not _identifier.fullmatch(query)
+        for identifier, record in candidates:
+            if not paginated and not _identifier.fullmatch(identifier):
                 continue
-            if q.strip().casefold() not in f"{identifier} {_description(record)}".casefold():
+            products = products_for(record)
+            matches = [
+                entry for entry in products
+                if (entry["source"] == "cna" or entry["raw"].get("vulnerable") is True)
+                and vendor in entry["vendor"].casefold() and product in entry["product"].casefold()
+            ]
+            if (vendor or product) and not matches:
                 continue
-            row = _summary(identifier, record)
-            matches = [p for p in row["products"] if (p["source"] == "cna" or p["raw"].get("vulnerable") is True) and vendor.strip().casefold() in p["vendor"].casefold() and product.strip().casefold() in p["product"].casefold()]
-            if (vendor.strip() or product.strip()) and not matches:
-                continue
-            status = version_match(record, matches, version.strip())
+            status = version_match(record, matches, version)
             if status == "outside":
                 continue
-            total += 1
-            if not start < total <= start + size:
-                continue
-            # Keep the search-matched product paired with its own range; another
-            # product from the same CVE must not supply the displayed boundary.
-            matched = [p for p in matches if version_match(record, [p], version.strip()) != "outside"]
-            public_product = lambda p: {key: value for key, value in p.items() if key != "raw"}
-            rows.append({**row, "products": [public_product(p) for p in row["products"]], "matchedProducts": [public_product(p) for p in matched], "versionMatch": status})
+            if not paginated:
+                total += 1
+                if not start < total <= start + size:
+                    continue
+            matched = [entry for entry in matches if version_match(record, [entry], version) != "outside"]
+            row = _summary(identifier, record, products)
+            def public_product(entry):
+                return {key: value for key, value in entry.items() if key != "raw"}
+            rows.append({**row, "products": [public_product(entry) for entry in products], "matchedProducts": [public_product(entry) for entry in matched], "versionMatch": status})
         return {**metadata, "items": rows, "total": total, "page": page, "size": size, "versionSearchNote": "지원하지 않는 버전 체계·환경 조건은 확인 필요로 포함합니다. 실제 영향 판정은 SBOM 분석 근거를 확인하세요."}
 
 
@@ -254,7 +232,7 @@ def _observations(db, principal, identifier):
     permissions = set(policy.permissions if policy else DEFAULT_ROLE_PERMISSIONS.get(principal.role, ()))
     if "runs.view" not in permissions:
         return {"items": [], "available": False, "reason": "SBOM 회차 조회 권한이 필요합니다", "truncated": False}
-    ranked = select(SbomRun.id, func.row_number().over(partition_by=SbomRun.release_id, order_by=(SbomRun.round_number.desc(), SbomRun.created_at.desc(), SbomRun.id.desc())).label("rank")).where(SbomRun.archived_at.is_(None)).subquery()
+    ranked = select(SbomRun.id, func.row_number().over(partition_by=SbomRun.release_id, order_by=(SbomRun.round_number.desc(), SbomRun.created_at.desc(), SbomRun.id.desc())).label("rank")).where(SbomRun.archived_at.is_(None), run_scope(principal)).subquery()
     ids = select(ranked.c.id).where(ranked.c.rank == 1)
     revision_ranks = select(AnalysisRevision.id, func.row_number().over(partition_by=AnalysisRevision.run_id, order_by=AnalysisRevision.sequence.desc()).label("rank")).where(AnalysisRevision.run_id.in_(ids)).subquery()
     revision_ids = select(revision_ranks.c.id).where(revision_ranks.c.rank == 1)

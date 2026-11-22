@@ -1,3 +1,5 @@
+import { DetailPagination } from "./DetailPagination";
+import { RunDetailCard } from "./RunDetailCard";
 import { useDeferredValue, useEffect, useState, type FormEvent } from "react";
 import { previewMode } from "./api";
 import { formatSeoulDateTime } from "./format";
@@ -38,12 +40,12 @@ function QualityScore({ summary }: { summary: QualitySummary }) {
     })}</tbody></table></div><p className="muted">적용 불가 영역은 합산 분모에서 제외합니다. 누락된 필수 자료는 정상으로 계산하지 않습니다. 점수는 KODA 기준이며 공식 표준 인증 점수가 아닙니다.</p></>}
   </div>;
 }
-const emptyIssues: QualityPage<QualityIssue> = { items: [], total: 0, page: 1, size: 20 };
+const emptyIssues: QualityPage<QualityIssue> = { items: [], total: 0, page: 1, size: 10 };
 
 export function SbomQualityPanel({ runId, canRerun, canViewProfiles, canManage, archived = false, analysisId = "" }: {
   runId: string; canRerun: boolean; canViewProfiles: boolean; canManage: boolean; archived?: boolean; analysisId?: string;
 }) {
-  if (previewMode) return <section className="quality-panel tracker-view"><h3>SBOM 품질</h3><p className="muted">품질 진단은 서버에 저장된 SBOM에서 실행합니다. 미리보기에서는 진단 결과를 생성하지 않습니다.</p></section>;
+  if (previewMode) return <RunDetailCard title="SBOM 품질" className="quality-panel tracker-view"><p className="muted">품질 진단은 서버에 저장된 SBOM에서 실행합니다. 미리보기에서는 진단 결과를 생성하지 않습니다.</p></RunDetailCard>;
   return <QualityResults key={runId} runId={runId} canRerun={canRerun} canViewProfiles={canViewProfiles} canManage={canManage} archived={archived} analysisId={analysisId} />;
 }
 
@@ -52,10 +54,12 @@ function QualityResults({ runId, canRerun, canViewProfiles, canManage, archived,
 }) {
   const [revisions, setRevisions] = useState<QualityRevision[]>([]);
   const [historyPage, setHistoryPage] = useState(1);
+  const [historySize, setHistorySize] = useState(10);
   const [historyTotal, setHistoryTotal] = useState(0);
   const [selectedId, setSelectedId] = useState("");
   const [issues, setIssues] = useState(emptyIssues);
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
   const [severity, setSeverity] = useState("");
   const [ruleId, setRuleId] = useState("");
   const deferredRule = useDeferredValue(ruleId.trim());
@@ -69,34 +73,33 @@ function QualityResults({ runId, canRerun, canViewProfiles, canManage, archived,
   useEffect(() => {
     let cancelled = false;
     setLoading(true); setError("");
-    void fetchQualityRevisions(runId, historyPage).then(result => {
+    void fetchQualityRevisions(runId, historyPage, historySize).then(result => {
       if (cancelled) return;
       setRevisions(result.items); setHistoryTotal(result.total);
       setSelectedId(result.items[0]?.id || ""); setPage(1);
     }).catch(reason => { if (!cancelled) { setError(reason instanceof Error ? reason.message : "품질 이력을 불러오지 못했습니다."); setRevisions([]); setSelectedId(""); } })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [runId, historyPage, refresh, analysisId]);
+  }, [runId, historyPage, historySize, refresh, analysisId]);
   useEffect(() => {
     let cancelled = false;
     if (!selectedId) { setIssues(emptyIssues); return; }
     setIssuesLoading(true); setError("");
-    void fetchQualityIssues(runId, selectedId, page, severity, deferredRule).then(result => {
+    void fetchQualityIssues(runId, selectedId, page, severity, deferredRule, pageSize).then(result => {
       if (!cancelled) setIssues(result);
     }).catch(reason => { if (!cancelled) { setError(reason instanceof Error ? reason.message : "품질 이슈를 불러오지 못했습니다."); setIssues(emptyIssues); } })
       .finally(() => { if (!cancelled) setIssuesLoading(false); });
     return () => { cancelled = true; };
-  }, [runId, selectedId, page, severity, deferredRule, refresh]);
+  }, [runId, selectedId, page, severity, deferredRule, pageSize, refresh]);
   async function rerun() {
     setBusy(true); setError("");
     try { await createQualityRevision(runId); setHistoryPage(1); setRefresh(value => value + 1); }
     catch (reason) { setError(reason instanceof Error ? reason.message : "품질 진단을 실행하지 못했습니다."); }
     finally { setBusy(false); }
   }
-  return <section className="quality-panel tracker-view" aria-label="SBOM 품질 진단">
-    <div className="quality-heading"><div><h3>SBOM 품질</h3><p className="muted">취약점 위험과 별도로 SBOM의 식별·관계·라이선스·무결성·출처를 진단합니다.</p></div>
-      {canRerun && <button type="button" className="secondary compact" disabled={busy || archived} onClick={() => void rerun()}>{busy ? "진단 중…" : "품질 재진단"}</button>}
-    </div>
+  return <RunDetailCard title="SBOM 품질" label="SBOM 품질 진단" className="quality-panel tracker-view"
+    actions={canRerun && <button type="button" className="secondary compact" disabled={busy || archived} onClick={() => void rerun()}>{busy ? "진단 중…" : "품질 재진단"}</button>}>
+    <p className="muted">취약점 위험과 별도로 SBOM의 식별·관계·라이선스·무결성·출처를 진단합니다.</p>
     {archived && <p className="muted">보관된 회차는 기존 품질 이력만 조회할 수 있습니다.</p>}
     <div className="quality-tabs" role="tablist" aria-label="SBOM 품질 메뉴">
       <button type="button" role="tab" id="quality-results-tab" aria-selected={tab === "results"} aria-controls="quality-results" onClick={() => setTab("results")}>진단 결과</button>
@@ -108,6 +111,8 @@ function QualityResults({ runId, canRerun, canViewProfiles, canManage, archived,
         <div className="quality-toolbar"><label>품질 리비전<select aria-label="품질 리비전" value={selectedId} onChange={event => { setSelectedId(event.target.value); setPage(1); }}>{revisions.map(item => <option key={item.id} value={item.id}>r{item.sequence} · {formatSeoulDateTime(item.createdAt)} · {statusLabels[item.summary.qualityStatus] || item.state}</option>)}</select></label>
           <a className="secondary compact" href={qualityExportUrl(runId, selectedId, "csv")} download>품질 CSV</a><a className="secondary compact" href={qualityExportUrl(runId, selectedId, "json")} download>품질 JSON</a>
         </div>
+        <DetailPagination label="품질 이력" total={historyTotal} page={historyPage} pageSize={historySize} busy={loading}
+          onPage={setHistoryPage} onPageSize={size => { setHistorySize(size); setHistoryPage(1); }} />
         <p className={`quality-status quality-${selected.state === "failed" ? "failed" : selected.summary.qualityStatus}`} role="status">{statusLabels[selected.state === "failed" ? "failed" : selected.summary.qualityStatus]} · {selected.profileSnapshot.name} v{selected.profileSnapshot.version} · {selected.profileSnapshot.mode === "enforce" ? "강제 기준" : "경고 모드"}</p>
         <InheritanceEvidence profile={selected.profileSnapshot} />
         {selected.error && <p role="alert" className="form-message">{selected.error}</p>}
@@ -119,13 +124,13 @@ function QualityResults({ runId, canRerun, canViewProfiles, canManage, archived,
         {selected.comparison && <p className="muted">직전 품질 진단 대비 오류 {delta(selected.comparison.errorDelta)}건 · 경고 {delta(selected.comparison.warningDelta)}건{typeof selected.comparison.scoreDelta === "number" ? ` · 점수 ${selected.comparison.scoreDelta > 0 ? "+" : ""}${qualityNumber(selected.comparison.scoreDelta)}점` : ""}. 평가 기준·엔진 변경 여부도 함께 확인하세요.</p>}
         <small className="quality-evidence">엔진 {selected.engineVersion} · 원본 SHA-256 <span className="mono">{selected.originalSha256}</span></small>
         {selected.summary.sourceBasis && <p className="muted">진단 근거: {selected.summary.sourceBasis === "verified_original_artifact" ? "SHA-256 확인을 마친 원본 SBOM" : "저장된 정규화 JSON (원본 파일 확인 전 · CI 통과 불가)"}{selected.summary.documentLayout === "split_cyclonedx" && " · 분할 저장한 구성요소 및 의존 관계"}</p>}
-        <div className="quality-toolbar"><label>심각도<select aria-label="품질 심각도" value={severity} onChange={event => { setSeverity(event.target.value); setPage(1); }}><option value="">전체</option><option value="error">오류</option><option value="warning">경고</option></select></label><label>규칙 ID<input aria-label="품질 규칙 ID" placeholder="예: identity.missing" value={ruleId} onChange={event => { setRuleId(event.target.value); setPage(1); }} /></label><span>전체 {issues.total}건</span></div>
+        <div className="quality-toolbar"><label>심각도<select aria-label="품질 심각도" value={severity} onChange={event => { setSeverity(event.target.value); setPage(1); }}><option value="">전체</option><option value="error">오류</option><option value="warning">경고</option></select></label><label>규칙 ID<input aria-label="품질 규칙 ID" placeholder="예: identity.missing" value={ruleId} onChange={event => { setRuleId(event.target.value); setPage(1); }} /></label></div>
         <div className="table-scroll quality-table" aria-busy={issuesLoading}><table><thead><tr><th>심각도·규칙</th><th>구성요소·원본 위치</th><th>진단 근거</th><th>개선 방법</th></tr></thead><tbody>{issuesLoading ? <tr><td colSpan={4}>품질 이슈를 불러오는 중입니다…</td></tr> : issues.items.map(issue => <tr key={issue.id}><td><span className={`quality-issue-${issue.severity}`}>{severityLabels[issue.severity] || issue.severity}</span><br/><code>{issue.ruleId}</code></td><td>{issue.componentName || "문서"}{issue.bomRef && <small>bom-ref: {issue.bomRef}</small>}<code>{issue.path}</code></td><td>{issue.message}<small>관측: {valueLabel(issue.observed)}</small><small>기대: {valueLabel(issue.expected)}</small></td><td>{issue.remediation}</td></tr>)}{!issuesLoading && !issues.items.length && <tr><td colSpan={4}>{selected.state === "failed" ? "진단 실패 상태입니다. 통과로 간주하지 않습니다." : severity || deferredRule ? "필터에 맞는 품질 이슈가 없습니다." : "발견된 품질 이슈가 없습니다."}</td></tr>}</tbody></table></div>
-        <div className="quality-pagination"><span>이슈 {page}/{Math.max(1, Math.ceil(issues.total / 20))}페이지</span><button type="button" className="secondary compact" aria-label="품질 이슈 이전 페이지" disabled={page <= 1 || issuesLoading} onClick={() => setPage(value => value - 1)}>이전</button><button type="button" className="secondary compact" aria-label="품질 이슈 다음 페이지" disabled={page * 20 >= issues.total || issuesLoading} onClick={() => setPage(value => value + 1)}>다음</button></div>
+        <DetailPagination label="품질 이슈" total={issues.total} page={page} pageSize={pageSize} busy={issuesLoading}
+          onPage={setPage} onPageSize={size => { setPageSize(size); setPage(1); }} />
       </>}
-      {historyTotal > 20 && <div className="quality-pagination"><span>진단 이력 {historyPage}/{Math.ceil(historyTotal / 20)}페이지</span><button type="button" className="secondary compact" aria-label="품질 이력 이전 페이지" disabled={historyPage <= 1 || loading} onClick={() => setHistoryPage(value => value - 1)}>이전 이력</button><button type="button" className="secondary compact" aria-label="품질 이력 다음 페이지" disabled={historyPage * 20 >= historyTotal || loading} onClick={() => setHistoryPage(value => value + 1)}>다음 이력</button></div>}
     </div>}
-  </section>;
+  </RunDetailCard>;
 }
 
 type ProfileScope = { kind: "project" | "tag"; projectId: string; sourceId: string; tag: string };
@@ -137,8 +142,9 @@ function QualityProfileEditor({ runId, initialProjectId, canManage }: { runId: s
   const [profile, setProfile] = useState<QualityProfile | null>(null);
   const [effective, setEffective] = useState<EffectiveQualityProfile | null>(null);
   const [effectiveError, setEffectiveError] = useState("");
-  const [tagProfiles, setTagProfiles] = useState<QualityPage<QualityProfile>>({ items: [], total: 0, page: 1, size: 20 });
+  const [tagProfiles, setTagProfiles] = useState<QualityPage<QualityProfile>>({ items: [], total: 0, page: 1, size: 10 });
   const [tagPage, setTagPage] = useState(1);
+  const [tagPageSize, setTagPageSize] = useState(10);
   const [tagError, setTagError] = useState("");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -166,12 +172,12 @@ function QualityProfileEditor({ runId, initialProjectId, canManage }: { runId: s
   }, [loadedScope, refresh]);
   useEffect(() => {
     let cancelled = false;
-    if (loadedScope.kind !== "tag" || !loadedScope.sourceId) { setTagProfiles({ items: [], total: 0, page: 1, size: 20 }); return; }
+    if (loadedScope.kind !== "tag" || !loadedScope.sourceId) { setTagProfiles({ items: [], total: 0, page: 1, size: 10 }); return; }
     setTagError("");
-    void fetchQualityTagProfiles(loadedScope.sourceId, tagPage).then(result => { if (!cancelled) setTagProfiles(result); })
-      .catch(reason => { if (!cancelled) { setTagError(reason instanceof Error ? reason.message : "태그 기준 목록 조회 실패"); setTagProfiles({ items: [], total: 0, page: 1, size: 20 }); } });
+    void fetchQualityTagProfiles(loadedScope.sourceId, tagPage, tagPageSize).then(result => { if (!cancelled) setTagProfiles(result); })
+      .catch(reason => { if (!cancelled) { setTagError(reason instanceof Error ? reason.message : "태그 기준 목록 조회 실패"); setTagProfiles({ items: [], total: 0, page: 1, size: 10 }); } });
     return () => { cancelled = true; };
-  }, [loadedScope.kind, loadedScope.sourceId, tagPage, refresh]);
+  }, [loadedScope.kind, loadedScope.sourceId, tagPage, tagPageSize, refresh]);
   function change<K extends keyof QualityProfile>(key: K, value: QualityProfile[K]) { setProfile(current => current ? { ...current, [key]: value } : current); }
   function changeWeight(domain: QualityDomain, value: number) { setProfile(current => current ? { ...current, scoreWeights: { ...(current.scoreWeights || DEFAULT_QUALITY_WEIGHTS), [domain]: value } } : current); }
   function load(next: ProfileScope) { const cleaned = { ...next, projectId: next.projectId.trim(), sourceId: next.sourceId.trim(), tag: next.tag.trim() }; setScope(cleaned); setLoadedScope(cleaned); setTagPage(1); setRefresh(value => value + 1); }
@@ -185,7 +191,7 @@ function QualityProfileEditor({ runId, initialProjectId, canManage }: { runId: s
       setMessage(`품질 기준 v${result.version}을 저장했습니다. 기존 진단은 보존됩니다. 영향받는 회차 ${result.reanalysisRequested ?? 0}건의 재분석을 접수했습니다.`);
       // Refresh only current resolution/tag list; preserve the just-observed profile version.
       void fetchEffectiveQualityProfile(runId).then(setEffective).catch(reason => setEffectiveError(reason instanceof Error ? reason.message : "현재 기준 조회 실패"));
-      if (loadedScope.kind === "tag") void fetchQualityTagProfiles(loadedScope.sourceId, tagPage).then(setTagProfiles).catch(reason => setTagError(reason instanceof Error ? reason.message : "태그 목록 조회 실패"));
+      if (loadedScope.kind === "tag") void fetchQualityTagProfiles(loadedScope.sourceId, tagPage, tagPageSize).then(setTagProfiles).catch(reason => setTagError(reason instanceof Error ? reason.message : "태그 목록 조회 실패"));
     } catch (reason) { setMessage(reason instanceof Error ? reason.message : "품질 기준을 저장하지 못했습니다."); }
     finally { setBusy(false); }
   }
@@ -220,6 +226,7 @@ function QualityProfileEditor({ runId, initialProjectId, canManage }: { runId: s
       <p className="muted">경고 모드는 기준 미달을 알려줍니다. 강제 모드는 점수 하한·개별 기준·필수 오류로 차단합니다. 실제 배포 중단은 CI 연결이 필요합니다.</p>
       {canManage && <button type="submit" className="primary compact" disabled={busy || changedScope || !validWeights}>{busy ? "저장 중…" : "품질 기준 새 버전 저장"}</button>}
     </form>}
-    {loadedScope.kind === "tag" && <div className="quality-tag-profiles"><h4>같은 원본의 태그 기준</h4>{tagError && <p role="alert">{tagError}</p>}<ul>{tagProfiles.items.map(item => <li key={item.scopeKey || item.tag}><span>{item.tag} · 우선순위 {item.priority ?? 0} · v{item.version}{item.inherit ? " · 해제됨" : ""}</span><button type="button" className="secondary compact" disabled={busy} onClick={() => load({ kind: "tag", projectId: "", sourceId: loadedScope.sourceId, tag: item.tag || "" })}>태그 {item.tag} 불러오기</button></li>)}</ul>{!tagProfiles.total && !tagError && <p>등록된 태그 기준이 없습니다.</p>}<div className="quality-pagination"><span>태그 기준 {tagPage}/{Math.max(1, Math.ceil(tagProfiles.total / 20))}페이지</span><button type="button" className="secondary compact" aria-label="태그 기준 이전 페이지" disabled={tagPage <= 1} onClick={() => setTagPage(value => value - 1)}>이전</button><button type="button" className="secondary compact" aria-label="태그 기준 다음 페이지" disabled={tagPage * 20 >= tagProfiles.total} onClick={() => setTagPage(value => value + 1)}>다음</button></div></div>}
+    {loadedScope.kind === "tag" && <div className="quality-tag-profiles"><h4>같은 원본의 태그 기준</h4>{tagError && <p role="alert">{tagError}</p>}<ul>{tagProfiles.items.map(item => <li key={item.scopeKey || item.tag}><span>{item.tag} · 우선순위 {item.priority ?? 0} · v{item.version}{item.inherit ? " · 해제됨" : ""}</span><button type="button" className="secondary compact" disabled={busy} onClick={() => load({ kind: "tag", projectId: "", sourceId: loadedScope.sourceId, tag: item.tag || "" })}>태그 {item.tag} 불러오기</button></li>)}</ul>{!tagProfiles.total && !tagError && <p>등록된 태그 기준이 없습니다.</p>}<DetailPagination label="태그 기준" total={tagProfiles.total} page={tagPage} pageSize={tagPageSize}
+      onPage={setTagPage} onPageSize={size => { setTagPageSize(size); setTagPage(1); }} /></div>}
   </div>;
 }

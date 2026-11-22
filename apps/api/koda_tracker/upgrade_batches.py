@@ -16,7 +16,7 @@ from .db import Base, get_db
 from .java_impact import JavaDeployment, _maven_coordinate
 from .library_api import package_coordinate
 from .models import Environment, ProcessingState, Release, RunComponent, SbomRun, new_id, now
-from .security import require_csrf, require_permission
+from .security import require_csrf, require_permission, environment_scope
 from .services import audit
 from .shared_ai import upgrade_explanation
 from .upgrade_elf import ElfEvidence, eval_elf
@@ -327,7 +327,7 @@ def import_batch(body: BatchManifest, db: Session = Depends(get_db), user=Depend
     references = [body.baseline, *(item.sbom for item in body.candidates if item.sbom)]
     run_ids = {item.runId for item in references}
     runs = {row.id: row for row in db.scalars(_live_runs().options(selectinload(SbomRun.release))
-            .where(SbomRun.id.in_(run_ids)).order_by(SbomRun.id).with_for_update(read=True, of=SbomRun))}
+            .where(SbomRun.id.in_(run_ids), environment_scope(user, Release.environment_id)).order_by(SbomRun.id).with_for_update(read=True, of=SbomRun))}
     base = runs.get(body.baseline.runId)
     if base is None or any(item.runId not in runs or _scope(runs[item.runId]) != _scope(base) for item in references):
         raise HTTPException(404, "같은 서비스·환경에서 완료된 기준 및 후보 회차를 지정하세요")

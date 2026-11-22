@@ -145,6 +145,12 @@ export interface SbomRunDetail extends SbomRun {
 }
 
 export interface ComponentSnapshot {
+  id?: string;
+  originalName?: string;
+  originalVersion?: string;
+  correctionRevision?: number;
+  manual?: boolean;
+  removed?: boolean;
   identityKey: string;
   identityStatus?: string;
   componentType?: string | null;

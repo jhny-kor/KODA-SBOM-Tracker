@@ -16,6 +16,7 @@ from koda_tracker import cve_catalog_api as catalog
 from koda_tracker.data_updates import DataUpdateError
 from koda_tracker.db import Base, get_db
 from koda_tracker.models import AnalysisRevision, ApiToken, Environment, JobState, ProcessingState, Release, Role, RolePolicy, SbomRun, Service, User
+from koda_tracker.environment_admin_models import EnvironmentAdministrator
 from koda_tracker.security import current_principal
 from koda_tracker.vulnerability import _nvd_details
 
@@ -140,6 +141,7 @@ def test_internal_evidence_uses_latest_saved_analysis_per_release(context):
     environment = Environment(id="environment", slug="prod", name="운영")
     release = Release(id="release", service_id=service.id, environment_id=environment.id, version="2026.10.1")
     context.db.add_all([service, environment, release]); context.db.flush()
+    context.db.add(EnvironmentAdministrator(environment_id=environment.id, user_id="reader", assigned_by="admin"))
     for number, version in ((1, "1.0.0"), (2, "1.4.0")):
         run = SbomRun(id=f"run-{number}", release_id=release.id, round_number=number, state=ProcessingState.COMPLETED, analysis_state=JobState.COMPLETED, original_filename="input.json", media_type="application/json", spec_version="1.6", sha256="a" * 64, size_bytes=2, artifact_path="/test/input.json", normalized_bom={})
         context.db.add(run); context.db.flush()
@@ -275,3 +277,23 @@ def test_approval_is_checked_again_before_returning_cached_results(context, monk
     response = context.client.get("/api/v1/cve-catalog")
     assert response.status_code == 503
     assert "approval changed" in response.json()["detail"]
+
+
+def test_catalog_only_expands_the_page_and_exact_identifier(context, monkeypatch):
+    values = [record(id=f"CVE-2020-{10000 + n}", description="shared keyword") for n in range(120)]
+    values[-1]["description"] += " references CVE-2020-10000"
+    context.data.write_text(json.dumps({"vulnerabilities": values}))
+    original = catalog.products_for
+    expanded = []
+
+    def count(record):
+        expanded.append(record["id"])
+        return original(record)
+
+    monkeypatch.setattr(catalog, "products_for", count)
+    result = context.client.get("/api/v1/cve-catalog?q=shared%20keyword&page=4&size=3").json()
+    assert result["total"] == 120
+    assert expanded == ["CVE-2020-10009", "CVE-2020-10010", "CVE-2020-10011"]
+    expanded.clear()
+    exact = context.client.get("/api/v1/cve-catalog?q=cve-2020-10000").json()
+    assert exact["total"] == 1 and expanded == ["CVE-2020-10000"]

@@ -1,4 +1,3 @@
-import { ResizableTable } from "./ResizableTable";
 import { useEffect, useState, type FormEvent } from "react";
 import { request } from "./api";
 
@@ -159,17 +158,20 @@ export function IdentityAISuggestions({ runId, identityKey }: { runId: string; i
   const { result, error, busy, run } = useAIRequest<IdentityResult>(
     `/api/v1/ai/runs/${encodeURIComponent(runId)}/identity-suggestions`, { identityKey });
   useEffect(() => { void run(); }, []); // eslint-disable-line react-hooks/exhaustive-deps -- one lookup per opened row
-  return <div aria-label="CPE 식별 후보" role="region">
-    {busy && <p className="muted">활성 NVD 자료에서 후보를 찾고 사내 AI로 순위를 매기는 중…</p>}
+  return <div className="cpe-candidate-results" role="region" aria-label="CPE 식별 후보 결과">
+    {busy && <p role="status">활성 NVD 자료에서 후보를 찾는 중…</p>}
     {error && <p className="form-message" role="alert">{error}</p>}
     {result && !result.candidates.length && <p className="muted">{result.reason || "식별 후보가 없습니다."}</p>}
-    {result && !!result.candidates.length && <>
-      <p className="muted">후보는 NVD {result.dataAsOf || "기준일 미상"} 자료에서 이름 규칙으로만 찾고, AI는 순위와 근거만 붙입니다. 확인한 CPE를 원본 SBOM의 cpe 필드에 넣고 다시 업로드해야 분석에 반영됩니다.</p>
-      <ResizableTable><thead><tr><th>CPE</th><th>이름 일치</th><th>관련 CVE</th><th>AI 신뢰도·근거</th></tr></thead>
-        <tbody>{result.candidates.map(item => <tr key={item.id}>
-          <td className="mono wrap">{item.cpe}</td><td>{item.match === "exact" ? "정확" : "부분"}</td><td>{item.cveCount}</td>
-          <td style={preWrap}>{item.confidence ? `${confidenceLabel[item.confidence]} · ${item.reason}` : "AI 순위 없음"}</td>
-        </tr>)}</tbody></ResizableTable>
+    {result && result.candidates.length > 0 && <>
+      <ul aria-label="후보 목록">
+        {result.candidates.map(item => <li key={item.id}>
+          <code>{item.cpe}</code>
+          <small>{item.match === "exact" ? "이름 정확 일치" : "이름 부분 일치"} · 관련 CVE {item.cveCount}건{item.confidence ? ` · AI 신뢰도 ${confidenceLabel[item.confidence]}` : " · AI 순위 없음"}</small>
+          {item.reason && <p>{item.reason}</p>}
+        </li>)}
+      </ul>
+      <p className="muted">NVD 기준일 {result.dataAsOf || "미상"} · 검토용 후보</p>
+      <p className="muted">확인한 CPE를 원본 SBOM에 넣고 다시 업로드하면 분석에 반영됩니다.</p>
     </>}
   </div>;
 }

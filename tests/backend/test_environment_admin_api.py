@@ -5,15 +5,18 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, func, select, update
+from sqlalchemy import create_engine, func, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from koda_tracker import environment_admin_api as api
-from koda_tracker.db import Base, get_db
+from koda_tracker.db import Base, ensure_component_correction_removal_column, get_db
 from koda_tracker.environment_admin_models import EnvironmentAdministrator
-from koda_tracker.models import AnalysisRevision, ApiToken, AuditEvent, Environment, Job, JobState, ProcessingState, Release, Role, RolePolicy, RunComponent, SbomRun, Service, User, UserSession
+from koda_tracker.external_api import ExternalReadToken, router as external_router
+from koda_tracker.library_api import router as library_router
+from koda_tracker.main import compare_runs, download_artifact, get_run, get_run_components, list_runs
+from koda_tracker.models import AnalysisRevision, ApiToken, AuditEvent, Environment, Job, JobState, ProcessingState, Release, Role, RolePolicy, RunComponent, RunComponentCorrection, RunManualComponent, SbomRun, Service, User, UserSession
 from koda_tracker.project_catalog_models import NativeProject, NativeReanalysisPending, ProjectRunLink
 from koda_tracker.security import digest
 
@@ -50,6 +53,13 @@ def setup():
         db.commit()
         app = FastAPI()
         app.include_router(api.router)
+        app.include_router(library_router)
+        app.include_router(external_router)
+        app.add_api_route("/api/v1/sbom-runs", list_runs)
+        app.add_api_route("/api/v1/sbom-runs/{run_id}", get_run)
+        app.add_api_route("/api/v1/sbom-runs/{run_id}/components", get_run_components)
+        app.add_api_route("/api/v1/sbom-runs/{run_id}/artifact", download_artifact)
+        app.add_api_route("/api/v1/comparisons", compare_runs)
         app.dependency_overrides[get_db] = lambda: db
         with TestClient(app) as client:
             client.cookies.set("koda_session", "admin-session")
@@ -114,8 +124,8 @@ def test_assigned_viewer_can_edit_notes_but_other_manager_cannot(setup):
     assert patch(client, note="담당자가 검토함").status_code == 200
     assert db.get(SbomRun, "run").note == "담당자가 검토함"
     login(client, "other")
-    assert not client.get("/api/v1/sbom-runs/run/edit-permission").json()["canEdit"]
-    assert patch(client, note="unauthorized").status_code == 403
+    assert client.get("/api/v1/sbom-runs/run/edit-permission").status_code == 404
+    assert patch(client, note="unauthorized").status_code == 404
     assert db.get(SbomRun, "run").note == "담당자가 검토함"
 
 
@@ -150,7 +160,7 @@ def test_source_grant_required_even_when_destination_is_granted(setup):
     db.add(EnvironmentAdministrator(environment_id="test", user_id="assigned", assigned_by="admin"))
     db.commit()
     login(client, "assigned")
-    assert patch(client, environmentId="test").status_code == 403
+    assert patch(client, environmentId="test").status_code == 404
 
 
 def test_scope_move_to_new_release_does_not_mutate_shared_release(setup):
@@ -206,7 +216,7 @@ def test_revocation_and_role_view_permission_take_effect_immediately(setup):
     db.get(RolePolicy, Role.VIEWER).permissions = ["runs.view"]
     db.delete(db.get(EnvironmentAdministrator, ("prod", "assigned")))
     db.commit()
-    assert patch(client, note="still denied").status_code == 403
+    assert patch(client, note="still denied").status_code == 404
 
 
 def test_api_tokens_and_pending_users_cannot_manage_or_edit(setup):
@@ -303,3 +313,166 @@ def test_grant_replacement_rolls_back_on_database_failure(setup, monkeypatch):
     assert client.put("/api/v1/environment-administrators/prod", json={"userIds": ["other"]}, headers={"X-CSRF-Token": "csrf"}).status_code == 409
     assert db.get(EnvironmentAdministrator, ("prod", "assigned")) is not None
     assert db.get(EnvironmentAdministrator, ("prod", "other")) is None
+
+
+def test_run_scope_filters_search_and_relations_immediately_after_revocation(setup):
+    db, client = setup
+    db.add(RunComponent(run_id="existing", identity_key="prod-only", name="only-qa", search_text="only-qa"))
+    db.commit()
+    assert client.get("/api/v1/sbom-runs").json()["total"] == 3
+    login(client, "other")
+    assert client.get("/api/v1/sbom-runs").json()["total"] == 0
+    assert client.get("/api/v1/sbom-runs/run").status_code == 404
+    login(client, "assigned")
+    assert {item["id"] for item in client.get("/api/v1/sbom-runs").json()["items"]} == {"run", "sibling"}
+    assert client.get("/api/v1/sbom-runs?environment_id=test").json()["total"] == 0
+    assert client.get("/api/v1/sbom-runs?q=only-qa").json()["total"] == 0
+    assert client.get("/api/v1/libraries?q=only-qa").json()["total"] == 0
+    assert client.get("/api/v1/sbom-runs/run/components").status_code == 200
+    assert client.get("/api/v1/sbom-runs/existing/components").status_code == 404
+    assert client.get("/api/v1/sbom-runs/existing/artifact").status_code == 404
+    assert client.get("/api/v1/comparisons?baseRunId=run&targetRunId=existing").status_code == 404
+    login(client, "admin")
+    assert client.put("/api/v1/environment-administrators/prod", json={"userIds": []}, headers={"X-CSRF-Token": "csrf"}).status_code == 200
+    login(client, "assigned")
+    assert client.get("/api/v1/sbom-runs").json()["total"] == 0
+    assert client.get("/api/v1/sbom-runs/run").status_code == 404
+
+
+def test_component_correction_preserves_original_and_audits_optimistic_edits(setup):
+    db, client = setup
+    login(client, "assigned")
+    url = "/api/v1/sbom-runs/run/components"
+    body = {"name": "example corrected", "version": "2.0", "expectedRevision": 0}
+    headers = {"X-CSRF-Token": "csrf"}
+    assert client.patch(f"{url}/component", json=body).status_code == 403
+    assert client.patch(f"{url}/component", json=body, headers=headers).json()["correctionRevision"] == 1
+    assert client.patch(f"{url}/component", json=body, headers=headers).status_code == 409
+    corrected = client.get(f"{url}?q=corrected").json()["items"][0]
+    assert (corrected["name"], corrected["version"], corrected["originalName"], corrected["originalVersion"]) == (
+        "example corrected", "2.0", "example", "1"
+    )
+    assert db.get(RunComponent, "component").version == "1"
+    assert db.get(SbomRun, "run").normalized_bom["components"][0]["version"] == "1"
+    assert db.get(AnalysisRevision, "analysis").findings == [{"id": "CVE-EXAMPLE"}]
+    login(client, "other")
+    assert client.patch(f"{url}/component", json={**body, "expectedRevision": 1}, headers=headers).status_code == 404
+    login(client, "admin")
+    reset = client.patch(f"{url}/component", json={"name": None, "version": None, "expectedRevision": 1}, headers=headers)
+    assert reset.json() == {"name": "example", "version": "1", "correctionRevision": 2}
+    correction = db.get(RunComponentCorrection, ("run", "coord:library::example"))
+    assert correction.name is None and correction.version is None
+    assert db.scalar(select(func.count()).select_from(AuditEvent).where(AuditEvent.action == "sbom.component.correct")) == 2
+
+
+
+def test_component_removal_is_scoped_reversible_and_preserves_original_analysis(setup):
+    db, client = setup
+    url = "/api/v1/sbom-runs/run/components"
+    headers = {"X-CSRF-Token": "csrf"}
+    removal = {"removed": True, "expectedRevision": 1}
+    db.add(RunComponent(id="remaining", run_id="run", identity_key="coord:library::remaining", name="remaining", version="1"))
+    db.add(RunComponent(id="sibling-comp", run_id="sibling", identity_key="coord:library::example", name="example", version="1"))
+    db.commit()
+
+    login(client, "other")
+    assert client.patch(f"{url}/component", json=removal, headers=headers).status_code == 404
+    assert client.get(f"{url}?removed=true").status_code == 404
+
+    login(client, "assigned")
+    edited = client.patch(f"{url}/component", json={"name": "renamed", "version": "2", "expectedRevision": 0}, headers=headers)
+    assert edited.status_code == 200
+    assert client.patch(f"{url}/component", json=removal).status_code == 403
+    removed = client.patch(f"{url}/component", json=removal, headers=headers)
+    assert removed.json() == {"name": "renamed", "version": "2", "correctionRevision": 2, "removed": True}
+    assert client.patch(f"{url}/component", json=removal, headers=headers).status_code == 409
+    assert client.patch(f"{url}/component", json={**removal, "expectedRevision": 2}, headers=headers).json() == removed.json()
+
+    active = client.get(url).json()
+    assert [item["id"] for item in active["items"]] == ["remaining"]
+    assert (active["total"], active["removedTotal"]) == (1, 1)
+    assert client.get(f"{url}?q=renamed").json()["total"] == 0
+    deleted = client.get(f"{url}?removed=true&q=renamed").json()
+    assert (deleted["items"][0]["id"], deleted["items"][0]["removed"], deleted["total"]) == ("component", True, 1)
+    assert client.get(f"{url}?removed=true&q=missing").json()["removedTotal"] == 1
+    assert client.get("/api/v1/sbom-runs/sibling/components").json()["total"] == 1
+    assert db.get(RunComponent, "component").name == "example"
+    assert db.get(SbomRun, "run").normalized_bom["components"] == [{"name": "example", "version": "1"}]
+    assert db.get(AnalysisRevision, "analysis").findings == [{"id": "CVE-EXAMPLE"}]
+
+    restored = client.patch(f"{url}/component", json={"removed": False, "expectedRevision": 2}, headers=headers)
+    assert restored.json() == {"name": "renamed", "version": "2", "correctionRevision": 3, "removed": False}
+    assert client.get(f"{url}?q=renamed").json()["total"] == 1
+    assert client.get(f"{url}?removed=true").json()["total"] == 0
+    events = db.scalars(select(AuditEvent).where(AuditEvent.action.in_(("sbom.component.remove", "sbom.component.restore")))).all()
+    assert {event.action: event.detail["after"]["removed"] for event in events} == {
+        "sbom.component.remove": True, "sbom.component.restore": False,
+    }
+
+
+def test_existing_component_correction_schema_keeps_old_edits(tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'legacy.sqlite'}")
+    with engine.begin() as db:
+        db.execute(text("CREATE TABLE run_component_corrections (name TEXT, revision INTEGER)"))
+        db.execute(text("INSERT INTO run_component_corrections (name, revision) VALUES ('renamed', 3)"))
+    ensure_component_correction_removal_column(engine)
+    ensure_component_correction_removal_column(engine)
+    with engine.connect() as db:
+        assert db.execute(text("SELECT name, revision, removed FROM run_component_corrections")).one() == ("renamed", 3, False)
+    engine.dispose()
+
+
+
+def test_manual_component_addition_is_scoped_and_keeps_original_inventory(setup):
+    db, client = setup
+    url = "/api/v1/sbom-runs/run/components"
+    headers = {"X-CSRF-Token": "csrf"}
+    payload = {"name": "   Local wrapper   ", "version": " 02.01 "}
+    login(client, "other")
+    assert client.post(url, json=payload, headers=headers).status_code == 404
+    login(client, "assigned")
+    assert client.post(url, json=payload).status_code == 403
+    for invalid in ({"name": " ", "version": "1"}, {"name": "name", "version": " "}, {"name": "x", "version": "a\nb"}):
+        assert client.post(url, json=invalid, headers=headers).status_code == 422
+
+    added = client.post(url, json=payload, headers=headers)
+    assert added.status_code == 201
+    component_id = added.json()["id"]
+    assert (added.json()["name"], added.json()["version"]) == ("Local wrapper", "02.01")
+    assert client.post(url, json=payload, headers=headers).status_code == 409
+    assert db.scalar(select(func.count()).select_from(RunManualComponent)) == 1
+
+    first = client.get(f"{url}?size=1").json()
+    assert first["total"] == 2
+    assert [(item["id"], item["manual"]) for item in first["items"]] == [(component_id, True)]
+    assert client.get(f"{url}?size=1&page=2").json()["items"][0]["id"] == "component"
+    assert client.get(f"{url}?q=wrapper+02.01").json()["total"] == 1
+    assert client.get("/api/v1/sbom-runs/sibling/components").json()["total"] == 0
+    assert client.get("/api/v1/sbom-runs/run").json()["componentCount"] == 1
+    assert db.get(SbomRun, "run").normalized_bom["components"] == [{"name": "example", "version": "1"}]
+    assert db.get(AnalysisRevision, "analysis").findings == [{"id": "CVE-EXAMPLE"}]
+    db.add(ExternalReadToken(name="fixture", token_hash=digest("koda_read_fixture"), service_id="service",
+                             expires_at=datetime.now(UTC) + timedelta(hours=1)))
+    db.commit()
+    external = client.get("/api/v1/integrations/external/runs/run/components",
+                          headers={"Authorization": "Bearer koda_read_fixture"})
+    assert external.status_code == 200
+    assert external.json()["total"] == 1
+    assert [item["name"] for item in external.json()["items"]] == ["example"]
+    event = db.scalar(select(AuditEvent).where(AuditEvent.action == "sbom.component.add"))
+    assert event.detail == {"identityKey": component_id, "name": "Local wrapper", "version": "02.01"}
+
+    component_url = f"{url}/{component_id}"
+    edit = client.patch(component_url, json={"name": "renamed", "version": "03.00", "expectedRevision": 0}, headers=headers)
+    assert edit.json()["correctionRevision"] == 1
+    assert client.get(f"{url}?q=renamed").json()["items"][0]["version"] == "03.00"
+    assert client.patch(component_url, json={"removed": True, "expectedRevision": 1}, headers=headers).status_code == 200
+    assert client.get(url).json()["removedTotal"] == 1
+    assert client.get(f"{url}?removed=true").json()["items"][0]["id"] == component_id
+    assert client.post(url, json=payload, headers=headers).status_code == 409
+    assert client.patch(component_url, json={"removed": False, "expectedRevision": 2}, headers=headers).status_code == 200
+    assert client.get(f"{url}?q=renamed").json()["items"][0]["manual"] is True
+
+    db.get(SbomRun, "run").state = ProcessingState.ARCHIVED
+    db.commit()
+    assert client.post(url, json={"name": "different", "version": "1"}, headers=headers).status_code == 409

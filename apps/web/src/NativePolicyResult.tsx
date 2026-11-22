@@ -1,3 +1,4 @@
+import { RunDetailCard } from "./RunDetailCard";
 import { ResizableTable } from "./ResizableTable";
 import { analysisAvailable } from "./analysisAvailability";
 import { useEffect, useState } from "react";
@@ -5,7 +6,7 @@ import { fetchRunPolicyViolations, previewMode } from "./api";
 import { formatSeoulDateTime } from "./format";
 import type { AnalysisRevisionSummary, NativePolicyFields } from "./types";
 
-export function NativePolicyResult({ result, runId, analysisId }: { result: NativePolicyFields & { policyViolationCount?: number; vulnerableComponentCount?: number | null }; runId?: string; analysisId?: string }) {
+export function NativePolicyResult({ result, runId, analysisId, inRunDetail = false }: { result: NativePolicyFields & { policyViolationCount?: number; vulnerableComponentCount?: number | null }; runId?: string; analysisId?: string; inRunDetail?: boolean }) {
   const [reload, setReload] = useState(0);
   const [pagination, setPagination] = useState({ key: "", page: 1 });
   const [remote, setRemote] = useState<{ key: string; items: Record<string, unknown>[]; total: number; error?: string }>({ key: "", items: [], total: 0 });
@@ -34,8 +35,9 @@ export function NativePolicyResult({ result, runId, analysisId }: { result: Nati
   const evaluated = analysisAvailable(result) && result.policyState === "completed";
   const status = result.policyStatus;
   const label = result.policyState === "failed" ? "평가 실패" : !evaluated ? "미평가" : status === "fail" ? "위반" : status === "warn" ? "경고" : status === "info" ? "정보" : status === "pass" ? "통과" : "평가 완료";
-  return <section className="native-policy-result" aria-label="KODA 정책 평가 결과">
-    <div className="detail-table-heading"><h3>KODA 정책 평가{result.policyVersion ? ` · v${result.policyVersion}` : ""}</h3><span className={`state ${evaluated && status === "pass" ? "completed" : "partial"}`}>{label}</span></div>
+  const title = `KODA 정책 평가${result.policyVersion ? ` · v${result.policyVersion}` : ""}`;
+  const badge = <span className={`state ${evaluated && status === "pass" ? "completed" : "partial"}`}>{label}</span>;
+  const content = <>
     {result.policyError && <p className="drawer-error" role="alert">{result.policyError}</p>}
     {!evaluated && <p>정책 평가가 완료되지 않았습니다. 새 분석 리비전으로 Grype 분석과 현재 KODA 정책을 실행할 수 있습니다.</p>}
     {serverResults && !loaded && <p role="status">정책 결과를 불러오는 중입니다.</p>}
@@ -47,7 +49,13 @@ export function NativePolicyResult({ result, runId, analysisId }: { result: Nati
         : result.analysisMetrics?.[key];
       return <div key={key}><dt>{name}</dt><dd>{typeof value === "number" ? value.toLocaleString() : "-"}</dd></div>;
     })}</dl><p className="policy-metrics-note">평가 시각: {result.analysisMetrics.evaluatedAt ? formatSeoulDateTime(String(result.analysisMetrics.evaluatedAt)) : "-"} · 데이터 기준일: {String(result.analysisMetrics.dataAsOf || "확인 필요")} · Grype: {String(result.analysisMetrics.toolVersion || "확인 필요")}</p>{result.analysisMetrics.policyDataComplete === false && <p className="drawer-error">일부 정책 데이터가 없습니다. 평가 근거의 데이터 경고를 확인하세요.</p>}</>}
-  </section>;
+  </>;
+  return inRunDetail
+    ? <RunDetailCard title={title} label="정책 및 분석 요약" actions={badge}><div className="native-policy-result">{content}</div></RunDetailCard>
+    : <section className="native-policy-result" aria-label="KODA 정책 평가 결과">
+      <div className="detail-table-heading"><h3>{title}</h3>{badge}</div>
+      {content}
+    </section>;
 }
 
 export function AnalysisPolicyHistory({ analysis, runId }: { analysis: AnalysisRevisionSummary; runId: string }) {

@@ -146,8 +146,10 @@ export async function fetchRun(runId: string): Promise<SbomRunDetail> {
   return request<SbomRunDetail>(`/api/v1/sbom-runs/${encodeURIComponent(runId)}`);
 }
 
-export async function fetchRunComponents(runId: string, page = 1, size = 10, q = ""): Promise<PageResult<ComponentSnapshot>> {
+export async function fetchRunComponents(runId: string, page = 1, size = 10, q = "", removed = false):
+  Promise<PageResult<ComponentSnapshot> & { removedTotal?: number }> {
   if (previewMode) {
+    if (removed) return { items: [], page, size, total: 0 };
     const detail = await fetchRun(runId);
     const term = q.trim().toLowerCase();
     const filtered = detail.components.filter((component) =>
@@ -158,7 +160,8 @@ export async function fetchRunComponents(runId: string, page = 1, size = 10, q =
   }
   const params = new URLSearchParams({ page: String(page), size: String(size) });
   if (q.trim()) params.set("q", q.trim());
-  return request<PageResult<ComponentSnapshot>>(`/api/v1/sbom-runs/${encodeURIComponent(runId)}/components?${params}`);
+  if (removed) params.set("removed", "true");
+  return request<PageResult<ComponentSnapshot> & { removedTotal?: number }>(`/api/v1/sbom-runs/${encodeURIComponent(runId)}/components?${params}`);
 }
 
 export async function fetchRunFindings(runId: string, page = 1, size = 10, analysisId = ""): Promise<PageResult<Record<string, unknown>>> {
@@ -449,7 +452,7 @@ export interface PackageMetadataRow {
 export interface RunMetadataItem { component: {identityKey?: string; name: string; version?: string | null; purl?: string | null}; metadata: PackageMetadataRow }
 export interface MetadataStatus { enabled: boolean; supportedEcosystems: string[]; counts: Record<string, number>; ttlSeconds: number }
 export const fetchMetadataStatus = () => request<MetadataStatus>("/api/v1/package-metadata/status");
-export const fetchRunMetadata = (id: string, page = 1) => request<PageResult<RunMetadataItem>>(`/api/v1/sbom-runs/${encodeURIComponent(id)}/package-metadata?page=${page}&size=10`);
+export const fetchRunMetadata = (id: string, page = 1, size = 10) => request<PageResult<RunMetadataItem>>(`/api/v1/sbom-runs/${encodeURIComponent(id)}/package-metadata?page=${page}&size=${size}`);
 export const refreshRunMetadata = (id: string) => workflowMutation<{queued:number;cached:number;unsupported:number;invalid?:number;deferred?:number}>(`/api/v1/sbom-runs/${encodeURIComponent(id)}/package-metadata/refresh`, {});
 export const importMetadata = (bundle: unknown) => workflowMutation<{imported:number;skipped:number}>("/api/v1/package-metadata/import", bundle);
 export const importVulnerabilityIntelligence = (bundle: unknown) => workflowMutation<{imported:number;skipped:number}>("/api/v1/vulnerability-intelligence/import", bundle);

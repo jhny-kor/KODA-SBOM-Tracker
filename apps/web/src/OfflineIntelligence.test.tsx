@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { OfflineIntelligencePanel, OfflineRunEvidence } from "./OfflineIntelligence";
 import { request } from "./api";
@@ -53,4 +53,25 @@ it("keeps expired latest-version observations visible without calling them fresh
   expect(screen.getByText("9.0")).toBeInTheDocument();
   expect(screen.queryByText("유효한 관측 근거 · 자료 기준일 내")).not.toBeInTheDocument();
   expect(screen.getByText(/현재 반입 자료가 분석 당시와 다릅니다/)).toBeInTheDocument();
+});
+
+it("pages component and vulnerability evidence independently", async () => {
+  vi.mocked(request).mockResolvedValue({
+    summary: { sources: [] },
+    components: Array.from({ length: 12 }, (_, index) => ({ name: `package-${index + 1}`, version: "1.0" })),
+    findings: Array.from({ length: 11 }, (_, index) => ({ id: `cve-${index + 1}`, component: "example" })),
+  });
+  render(<OfflineRunEvidence runId="run" canRespond={false} canViewResponses={false} />);
+  const components = within(await screen.findByRole("table", { name: "구성요소별 오프라인 자료 활용" }));
+  const findings = within(screen.getByRole("table", { name: "취약점별 오프라인 자료 활용" }));
+  expect(components.getAllByRole("row")).toHaveLength(11);
+  expect(findings.getAllByRole("row")).toHaveLength(11);
+
+  fireEvent.click(screen.getByRole("button", { name: "취약점 근거 다음 페이지" }));
+  expect(findings.getByText("cve-11 / example")).toBeVisible();
+  expect(components.getByText("package-1 1.0")).toBeVisible();
+
+  fireEvent.change(screen.getByRole("combobox", { name: "구성요소 자료 활용 페이지당 행 수" }), { target: { value: "25" } });
+  expect(components.getByText("package-12 1.0")).toBeVisible();
+  expect(findings.getAllByRole("row")).toHaveLength(2);
 });

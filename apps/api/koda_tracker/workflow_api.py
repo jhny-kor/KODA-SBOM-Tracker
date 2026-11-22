@@ -5,13 +5,13 @@ import json
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import func, select, tuple_
+from sqlalchemy import func, or_, select, true, tuple_
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 
 from .db import get_db
-from .models import SbomRun, User
-from .security import current_principal, require_csrf, require_permission
+from .models import Role, SbomRun, User
+from .security import current_principal, require_csrf, require_permission, environment_scope, run_scope
 from .workflow_models import FindingReview, NotificationDelivery, NotificationEvent, NotificationReceipt, ReviewEvent
 from .workflows import (audit, create_review, decide_review, delivery_dict, export_vex, import_vex,
                         iso, now, review_dict, targets, webhook_settings)
@@ -52,8 +52,8 @@ def load_run(db, run_id):
     return run
 
 
-def load_review(db, review_id):
-    review = db.get(FindingReview, review_id)
+def load_review(db, review_id, principal):
+    review = db.scalar(select(FindingReview).where(FindingReview.id == review_id, environment_scope(principal, FindingReview.environment_id)))
     if not review:
         raise HTTPException(404, "검토를 찾을 수 없습니다")
     return review
@@ -91,7 +91,7 @@ def submit_review(run_id: str, body: ReviewBody, db: Session = Depends(get_db),
 
 @router.get("/reviews/{review_id}/events")
 def review_events(review_id: str, db: Session = Depends(get_db), principal: User = Depends(require_permission("vex.view", "vex.manage", "vex.approve"))):
-    load_review(db, review_id)
+    load_review(db, review_id, principal)
     rows = db.scalars(select(ReviewEvent).where(ReviewEvent.review_id == review_id).order_by(ReviewEvent.created_at, ReviewEvent.id)).all()
     return {"items": [{"id": r.id, "kind": r.kind, "actor": r.actor, "comment": r.comment, "createdAt": iso(r.created_at)} for r in rows]}
 
@@ -99,7 +99,7 @@ def review_events(review_id: str, db: Session = Depends(get_db), principal: User
 @router.post("/reviews/{review_id}/events", dependencies=[Depends(workflow_csrf)], status_code=201)
 def comment_review(review_id: str, body: CommentBody, db: Session = Depends(get_db),
                    principal: User = Depends(require_permission("vex.manage"))):
-    load_review(db, review_id)
+    load_review(db, review_id, principal)
     if not body.comment.strip():
         raise HTTPException(422, "검토 의견이 필요합니다")
     event = ReviewEvent(review_id=review_id, kind="comment", actor=principal.username, comment=body.comment.strip())
@@ -112,7 +112,7 @@ def comment_review(review_id: str, body: CommentBody, db: Session = Depends(get_
 @router.post("/reviews/{review_id}/decision", dependencies=[Depends(workflow_csrf)])
 def decision_review(review_id: str, body: DecisionBody, db: Session = Depends(get_db),
                     principal: User = Depends(require_permission("vex.approve"))):
-    review = decide_review(db, load_review(db, review_id), principal, body.decision, body.reason)
+    review = decide_review(db, load_review(db, review_id, principal), principal, body.decision, body.reason)
     db.commit()
     return review_dict(review)
 
@@ -146,13 +146,21 @@ async def post_vex(run_id: str, request: Request, db: Session = Depends(get_db),
     return {"imported": len(reviews), "items": [review_dict(r) for r in reviews]}
 
 
+def notification_scope(principal: User):
+    if principal.role == Role.ADMIN:
+        return true()
+    return or_(NotificationEvent.run_id.is_(None),
+               NotificationEvent.run_id.in_(select(SbomRun.id).where(run_scope(principal))))
+
+
 @router.get("/notifications")
 def list_notifications(page: int = Query(1, ge=1), size: int = Query(50, ge=1, le=100),
                        db: Session = Depends(get_db), principal: User = Depends(require_permission("notifications.view", "notifications.manage"))):
-    total = db.scalar(select(func.count()).select_from(NotificationEvent)) or 0
+    scope = notification_scope(principal)
+    total = db.scalar(select(func.count()).select_from(NotificationEvent).where(scope)) or 0
     receipts = {r.event_id: r.read_at for r in db.scalars(select(NotificationReceipt).where(NotificationReceipt.user_id == principal.id))}
-    unread = db.scalar(select(func.count()).select_from(NotificationEvent).where(~NotificationEvent.id.in_(select(NotificationReceipt.event_id).where(NotificationReceipt.user_id == principal.id)))) or 0
-    rows = db.scalars(select(NotificationEvent).order_by(NotificationEvent.created_at.desc()).offset((page - 1) * size).limit(size)).all()
+    unread = db.scalar(select(func.count()).select_from(NotificationEvent).where(scope, ~NotificationEvent.id.in_(select(NotificationReceipt.event_id).where(NotificationReceipt.user_id == principal.id)))) or 0
+    rows = db.scalars(select(NotificationEvent).where(scope).order_by(NotificationEvent.created_at.desc()).offset((page - 1) * size).limit(size)).all()
     return {"items": [{"id": r.id, "kind": r.kind, "eventType": r.kind, "title": r.title, "message": r.message,
                        "runId": r.run_id, "revisionId": r.revision_id, "payload": r.payload, "createdAt": iso(r.created_at),
                        "read": r.id in receipts, "readAt": iso(receipts.get(r.id))} for r in rows],
@@ -162,7 +170,7 @@ def list_notifications(page: int = Query(1, ge=1), size: int = Query(50, ge=1, l
 @router.post("/notifications/{event_id}/read", dependencies=[Depends(workflow_csrf)])
 def read_notification(event_id: str, db: Session = Depends(get_db),
                       principal: User = Depends(require_permission("notifications.view", "notifications.manage"))):
-    if not db.get(NotificationEvent, event_id):
+    if not db.scalar(select(NotificationEvent.id).where(NotificationEvent.id == event_id, notification_scope(principal))):
         raise HTTPException(404, "알림을 찾을 수 없습니다")
     if not db.scalar(select(NotificationReceipt).where(NotificationReceipt.event_id == event_id, NotificationReceipt.user_id == principal.id)):
         try:
@@ -178,15 +186,19 @@ def read_notification(event_id: str, db: Session = Depends(get_db),
 @router.get("/notification-deliveries")
 def list_deliveries(page: int = Query(1, ge=1), size: int = Query(50, ge=1, le=100),
                     db: Session = Depends(get_db), principal: User = Depends(require_permission("notifications.manage"))):
-    total = db.scalar(select(func.count()).select_from(NotificationDelivery)) or 0
-    rows = db.scalars(select(NotificationDelivery).order_by(NotificationDelivery.created_at.desc()).offset((page - 1) * size).limit(size)).all()
+    scope = NotificationDelivery.event_id.in_(select(NotificationEvent.id).where(notification_scope(principal)))
+    total = db.scalar(select(func.count()).select_from(NotificationDelivery).where(scope)) or 0
+    rows = db.scalars(select(NotificationDelivery).where(scope).order_by(NotificationDelivery.created_at.desc()).offset((page - 1) * size).limit(size)).all()
     return {"items": [delivery_dict(r) for r in rows], "total": total, "page": page, "size": size}
 
 
 @router.post("/notification-deliveries/{delivery_id}/retry", dependencies=[Depends(workflow_csrf)])
 def retry_delivery(delivery_id: str, db: Session = Depends(get_db),
                    principal: User = Depends(require_permission("notifications.manage"))):
-    row = db.get(NotificationDelivery, delivery_id)
+    row = db.scalar(select(NotificationDelivery).where(
+        NotificationDelivery.id == delivery_id,
+        NotificationDelivery.event_id.in_(select(NotificationEvent.id).where(notification_scope(principal))),
+    ))
     if not row:
         raise HTTPException(404, "알림 전송을 찾을 수 없습니다")
     if row.status != "failed":

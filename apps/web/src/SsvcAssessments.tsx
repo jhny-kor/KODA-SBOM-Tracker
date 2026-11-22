@@ -1,3 +1,4 @@
+import { RunDetailCard } from "./RunDetailCard";
 import { FlowSelect } from "./ScrollingSelect";
 import { useEffect, useState, type FormEvent } from "react";
 import { previewMode } from "./api";
@@ -76,8 +77,7 @@ export function SsvcAssessmentsPanel({ runId, findings, canManage }: { runId: st
     finally { setBusy(false); }
   }
 
-  return <section className="workflow-panel tracker-view" aria-label="SSVC 대응 우선순위">
-    <div className="detail-table-heading"><h3>SSVC · 대응 우선순위</h3><button className="secondary compact" disabled={busy || previewMode} onClick={() => setReload(value => value + 1)}>SSVC 새로고침</button></div>
+  return <RunDetailCard className="workflow-panel tracker-view" title="SSVC · 대응 우선순위" label="SSVC 대응 우선순위" actions={<button className="secondary compact" disabled={busy || previewMode} onClick={() => setReload(value => value + 1)}>SSVC 새로고침</button>}>
     <p>CERT/CC Deployer {result.model} · 모든 판단은 내부 결정표로 계산합니다. 같은 취약점도 서비스·환경에 따라 다르게 평가하세요. KEV 비등재·낮은 EPSS만으로 악용 근거 없음을 판단하지 마세요.</p>
     <details><summary>업무·안전 영향 입력 기준</summary><p>핵심 업무 기능(MEF)과 조직 전체 임무 실패를 구분하세요. 안전 영향과 업무 영향을 검토해 아래 조합을 선택하고 근거·가정을 기록합니다.</p><ul>
       <li>낮음: 안전 영향이 무시할 수준이며 업무 기능이 저하되거나 심각하게 제한됨.</li>
@@ -95,7 +95,7 @@ export function SsvcAssessmentsPanel({ runId, findings, canManage }: { runId: st
       </div>
       <div className="ssvc-input-row">
         <label>판단 근거·가정 또는 미평가 사유<textarea name="rationale" aria-label="SSVC 판단 근거" required maxLength={10000} rows={3} /></label>
-        <label>근거 참조 (줄마다 문서 ID·경로·URL)<textarea name="references" aria-label="SSVC 근거 참조" rows={2} maxLength={20000} /></label>
+        <label>근거 참조 (줄마다 문서 ID·경로·URL)<textarea name="references" aria-label="SSVC 근거 참조" rows={3} maxLength={20000} /></label>
       </div>
       <label>재평가 기한 (현재 시간대, 선택)<input name="reviewAt" aria-label="SSVC 재평가 기한" type="datetime-local" /></label>
       <button type="submit" className="primary">SSVC 판단 저장</button>
@@ -113,5 +113,5 @@ export function SsvcAssessmentsPanel({ runId, findings, canManage }: { runId: st
     </article>)}
     {load === "ready" && !result.items.length && <p>저장된 SSVC 판단이 없습니다. 미평가 상태입니다.</p>}
     <WorkflowPagination page={page} total={result.total} pageSize={20} label="SSVC 판단" onPage={setPage} />
-  </section>;
+  </RunDetailCard>;
 }

@@ -31,18 +31,20 @@ it("shows nested source evidence and a failed enforced criterion independently o
 });
 it("selects an immutable older revision and exports that revision", async () => {
   mount(); await screen.findByText("nested-child"); fireEvent.change(screen.getByLabelText("품질 리비전"), { target: { value: "quality-1" } });
-  await waitFor(() => expect(api.fetchQualityIssues).toHaveBeenLastCalledWith("run", "quality-1", 1, "", ""));
+  await waitFor(() => expect(api.fetchQualityIssues).toHaveBeenLastCalledWith("run", "quality-1", 1, "", "", 10));
   expect(screen.getByText(/납품 기준 v3 · 경고 모드/)).toBeInTheDocument();
   expect(screen.getByRole("link", { name: "품질 JSON" })).toHaveAttribute("href", expect.stringContaining("revisionId=quality-1"));
 });
 it("sends issue filters and pagination to the server", async () => {
   vi.mocked(api.fetchQualityIssues).mockResolvedValue({ items: [issue], total: 41, page: 1, size: 20 });
   mount(); await screen.findByText("nested-child"); fireEvent.click(screen.getByRole("button", { name: "품질 이슈 다음 페이지" }));
-  await waitFor(() => expect(api.fetchQualityIssues).toHaveBeenLastCalledWith("run", "quality-2", 2, "", ""));
+  await waitFor(() => expect(api.fetchQualityIssues).toHaveBeenLastCalledWith("run", "quality-2", 2, "", "", 10));
+  fireEvent.change(screen.getByLabelText("품질 이슈 페이지당 행 수"), { target: { value: "25" } });
+  await waitFor(() => expect(api.fetchQualityIssues).toHaveBeenLastCalledWith("run", "quality-2", 1, "", "", 25));
   fireEvent.change(screen.getByLabelText("품질 심각도"), { target: { value: "error" } });
-  await waitFor(() => expect(api.fetchQualityIssues).toHaveBeenLastCalledWith("run", "quality-2", 1, "error", ""));
+  await waitFor(() => expect(api.fetchQualityIssues).toHaveBeenLastCalledWith("run", "quality-2", 1, "error", "", 25));
   fireEvent.change(screen.getByLabelText("품질 규칙 ID"), { target: { value: "identity.missing" } });
-  await waitFor(() => expect(api.fetchQualityIssues).toHaveBeenLastCalledWith("run", "quality-2", 1, "error", "identity.missing"));
+  await waitFor(() => expect(api.fetchQualityIssues).toHaveBeenLastCalledWith("run", "quality-2", 1, "error", "identity.missing", 25));
 });
 it("reruns quality and refreshes the latest stored history", async () => {
   vi.mocked(api.createQualityRevision).mockResolvedValue(revision); mount(); await screen.findByText("nested-child");

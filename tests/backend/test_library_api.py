@@ -11,6 +11,7 @@ from sqlalchemy.pool import StaticPool
 from koda_tracker.db import Base, get_db
 from koda_tracker.library_api import library_key, package_coordinate, router
 from koda_tracker.models import AnalysisRevision, ApiToken, Environment, JobState, ProcessingState, Release, Role, RolePolicy, RunComponent, SbomRun, Service, User
+from koda_tracker.environment_admin_models import EnvironmentAdministrator
 from koda_tracker.security import current_principal
 from koda_tracker.project_catalog_models import NativeReanalysisPending
 
@@ -21,9 +22,13 @@ def context():
     Base.metadata.create_all(engine)
     with Session(engine,expire_on_commit=False) as db:
         db.add_all([Service(id="service",slug="service",name="결제 API"),Environment(id="prod",slug="prod",name="운영"),Environment(id="qa",slug="qa",name="검증"),Release(id="release",service_id="service",environment_id="prod",version="2026.10.1"),RolePolicy(role=Role.VIEWER,permissions=["runs.view"])])
+        viewer = User(id="viewer", username="viewer", role=Role.VIEWER, password_hash="unused", active=True)
+        db.add(viewer)
+        db.flush()
+        db.add_all([EnvironmentAdministrator(environment_id=env, user_id=viewer.id, assigned_by="admin") for env in ("prod", "qa")])
         db.commit()
         app=FastAPI();app.include_router(router)
-        auth={"principal":User(id="viewer",username="viewer",role=Role.VIEWER,active=True)}
+        auth={"principal":viewer}
         app.dependency_overrides[get_db]=lambda:db
         app.dependency_overrides[current_principal]=lambda:auth["principal"]
         with TestClient(app) as client:

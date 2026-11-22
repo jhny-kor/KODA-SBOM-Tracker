@@ -7,6 +7,7 @@ from functools import lru_cache
 import fcntl
 import json
 import os
+import re
 from pathlib import Path
 import sqlite3
 import stat
@@ -14,6 +15,7 @@ import tempfile
 import threading
 import weakref
 
+from .nvd_catalog_products import searchable_names
 from .streaming_nvd import read_nvd
 
 _CACHE_PREFIX = "cve-records-"
@@ -140,6 +142,28 @@ def nvd_description(record):
     return next((item.get("value", "") for item in values if isinstance(item, dict) and item.get("lang") == "en"), next((item.get("value", "") for item in values if isinstance(item, dict)), ""))
 
 
+_cve_identifier = re.compile(r"CVE-\d{4}-\d{4,}", re.I)
+_catalog_source = (
+    " FROM records AS r WHERE r.id >= 'CVE-' AND r.id < 'CVE.'"
+    " AND r.is_cve AND NOT EXISTS (SELECT 1 FROM records AS later"
+    " WHERE later.id=r.id AND later.position>r.position)"
+)
+
+
+def _search_bytes(value):
+    return value.casefold().encode("utf-8", "surrogatepass")
+
+
+def _catalog_filter(query, vendor="", product=""):
+    source = _catalog_source
+    parameters = []
+    for column, value in (("search_text", query), ("vendors", vendor), ("products", product)):
+        if value:
+            source += f" AND instr(r.{column}, ?) > 0"
+            parameters.append(_search_bytes(value))
+    return source, parameters
+
+
 class NvdRecordIndex(Mapping):
     """Retain JSON key insertion order and normalized ID last-value precedence.
 
@@ -160,7 +184,7 @@ class NvdRecordIndex(Mapping):
             self._cleanup = weakref.finalize(self, _cleanup_cache, self._temporary, self._lease_fd)
             with sqlite3.connect(self.path) as db:
                 db.execute("PRAGMA cache_size=-4096")
-                db.execute("CREATE TABLE records (source_key TEXT PRIMARY KEY, position INTEGER NOT NULL, id TEXT, record_json TEXT NOT NULL, search_text BLOB NOT NULL) WITHOUT ROWID")
+                db.execute("CREATE TABLE records (source_key TEXT PRIMARY KEY, position INTEGER NOT NULL, id TEXT, record_json TEXT NOT NULL, search_text BLOB NOT NULL, is_cve INTEGER NOT NULL, vendors BLOB NOT NULL, products BLOB NOT NULL) WITHOUT ROWID")
                 db.execute("CREATE INDEX records_by_id ON records(id, position DESC)")
                 position = 0
 
@@ -173,10 +197,19 @@ class NvdRecordIndex(Mapping):
                     nonlocal position
                     values = normalize_fn([value])
                     identifier, record = next(iter(values.items()), (None, {}))
-                    db.execute("INSERT INTO records VALUES (?, ?, ?, ?, ?) ON CONFLICT(source_key) DO UPDATE SET id=excluded.id, record_json=excluded.record_json, search_text=excluded.search_text",
-                               (json.dumps(key), position, identifier,
-                                json.dumps(record, ensure_ascii=True, separators=(",", ":")),
-                                f"{identifier} {nvd_description(record)}".casefold().encode("utf-8", "surrogatepass")))
+                    is_cve = bool(identifier and _cve_identifier.fullmatch(identifier))
+                    names = set(searchable_names(record)) if is_cve else set()
+                    vendors = "\0".join(sorted({vendor for vendor, _ in names}))
+                    products = "\0".join(sorted({product for _, product in names}))
+                    db.execute(
+                        "INSERT INTO records VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(source_key) "
+                        "DO UPDATE SET id=excluded.id, record_json=excluded.record_json, search_text=excluded.search_text,"
+                        " is_cve=excluded.is_cve, vendors=excluded.vendors, products=excluded.products",
+                        (json.dumps(key), position, identifier,
+                         json.dumps(record, ensure_ascii=True, separators=(",", ":")),
+                         _search_bytes(f"{identifier} {nvd_description(record)}"), is_cve,
+                         _search_bytes(vendors), _search_bytes(products)),
+                    )
                     position += 1
 
                 read_nvd(Path(source), on_section=reset, on_entry=entry, allow_root_list=True)
@@ -241,6 +274,29 @@ class NvdRecordIndex(Mapping):
             for identifier, record_json in cursor:
                 yield identifier, json.loads(record_json)
 
+
+    def catalog_page(self, query, offset, size):
+        """Count in SQLite and decode only the displayed catalog page."""
+        source, parameters = _catalog_filter(query)
+        with self._connection() as db:
+            total = db.execute("SELECT count(*)" + source, parameters).fetchone()[0]
+            if offset >= total:
+                return total, []
+            rows = db.execute("SELECT r.id, r.record_json" + source + " ORDER BY r.id LIMIT ? OFFSET ?",
+                              [*parameters, size, offset])
+            return total, [(identifier, json.loads(raw)) for identifier, raw in rows]
+
+    def catalog_candidates(self, query, vendor, product):
+        """Prefilter candidates without decoding unrelated CVEs.
+
+        Vendor and product checks are independent here. The API still checks
+        both against the same product and evaluates its version constraints.
+        """
+        source, parameters = _catalog_filter(query, vendor, product)
+        with self._connection() as db:
+            rows = db.execute("SELECT r.id, r.record_json" + source + " ORDER BY r.id", parameters)
+            for identifier, raw in rows:
+                yield identifier, json.loads(raw)
 
     def values(self):
         for _identifier, record in self.items():

@@ -91,3 +91,18 @@ it("shows historical EPSS with date and percentile without implying fresh eviden
   render(<EpssEvidence finding={{ epssObservedScore: .7, epssObservedPercentile: .95, epssObservedDate: "2026-10-01", epssStatus: "stale" }} />);
   expect(screen.getByText(/EPSS 70.00% · 백분위 95.00% · 2026-10-01 · 과거 관측값 \(stale\)/)).toBeInTheDocument();
 });
+
+it("keeps equal-height evidence fields and preserves drafts when the card is closed", async () => {
+  render(<SsvcAssessmentsPanel runId="run" findings={[finding]} canManage />);
+  await waitFor(() => expect(screen.getByRole("button", { name: "SSVC 판단 저장" })).toBeEnabled());
+  const rationale = screen.getByRole("textbox", { name: "SSVC 판단 근거" });
+  expect(screen.getByRole("textbox", { name: "SSVC 근거 참조" })).toHaveAttribute("rows", rationale.getAttribute("rows"));
+  fireEvent.change(rationale, { target: { value: "검토 중인 판단 근거" } });
+  const toggle = screen.getByRole("button", { name: "SSVC · 대응 우선순위" });
+  fireEvent.click(toggle);
+  expect(toggle).toHaveAttribute("aria-expanded", "false");
+  expect(rationale).not.toBeVisible();
+  fireEvent.click(toggle);
+  expect(rationale).toBeVisible();
+  expect(rationale).toHaveValue("검토 중인 판단 근거");
+});

@@ -175,6 +175,7 @@ def test_existing_database_survives_real_startup_restart_and_new_administration(
             with TestClient(main.app) as client:
                 _assert_existing_records_preserved(upgraded_engine, before)
                 assert "environment_administrators" in inspect(upgraded_engine).get_table_names()
+                assert "run_component_corrections" in inspect(upgraded_engine).get_table_names()
                 assert "sbom_document_records" in inspect(upgraded_engine).get_table_names()
                 assert artifact.read_bytes() == original
                 with sessions() as session:
@@ -182,6 +183,10 @@ def test_existing_database_survives_real_startup_restart_and_new_administration(
                     ldap = main._ldap_row_config(session.get(LdapSettings, "default"))
                     assert ldap.host == "directory.example.invalid" and ldap.bind_password == "fixture LDAP bind password"
                 client.cookies.set("koda_session", "legacy-reader-session")
+                if restart == 0:
+                    assert client.get("/api/v1/sbom-runs/old-run").status_code == 404
+                    assert client.get("/api/v1/libraries").json()["total"] == 0
+                    client.cookies.set("koda_session", "legacy-admin-session")
                 detail = client.get("/api/v1/sbom-runs/old-run")
                 assert detail.status_code == 200
                 assert detail.json()["filename"] == "기존-업로드-SBOM.json"

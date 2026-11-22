@@ -1,5 +1,9 @@
+import ComponentAddForm from "./ComponentAddForm";
+import ComponentInspectorRow from "./ComponentInspectorRow";
+import { DetailPagination } from "./DetailPagination";
+import { RunDetailCard } from "./RunDetailCard";
 import { ResizableTable } from "./ResizableTable";
-import { Fragment, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { Fragment, useCallback, useDeferredValue, useEffect, useId, useMemo, useRef, useState, type FormEvent } from "react";
 import { demoMode, previewMode, standaloneMode, activateVulnerabilityBundle, approveUser, archiveRun, createApiToken, createAnalysis, createEnvironment, createService, createUser, deleteRun, deleteUser, fetchAuditEvents, fetchApiTokens, fetchCatalogs, fetchComparison, fetchJob, fetchLdapSettings, fetchRun, fetchRunComponents, fetchRunFindings, fetchRuns, fetchUsers, fetchVulnerabilityBundles, login, patchEnvironment, patchService, patchUser, logout, register, resumeSession, revokeApiToken, updateLdapSettings, uploadRun, syncVulnerabilityBundles, fetchRolePolicies, updateRolePolicies, setForbiddenHandler } from "./api";
 import { demoChanges, demoLdapSettings, demoRolePolicyCatalog, demoRuns } from "./demo";
 import { fetchActiveCveBaseline } from "./api";
@@ -18,7 +22,6 @@ import { OfflineIntelligencePanel, OfflineRunEvidence } from "./OfflineIntellige
 import { SsvcAssessmentsPanel } from "./SsvcAssessments";
 import { EpssEvidence } from "./EpssEvidence";
 import { CpeCoverage } from "./CpeCoverage";
-import { AssetEvidence } from "./AssetEvidence";
 import { OracleHomeEvidence } from "./OracleHomeEvidence";
 import { latestAnalysisRevision } from "./analysisRevision";
 import { SbomQualityPanel } from "./SbomQuality";
@@ -33,7 +36,7 @@ import ExternalReadTokens from "./ExternalReadTokens";
 import JavaUpgradePanel from "./JavaUpgradePanel";
 import OfflineUpgradePanel from "./OfflineUpgradePanel";
 import OfficialCompatibilityData from "./OfficialCompatibilityData";
-import { ComparisonAIBriefing, IdentityAISuggestions, SharedAISettingsPanel, TrackerAISummary } from "./SharedAI";
+import { ComparisonAIBriefing, SharedAISettingsPanel, TrackerAISummary } from "./SharedAI";
 import { analysisAvailable, analysisUnavailableReason } from "./analysisAvailability";
 import { canPage, dataAccess, hasPermissions, pageForPermissions, permissionSet, type Page } from "./permissions";
 import type { AnalysisRevisionSummary, AuditEvent, AuthUser, CatalogItem, Comparison, ComponentChange, ComponentSnapshot, LdapSettings, RecordChange, RolePolicy, SbomRun, SbomRunDetail, UserSummary, VulnerabilityBundle } from "./types";
@@ -639,7 +642,7 @@ function ComparePage({ runs, can }: { runs: SbomRun[]; can: (permission: string)
       {tab === "components" ? (
         <>
           <div className="table-frame diff-table-frame">
-            <DetailPagination label="구성요소 비교 페이지당 행 수" total={changes.length} page={visibleComponentPage} pageSize={componentPageSize} onPage={setComponentPage} onPageSize={size => { setComponentPageSize(size); setComponentPage(1); }} />
+            <DetailPagination label="구성요소 비교" total={changes.length} page={visibleComponentPage} pageSize={componentPageSize} onPage={setComponentPage} onPageSize={size => { setComponentPageSize(size); setComponentPage(1); }} />
             <div className="table-scroll"><ResizableTable className="diff-table">
             <thead><tr><th>변화</th><th>구성요소</th><th>기준 버전</th><th>비교 버전</th><th>PURL</th></tr></thead>
             <tbody>{visibleChanges.map((change) => (<tr key={change.identityKey} className={selected?.identityKey === change.identityKey ? "selected" : ""} onClick={() => setSelected(change)}>
@@ -685,7 +688,7 @@ function ComparisonRecordsTable({ kind, rows }: { kind: string; rows: RecordChan
   const offset = (visiblePage - 1) * pageSize;
   const visibleRows = rows.slice(offset, offset + pageSize);
   const isVulnerability = kind === "취약점";
-  return (<><>{kind === "정책 위반" && <p className="form-message">정책 위반은 분석 리비전에 저장된 판정 결과의 추가·해소·변경 내역입니다. KODA 정책 버전과 예외 변경도 비교에 반영됩니다. 기존 기존 외부 시스템 결과는 과거 리비전에 보존됩니다.</p>}</><div className="table-frame diff-table-frame"><DetailPagination label={`${kind} 비교 페이지당 행 수`} total={rows.length} page={visiblePage} pageSize={pageSize} onPage={setPage} onPageSize={size => { setPageSize(size); setPage(1); }} /><div className="table-scroll"><ResizableTable className="diff-table records-table"><thead><tr><th>변화</th><th>{isVulnerability ? "식별자" : "규칙"}</th><th>구성요소</th>{isVulnerability && <><th>CVSS</th><th>KEV</th></>}<th>상태</th></tr></thead><tbody>{rows.length ? (visibleRows.map((row, index) => {
+  return (<><>{kind === "정책 위반" && <p className="form-message">정책 위반은 분석 리비전에 저장된 판정 결과의 추가·해소·변경 내역입니다. KODA 정책 버전과 예외 변경도 비교에 반영됩니다. 기존 기존 외부 시스템 결과는 과거 리비전에 보존됩니다.</p>}</><div className="table-frame diff-table-frame"><DetailPagination label={`${kind} 비교`} total={rows.length} page={visiblePage} pageSize={pageSize} onPage={setPage} onPageSize={size => { setPageSize(size); setPage(1); }} /><div className="table-scroll"><ResizableTable className="diff-table records-table"><thead><tr><th>변화</th><th>{isVulnerability ? "식별자" : "규칙"}</th><th>구성요소</th>{isVulnerability && <><th>CVSS</th><th>KEV</th></>}<th>상태</th></tr></thead><tbody>{rows.length ? (visibleRows.map((row, index) => {
     const record = row.record || row.target || row.base || {};
     const status = severityValue(record);
     return (<tr key={`${row.change}-${index}`}><td><span className={`change ${row.change === "added" ? "추가" : row.change === "removed" ? "제거" : "버전-변경"}`}>{row.change === "added" ? "신규" : row.change === "removed" ? "해소" : "변경"}</span></td><td className="mono">{String(record.canonicalId || record.id || record.policyName || record.policyId || record.rule || "-")}</td><td>{String(record.component || "-")}</td>{isVulnerability && <><td>{cvssScore(record)}</td><td>{record.kev ? "KEV" : "-"}</td></>}<td>{isVulnerability ? <span className={`severity-pill ${severityClass(status)}`}>{severityLabel(status)}</span> : record.suppressed ? "기한부 예외" : record.action === "fail" ? "위반" : record.action === "warn" ? "경고" : String(status)}</td></tr>);}) ): (<tr><td colSpan={isVulnerability ? 6 : 4}>변화가 없습니다.</td></tr>)}</tbody></ResizableTable></div></div></>);}
@@ -769,11 +772,6 @@ function UploadModal({
     </form>
   </section></div>);}
 
-function DetailPagination({ total, page, pageSize, onPage, onPageSize, label = "상세 페이지당 행 수" }: { total: number; page: number; pageSize: number; onPage: (page: number) => void; onPageSize: (size: number) => void; label?: string;}) {
-  const pageCount = Math.max(1, Math.ceil(total / pageSize));
-  return (<div className="detail-pagination"><span>전체 {total.toLocaleString()}건 · {page}/{pageCount}페이지</span><div><select aria-label={label} value={pageSize} onChange={(event) => onPageSize(Number(event.target.value))}><option value={10}>10개씩 보기</option><option value={25}>25개씩 보기</option><option value={50}>50개씩 보기</option><option value={100}>100개씩 보기</option></select><button type="button" aria-label="상세 이전 페이지" disabled={page <= 1} onClick={() => onPage(page - 1)}>‹</button><button type="button" aria-label="상세 다음 페이지" disabled={page >= pageCount} onClick={() => onPage(page + 1)}>›</button></div></div>);
-}
-
 function workbookComponentNotes(component: ComponentSnapshot) {
   if (!Array.isArray(component.properties)) return "-";
   const notes = [];
@@ -795,12 +793,20 @@ function RunDetail({ run, onClose, onChanged, username, onOpenLibrary,
   const [archiveReason, setArchiveReason] = useState("");
   const [detail, setDetail] = useState<SbomRunDetail | null>(null);
   const [componentQuery, setComponentQuery] = useState("");
-  const [identityKey, setIdentityKey] = useState("");
+  const [editingComponentId, setEditingComponentId] = useState("");
+  const [addingComponent, setAddingComponent] = useState(false);
+  const addComponentFormId = useId();
+  const [showRemovedComponents, setShowRemovedComponents] = useState(false);
+  const [componentRefresh, setComponentRefresh] = useState(0);
+  const [componentMessage, setComponentMessage] = useState("");
+  const [componentLoadError, setComponentLoadError] = useState("");
   const [componentPage, setComponentPage] = useState(1);
   const [componentPageSize, setComponentPageSize] = useState(10);
   const [findingPage, setFindingPage] = useState(1);
   const [findingPageSize, setFindingPageSize] = useState(10);
-  const [componentResult, setComponentResult] = useState<{ items: ComponentSnapshot[]; total: number }>({ items: [], total: 0 });
+  const [componentResult, setComponentResult] = useState({
+    items: [] as ComponentSnapshot[], total: 0, removedTotal: 0, showingRemoved: false,
+  });
   const [findingResult, setFindingResult] = useState<{ items: Record<string, unknown>[]; total: number }>({ items: [], total: 0 });
   const deferredComponentQuery = useDeferredValue(componentQuery.trim());
   const latestAnalysis = latestAnalysisRevision(detail?.analyses);
@@ -811,11 +817,21 @@ function RunDetail({ run, onClose, onChanged, username, onOpenLibrary,
     return () => { cancelled = true;};}, [run.id]);
   useEffect(() => {
     let cancelled = false;
-    void fetchRunComponents(run.id, componentPage, componentPageSize, deferredComponentQuery)
-      .then((result) => { if (!cancelled) setComponentResult(result); })
-      .catch((error) => { if (!cancelled) setMessage(error instanceof Error ? error.message : "구성요소를 불러오지 못했습니다."); });
+    void fetchRunComponents(run.id, componentPage, componentPageSize, deferredComponentQuery, showRemovedComponents)
+      .then((result) => {
+        if (cancelled) return;
+        setComponentLoadError("");
+        const lastPage = Math.max(1, Math.ceil(result.total / componentPageSize));
+        if (componentPage > lastPage) setComponentPage(lastPage);
+        setComponentResult({
+          items: result.items, total: result.total, removedTotal: result.removedTotal ?? 0, showingRemoved: showRemovedComponents,
+        });
+      })
+      .catch((error) => {
+        if (!cancelled) setComponentLoadError(error instanceof Error ? error.message : "구성요소를 불러오지 못했습니다.");
+      });
     return () => { cancelled = true; };
-  }, [componentPage, componentPageSize, deferredComponentQuery, run.id]);
+  }, [componentPage, componentPageSize, deferredComponentQuery, componentRefresh, run.id, showRemovedComponents]);
   useEffect(() => {
     let cancelled = false;
     void fetchRunFindings(run.id, findingPage, findingPageSize, latestAnalysisId)
@@ -838,7 +854,9 @@ function RunDetail({ run, onClose, onChanged, username, onOpenLibrary,
   const workbookMetadata = detail?.workbookMetadata;
   const scheduled = current.source === "scheduled";
   const sourceMetadata = current.sourceMetadata || {};
-  const components = componentResult.items;
+  const loadingComponentView = componentResult.showingRemoved !== showRemovedComponents;
+  const components = loadingComponentView ? [] : componentResult.items;
+  const canCorrectComponent = !previewMode && current.state !== "archived" && can("runs.view");
   const findings = analysisAvailable(current) ? findingResult.items : [];
   const showCompletedRunTools = !previewMode && current.state === "completed" && can("runs.view");
   const componentPageCount = Math.max(1, Math.ceil(componentResult.total / componentPageSize));
@@ -860,28 +878,94 @@ function RunDetail({ run, onClose, onChanged, username, onOpenLibrary,
     {current.note && <p className="preview-note">메모: {current.note}</p>}
     <RunMetadataEditor key={`metadata-${current.id}`} runId={current.id} onSaved={async () => { const refreshed = await fetchRun(current.id); setDetail(refreshed); onChanged(); }} />
     </section>
-    <section className="run-detail-group" aria-labelledby="run-component-inspector">
-    <div className="detail-table-heading"><h3 id="run-component-inspector">구성요소 검사기 ({componentResult.total.toLocaleString()})</h3><label className="detail-search"><Icon name="search" /><input aria-label="구성요소 검색" value={componentQuery} onChange={(event) => { setComponentQuery(event.target.value); setComponentPage(1); }} placeholder="이름, 버전, PURL 검색" /></label></div><div className="table-scroll"><ResizableTable className="component-inspector-table"><thead><tr><th>이름</th><th>버전</th><th>{workbookMetadata ? "구분 · 비고" : "PURL"}</th><th>라이선스</th></tr></thead><tbody>{components.map((component) => (<Fragment key={component.identityKey}><tr><td>{onOpenLibrary ? <button className="environment-row-button" onClick={() => onOpenLibrary(component.name)}><ScrollingText focusable={false}>{component.name}</ScrollingText></button> : <ScrollingText>{component.name}</ScrollingText>}<AssetEvidence component={component} /></td><td><ScrollingText>{component.version || "-"}</ScrollingText></td><td className="mono"><ScrollingText>{workbookMetadata ? workbookComponentNotes(component) : component.purl || component.bomRef || "-"}</ScrollingText>{!previewMode && !component.purl && current.state === "completed" && <button type="button" className="secondary cpe-candidate-button" aria-expanded={identityKey === component.identityKey} onClick={() => setIdentityKey(key => key === component.identityKey ? "" : component.identityKey)}>CPE 식별 후보</button>}</td><td>{component.licenses?.length ? component.licenses.map((license, index) => <ScrollingText key={index}>{typeof license === "string" ? license : String((license as { license?: { id?: string; name?: string } }).license?.id || (license as { license?: { id?: string; name?: string } }).license?.name || "식별 불가")}</ScrollingText>) : "-"}</td></tr>{identityKey === component.identityKey && <tr><td colSpan={4}><IdentityAISuggestions key={`${current.id}:${component.identityKey}`} runId={current.id} identityKey={component.identityKey} /></td></tr>}</Fragment>))}{!components.length && (<tr><td colSpan={4}>{deferredComponentQuery ? "검색 조건에 맞는 구성요소가 없습니다." : "구성요소 상세가 없습니다."}</td></tr>)}</tbody></ResizableTable></div><DetailPagination total={componentResult.total} page={currentComponentPage} pageSize={componentPageSize} onPage={setComponentPage} onPageSize={(size) => { setComponentPageSize(size); setComponentPage(1); }} />
-    </section>
-    <section className="run-detail-group" aria-labelledby="run-finding-inspector">
-    <h3 id="run-finding-inspector">취약점 검사기 ({analysisAvailable(current) ? findingResult.total.toLocaleString() : "미평가"})</h3><div className="table-scroll"><ResizableTable className="finding-inspector-table"><thead><tr><th>취약점 ID</th><th>심각도</th><th>구성요소</th><th>CVSS</th><th>KEV</th><th>CWE</th><th>EPSS</th><th>제안 버전</th><th>VEX 검토</th></tr></thead><tbody>{findings.map((finding, index) => { const severity = String(finding.severity || "unknown"); return (<tr key={`${String(finding.canonicalId || finding.id || "finding")}-${(currentFindingPage - 1) * findingPageSize + index}`}><td className="mono">{String(finding.canonicalId || finding.id || "식별자 없음")}{finding.sourceKind === "private_vulnerability" && <small className="workflow-id"><ScrollingText>{["사내 취약점", finding.title, finding.description].filter(Boolean).join(" · ")}</ScrollingText></small>}</td><td><span className={`severity-pill ${severityClass(severity)}`}>{severityLabel(severity)}</span></td><td className="mono"><ScrollingText>{String(finding.componentName || finding.component || "-")}</ScrollingText><OracleHomeEvidence value={finding.oracleHomeEvidence} /></td><td>{cvssScore(finding)}</td><td>{finding.kev ? "KEV" : "-"}</td><td>{Array.isArray(finding.cwes) && finding.cwes.length ? [...new Set(finding.cwes.map(String))].map(value => <ScrollingText key={value}>{`CWE-${value}`}</ScrollingText>) : "확인 안 됨"}</td><td><EpssEvidence finding={finding} stacked /></td><td>{fixedInValues(finding).map((version, versionIndex) => <ScrollingText key={versionIndex}>{version}</ScrollingText>)}</td><td>{finding.vex && typeof finding.vex === "object" ? <span title={String((finding.vex as Record<string, unknown>).detail || "")}>{(finding.vex as Record<string, unknown>).suppressed ? "승인된 영향 없음·오탐 (원시 발견 보존)" : `승인된 ${String((finding.vex as Record<string, unknown>).state || "검토")}`}</span> : "미검토"}</td></tr>);})}{!findings.length && (<tr><td colSpan={9}>{analysisAvailable(current) ? "취약점 결과가 없습니다." : analysisUnavailableReason(current)}</td></tr>)}</tbody></ResizableTable></div><DetailPagination total={findingResult.total} page={currentFindingPage} pageSize={findingPageSize} onPage={setFindingPage} onPageSize={(size) => { setFindingPageSize(size); setFindingPage(1); }} />
-    </section>
-    <section className="run-detail-group" aria-label="정책 및 분석 요약">
-    {showCompletedRunTools && analysisAvailable(current) && <TrackerAISummary key={`ai-${current.id}`} runId={current.id} />}
-    <NativePolicyResult result={current} runId={current.id} />
-    </section>
+    <RunDetailCard title={`구성요소 검사기${loadingComponentView ? "" : ` (${componentResult.total.toLocaleString()})`}`} actions={
+      <div className="component-inspector-actions">
+        {(componentResult.removedTotal > 0 || showRemovedComponents) && <button type="button" className="secondary compact"
+          aria-pressed={showRemovedComponents} onClick={() => {
+            setShowRemovedComponents(value => !value);
+            setComponentLoadError("");
+            setEditingComponentId("");
+            setComponentPage(1);
+          }}>삭제된 항목 ({componentResult.removedTotal.toLocaleString()})</button>}
+        {canCorrectComponent && <button type="button" className="secondary compact"
+          aria-expanded={addingComponent} aria-controls={addingComponent ? addComponentFormId : undefined} onClick={() => {
+            setAddingComponent(open => !open);
+            setEditingComponentId("");
+            setComponentMessage("");
+          }}>+ 추가</button>}
+        <label className="detail-search"><Icon name="search" /><input aria-label="구성요소 검색" value={componentQuery}
+          onChange={(event) => { setComponentQuery(event.target.value); setComponentPage(1); }} placeholder="이름, 버전, PURL 검색" /></label>
+      </div>
+    }>
+    {canCorrectComponent && addingComponent && <ComponentAddForm id={addComponentFormId} runId={current.id}
+      onCancel={() => setAddingComponent(false)} onSaved={() => {
+        setAddingComponent(false);
+        setShowRemovedComponents(false);
+        setComponentQuery("");
+        setComponentPage(1);
+        setComponentMessage("구성요소를 추가했습니다.");
+        setComponentRefresh(value => value + 1);
+      }} />}
+    {componentMessage && <p role="status" className="form-message">{componentMessage}</p>}
+    {components.length > 0 && componentLoadError && <p role="alert" className="form-message">{componentLoadError}</p>}
+    <div className="table-scroll" role="region" aria-label="구성요소 표 가로 스크롤" tabIndex={0}>
+      <ResizableTable className="component-inspector-table">
+        <thead><tr><th>이름</th><th>버전</th><th>{workbookMetadata ? "구분 · 비고" : "PURL"}</th><th>라이선스</th><th>CPE 식별 후보</th></tr></thead>
+        <tbody>
+          {components.map(component => <ComponentInspectorRow
+            key={component.id ?? component.identityKey}
+            runId={current.id}
+            component={component}
+            identifier={workbookMetadata ? workbookComponentNotes(component) : component.purl || component.bomRef || "-"}
+            canEdit={canCorrectComponent}
+            editing={canCorrectComponent && Boolean(component.id && editingComponentId === component.id)}
+            showCpeCandidates={!previewMode && current.state === "completed" && !component.purl}
+            onOpenLibrary={onOpenLibrary}
+            onEdit={id => { setComponentMessage(""); setAddingComponent(false); setEditingComponentId(id); }}
+            onSaved={(id, saved) => {
+              setEditingComponentId(previous => previous === id ? "" : previous);
+              if (saved.removed === undefined) {
+                setComponentResult(previous => ({
+                  ...previous,
+                  items: previous.items.map(item => item.id === id ? { ...item, ...saved } : item),
+                }));
+                setComponentMessage("구성요소 표시 정보를 저장했습니다.");
+              } else {
+                setComponentResult(previous => ({
+                  ...previous, items: previous.items.filter(item => item.id !== id),
+                }));
+                setComponentMessage(saved.removed ? "구성요소를 검사기에서 삭제했습니다. 삭제된 항목에서 복원할 수 있습니다." : "구성요소를 복원했습니다.");
+              }
+              setComponentRefresh(value => value + 1);
+            }}
+          />)}
+          {!components.length && <tr><td colSpan={5}>{
+            componentLoadError ? <span role="alert">{componentLoadError}</span>
+              : loadingComponentView ? "구성요소를 불러오는 중입니다." : deferredComponentQuery ? "검색 조건에 맞는 구성요소가 없습니다."
+              : showRemovedComponents ? "삭제된 구성요소가 없습니다." : "구성요소 상세가 없습니다."
+          }</td></tr>}
+        </tbody>
+      </ResizableTable>
+    </div>
+    {!loadingComponentView && <DetailPagination total={componentResult.total} page={currentComponentPage} pageSize={componentPageSize} onPage={setComponentPage} onPageSize={(size) => { setComponentPageSize(size); setComponentPage(1); }} />}
+    </RunDetailCard>
+    <RunDetailCard title={`취약점 검사기 (${analysisAvailable(current) ? findingResult.total.toLocaleString() : "미평가"})`}>
+    <div className="table-scroll"><ResizableTable className="finding-inspector-table"><thead><tr><th>취약점 ID</th><th>심각도</th><th>구성요소</th><th>CVSS</th><th>KEV</th><th>CWE</th><th>EPSS</th><th>제안 버전</th><th>VEX 검토</th></tr></thead><tbody>{findings.map((finding, index) => { const severity = String(finding.severity || "unknown"); return (<tr key={`${String(finding.canonicalId || finding.id || "finding")}-${(currentFindingPage - 1) * findingPageSize + index}`}><td className="mono">{String(finding.canonicalId || finding.id || "식별자 없음")}{finding.sourceKind === "private_vulnerability" && <small className="workflow-id"><ScrollingText>{["사내 취약점", finding.title, finding.description].filter(Boolean).join(" · ")}</ScrollingText></small>}</td><td><span className={`severity-pill ${severityClass(severity)}`}>{severityLabel(severity)}</span></td><td className="mono"><ScrollingText>{String(finding.componentName || finding.component || "-")}</ScrollingText><OracleHomeEvidence value={finding.oracleHomeEvidence} /></td><td>{cvssScore(finding)}</td><td>{finding.kev ? "KEV" : "-"}</td><td>{Array.isArray(finding.cwes) && finding.cwes.length ? [...new Set(finding.cwes.map(String))].map(value => <ScrollingText key={value}>{`CWE-${value}`}</ScrollingText>) : "확인 안 됨"}</td><td><EpssEvidence finding={finding} stacked /></td><td>{fixedInValues(finding).map((version, versionIndex) => <ScrollingText key={versionIndex}>{version}</ScrollingText>)}</td><td>{finding.vex && typeof finding.vex === "object" ? <span title={String((finding.vex as Record<string, unknown>).detail || "")}>{(finding.vex as Record<string, unknown>).suppressed ? "승인된 영향 없음·오탐 (원시 발견 보존)" : `승인된 ${String((finding.vex as Record<string, unknown>).state || "검토")}`}</span> : "미검토"}</td></tr>);})}{!findings.length && (<tr><td colSpan={9}>{analysisAvailable(current) ? "취약점 결과가 없습니다." : analysisUnavailableReason(current)}</td></tr>)}</tbody></ResizableTable></div><DetailPagination total={findingResult.total} page={currentFindingPage} pageSize={findingPageSize} onPage={setFindingPage} onPageSize={(size) => { setFindingPageSize(size); setFindingPage(1); }} />
+    </RunDetailCard>
+    {showCompletedRunTools && analysisAvailable(current) && <RunDetailCard title="공통 AI 분석 요약"><TrackerAISummary key={`ai-${current.id}`} runId={current.id} /></RunDetailCard>}
+    <NativePolicyResult result={current} runId={current.id} inRunDetail />
     <SbomQualityPanel runId={current.id} analysisId={latestAnalysisId} canRerun={can("analysis.create")} canViewProfiles={can("policies.view") || can("policies.manage")} canManage={can("policies.manage")} archived={current.state === "archived"} />
     {showCompletedRunTools && <>
       <JavaUpgradePanel key={`java-${current.id}`} runId={current.id} serviceId={current.service.id} canManage={can("catalog.manage")} />
       <OfflineUpgradePanel key={`upgrade-${current.id}`} runId={current.id} canManage={can("catalog.manage")} />
     </>}
     <CpeCoverage analysis={latestAnalysis} loading={!detail} collectionCoverage={detail?.collectionCoverage} collectionCoverageState={detail?.collectionCoverageState} />
-    <section className="run-detail-group" aria-labelledby="run-analysis-history">
-    <h3 id="run-analysis-history">분석 리비전</h3><ul className="paths">{detail?.analyses?.length ? (detail.analyses.map((analysis) => (<li key={analysis.id}>r{analysis.sequence} · {jobStateLabel(analysis.state)} ·{" "}
+    <RunDetailCard title="분석 리비전">
+    <ul className="paths">{detail?.analyses?.length ? (detail.analyses.map((analysis) => (<li key={analysis.id}>r{analysis.sequence} · {jobStateLabel(analysis.state)} ·{" "}
                 {dataBaselineLabel(preferredCveDate(analysis.cveDataAsOf, analysis.dataAsOf), "CVE 기준일 확인 필요")} · 취약 구성요소 {analysisAvailable(analysis) && analysis.vulnerableComponentCount != null ? `${analysis.vulnerableComponentCount.toLocaleString()}개` : "미평가"}{analysis.error ? ` · ${analysis.error}` : ""} · 정책 {analysis.policyVersion ? `v${analysis.policyVersion}` : "-"} · {analysis.policyState === "completed" ? "평가 완료" : analysis.policyState === "failed" ? "평가 실패" : "미평가"}{analysis.policyError ? ` · ${analysis.policyError}` : ""}<AnalysisPolicyHistory analysis={analysis} runId={current.id} /></li>) )
           ): (<li>상세를 불러오는 중이거나 분석 리비전이 없습니다.</li>)}</ul>
-    </section>
-              {(can("metadata.view") || can("metadata.manage")) && <PackageMetadataPanel runId={current.id} canManage={can("metadata.manage")} />}
+    </RunDetailCard>
+    {(can("metadata.view") || can("metadata.manage")) && <PackageMetadataPanel runId={current.id} canManage={can("metadata.manage")} />}
     {can("metadata.view") && <OfflineRunEvidence key={`offline-${current.id}`} runId={current.id} canRespond={can("vex.manage")} canViewResponses={can("vex.view")} />}
     {(can("ssvc.view") || can("ssvc.manage")) && <SsvcAssessmentsPanel key={`ssvc-${current.id}`} runId={current.id} findings={findings} canManage={can("ssvc.manage")} />}
     {(can("vex.view") || can("vex.manage") || can("vex.approve")) && <VexReviewsPanel key={`vex-${current.id}`} runId={current.id} findings={findings} username={username} canManage={can("vex.manage")} canApprove={can("vex.approve")} />}
@@ -1172,19 +1256,19 @@ export function SettingsPage({ users, services, environments = [], tokens, ldapS
   const settingsTabs = useMemo(() => {
     const tabs: { id: SettingsTab; label: string; icon: string }[] = [];
     if (canUsers || canTokens) tabs.push({ id: "users", label: "사용자 관리", icon: "user" });
+    if (canRoles || canPolicyEdit) tabs.push({ id: "roles", label: "권한 관리", icon: "settings" });
     if (canProjects) tabs.push({ id: "projects", label: "프로젝트 관리", icon: "integration" });
+    if (canServices) tabs.push({ id: "services", label: "서비스·환경", icon: "service" });
+    if (isAdmin) tabs.push({ id: "environment-admins", label: "환경별 관리자", icon: "user" });
     if (canSbomPolicies || canSbomPolicyManage) tabs.push({ id: "sbom-policies", label: "SBOM 정책", icon: "settings" });
     if (canReanalysis || canReanalysisManage) tabs.push({ id: "reanalysis", label: "재분석 일정", icon: "settings" });
     if (canNotifications || canNotificationManage) tabs.push({ id: "notifications", label: "알림함", icon: "audit" });
-    if (canServices) tabs.push({ id: "services", label: "서비스·환경", icon: "service" });
-    if (canRoles || canPolicyEdit) tabs.push({ id: "roles", label: "권한 관리", icon: "settings" });
-    if (isAdmin) tabs.push({ id: "environment-admins", label: "환경별 관리자", icon: "user" });
     if (canExternalData || canPrivateData || canMetadataData || canCveData) tabs.push({ id: "vulnerability", label: "취약점 데이터", icon: "vulnerability" });
-    if (isAdmin && canAudit) tabs.push({ id: "audit", label: "감사 로그", icon: "audit" });
     if (!previewMode && (canMetadata || canMetadataManage)) tabs.push({ id: "compatibility-data", label: "공식 호환성 자료", icon: "integration" });
     if (canServices && canTokens) tabs.push({ id: "integration", label: "연동 설정", icon: "integration" });
     if (isAdmin && !previewMode) tabs.push({ id: "shared-ai", label: "공통 AI", icon: "integration" });
     if (isAdmin) tabs.push({ id: "ldap", label: "LDAP 로그인", icon: "lock" });
+    if (isAdmin && canAudit) tabs.push({ id: "audit", label: "감사 로그", icon: "audit" });
     return tabs;
   }, [canExternalData, canPrivateData, canMetadata, canMetadataManage, canMetadataData, canCveData, canProjects, canReanalysis, canReanalysisManage, canNotifications, canNotificationManage, canSbomPolicies, canSbomPolicyManage, canAudit, canPolicyEdit, canRoles, canServices, canTokens, canUsers, isAdmin]);
   useEffect(
@@ -1638,7 +1722,7 @@ export default function App() {
               표시합니다.
             </span></div>)}{content}</main>
     {uploadOpen && canUpload && (<UploadModal services={services} environments={environments} onClose={() => setUploadOpen(false)} onUploaded={(runId) => { setUploadOpen(false); void loadData(authUser); openRunById(runId);}} />)}
-    {selectedRun && (<RunDetail run={selectedRun} username={authUser?.username}
+    {selectedRun && (<RunDetail key={selectedRun.id} run={selectedRun} username={authUser?.username}
           onOpenLibrary={query => { setLibraryQuery(query); closeRun(); navigate("libraries"); }}
           can={canRunAction} onClose={closeRun} onChanged={() => void loadData(authUser)} />)}
   </div>);}

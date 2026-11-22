@@ -1,3 +1,4 @@
+import { RunDetailCard } from "./RunDetailCard";
 import { useEffect, useState, type FormEvent } from "react";
 import { request } from "./api";
 import { formatSeoulDateTime } from "./format";
@@ -17,11 +18,9 @@ type BatchSummary = { id: string; createdAt: string; ecosystem: Engine; coordina
 type Batch = BatchSummary & { platform: { server: string; os: string; architecture: string }; currentVersions: string[]; candidates: Candidate[]; orderingLimited: boolean };
 
 export default function OfflineUpgradePanel({ runId, canManage }: { runId: string; canManage: boolean }) {
-  const [open, setOpen] = useState(false);
-  return <details className="run-metadata-section" onToggle={event => setOpen(event.currentTarget.open)}>
-    <summary>폐쇄망 후보 버전 일괄 검토</summary>
-    {open && <UpgradeForm runId={runId} canManage={canManage} />}
-  </details>;
+  return <RunDetailCard title="폐쇄망 후보 버전 일괄 검토" initiallyExpanded={false}>
+    <UpgradeForm runId={runId} canManage={canManage} />
+  </RunDetailCard>;
 }
 
 function UpgradeForm({ runId, canManage }: { runId: string; canManage: boolean }) {
@@ -105,7 +104,7 @@ function UpgradeForm({ runId, canManage }: { runId: string; canManage: boolean }
     finally { setBusy(false); }
   }
 
-  return <div className="run-metadata-form">
+  return <div className="run-metadata-form run-review-form">
     <p className="muted">이 회차를 배포 기준으로 사용합니다. 같은 서비스·환경에 반입한 후보 SBOM과 검토 근거를 대조합니다.</p>
     {error && <p className="form-message" role="alert">{error}</p>}
     {context && <>

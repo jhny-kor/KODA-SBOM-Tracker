@@ -35,11 +35,9 @@ it("lazily loads deployment evidence and displays a declared Java conflict", asy
       dependencyPaths: [["root", "dependency"]], affectedDeployments: [], componentChanges: null,
       vulnerabilityComparison: { status: "not_comparable", reason: "candidate_sbom_required" },
     });
-  const { container } = render(<JavaUpgradePanel runId="r1" serviceId="s1" canManage={false} />);
+  render(<JavaUpgradePanel runId="r1" serviceId="s1" canManage={false} />);
   expect(apiRequest).not.toHaveBeenCalled();
-  const details = container.querySelector("details")!;
-  details.open = true;
-  fireEvent(details, new Event("toggle"));
+  fireEvent.click(screen.getByRole("button", { name: "Java/Maven 버전 영향 검토" }));
   fireEvent.change(await screen.findByLabelText("Maven PURL"), { target: { value: "pkg:maven/org.example/app" } });
   fireEvent.change(screen.getByLabelText("후보 버전"), { target: { value: "2.0" } });
   fireEvent.change(screen.getByLabelText("후보 최소 Java 버전"), { target: { value: "17" } });

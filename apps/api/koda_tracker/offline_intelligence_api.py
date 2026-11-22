@@ -9,7 +9,7 @@ from sqlalchemy.orm import selectinload
 from .db import get_db
 from .data_updates import reference_access
 from .models import JobState, SbomRun, Release, User, now
-from .security import require_permission
+from .security import require_permission, run_scope
 from .ssvc_api import authenticated_csrf, load_run, current_revision, analysis_ready
 from .offline_intelligence_models import OfflineReferenceSnapshot, OfflineResponseEvent
 from .offline_intelligence_store import active_reference_document, import_reference_document, reference_manifest
@@ -105,7 +105,7 @@ def save_response(run_id: str, body: ResponseBody, db=Depends(get_db), principal
 
 @router.get("/offline-intelligence/impact")
 def impact(page: int = Query(1, ge=1), size: int = Query(50, ge=1, le=200), db=Depends(get_db), principal=Depends(require_permission("metadata.view", "metadata.manage"))):
-    ranked = select(SbomRun.id, func.row_number().over(partition_by=SbomRun.release_id, order_by=(SbomRun.round_number.desc(), SbomRun.created_at.desc(), SbomRun.id.desc())).label("rank")).where(SbomRun.archived_at.is_(None)).subquery()
+    ranked = select(SbomRun.id, func.row_number().over(partition_by=SbomRun.release_id, order_by=(SbomRun.round_number.desc(), SbomRun.created_at.desc(), SbomRun.id.desc())).label("rank")).where(SbomRun.archived_at.is_(None), run_scope(principal)).subquery()
     latest_ids = select(ranked.c.id).where(ranked.c.rank == 1)
     total = db.scalar(select(func.count()).select_from(ranked).where(ranked.c.rank == 1)) or 0
     runs = db.scalars(select(SbomRun).where(SbomRun.id.in_(latest_ids)).order_by(SbomRun.created_at.desc(), SbomRun.id).offset((page-1)*size).limit(size).options(selectinload(SbomRun.analyses), selectinload(SbomRun.release).selectinload(Release.service), selectinload(SbomRun.release).selectinload(Release.environment))).all()
