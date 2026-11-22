@@ -12,12 +12,14 @@ function mapTag(children: ReactNode, tag: string, update: (props: TableNodeProps
   ));
 }
 
-function headerCells(children: ReactNode): ReactNode[] {
-  return Children.toArray(children).flatMap(child =>
-    isValidElement<TableNodeProps>(child) && child.type === Fragment
-      ? headerCells(child.props.children)
-      : [child]
-  );
+function headerCells(children: ReactNode, parentKey = ""): ReactNode[] {
+  return Children.toArray(children).flatMap(child => {
+    if (!isValidElement<TableNodeProps>(child)) return [child];
+    const key = parentKey + child.key;
+    return child.type === Fragment
+      ? headerCells(child.props.children, `${key}/`)
+      : [cloneElement(child, { key })];
+  });
 }
 
 type ColumnDrag = { pointerId: number; index: number; x: number; widths: number[] };

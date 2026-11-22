@@ -118,8 +118,8 @@ export default function OfficialCompatibilityData({ canManage }: { canManage: bo
     }
   }
 
-  return <section className="workflow-panel tracker-view tracker-data-panel official-compatibility-panel" aria-label="공식 호환성 자료">
-    <div className="settings-panel-heading"><div><h2>공식 호환성 자료</h2>
+  return <section className="workflow-panel tracker-view tracker-data-panel official-compatibility-panel" aria-label="호환성 자료">
+    <div className="settings-panel-heading"><div><h2>호환성 자료</h2>
       <p>공개망에서 수집한 패키지 선언과 원본을 한 번에 반입하고, 자료별 기관·원본 URL·SHA-256을 확인합니다.</p>
     </div></div>
     <div className="tracker-panel-body">

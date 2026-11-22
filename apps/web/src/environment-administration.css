@@ -19,7 +19,7 @@
 .environment-user-choice > span { min-width: 0; max-width: 100%; flex: 1; display: grid; gap: 4px; font-size: 14px; }
 .environment-user-choice small { font-size: 12px; color: var(--muted); }
 .run-metadata-section { min-width: 0; margin: 16px 20px; }
-.run-metadata-form { min-width: 0; padding: 16px; border: 1px solid var(--border); background: var(--surface); margin-top: 12px; }
+.run-metadata-form { min-width: 0; padding: 16px; border: 1px solid var(--border); border-radius: var(--field-radius); background: var(--surface); margin-top: 12px; }
 .compare-page > .comparison-ai-briefing { margin-inline: 0; }
 .run-metadata-form .shared-ai-server-field {
   display: grid;
@@ -31,16 +31,11 @@
 .shared-ai-server-field input {
   width: 100%;
   min-width: 0;
-  min-height: 37px;
-  padding: 0 10px;
-  border: 1px solid var(--border-dark);
-  border-radius: 4px;
-  background: white;
-  font-weight: 400;
+  min-height: var(--field-height);
 }
 .run-metadata-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin: 12px 0 18px; }
-.run-metadata-fields label { min-width: 0; max-width: 100%; display: grid; gap: 8px; font-size: 13px; font-weight: 600; }
-.run-metadata-fields input, .run-metadata-fields select, .run-metadata-fields textarea { width: 100%; min-width: 0; padding: 10px; border: 1px solid var(--border-dark); border-radius: 4px; background: white; font-weight: 400; }
+.run-metadata-fields label { min-width: 0; max-width: 100%; display: grid; gap: 7px; font-size: 13px; font-weight: var(--field-label-weight); }
+.run-metadata-fields input, .run-metadata-fields select, .run-metadata-fields textarea { width: 100%; }
 .run-note-field { grid-column: 1 / -1; }
 .project-catalog-panel .workflow-form, .project-catalog-panel .workflow-form fieldset, .project-catalog-panel label { min-width: 0; min-inline-size: 0; max-width: 100%; }
 .project-catalog-panel .project-catalog-card { grid-template-columns: minmax(0, 1fr); }

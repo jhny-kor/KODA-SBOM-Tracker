@@ -1,9 +1,5 @@
 .quality-panel { border: 1px solid var(--border, #d8dee8); border-radius: 6px; padding: 20px; margin: 20px 0; min-width: 0; }
 .quality-toolbar, .quality-metrics { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-.quality-tabs { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0 18px; border-bottom: 1px solid var(--border, #d8e0e5); }
-.quality-tabs button { padding: 12px 14px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: var(--muted, #667680); font-weight: 650; cursor: pointer; }
-.quality-tabs button[aria-selected="true"] { border-bottom-color: var(--teal, #087b82); background: var(--teal-pale, #eaf7f7); color: var(--teal-dark, #00666d); }
-.quality-tabs button:focus-visible { outline: 2px solid var(--teal, #087b82); outline-offset: -3px; }
 .quality-toolbar { margin: 16px 0; align-items: end; }
 .quality-toolbar a { display: inline-flex; align-items: center; justify-content: center; min-height: 36px; white-space: nowrap; }
 .quality-toolbar label, .quality-profile-grid label { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
@@ -86,5 +82,4 @@
 
 @media (min-width: 900px) {
   .cpe-coverage.tracker-view .cpe-coverage-table { font-size: 13px; }
-  .quality-panel.tracker-view .quality-tabs button { font-size: 13px; }
 }

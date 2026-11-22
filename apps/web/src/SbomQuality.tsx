@@ -1,5 +1,7 @@
+import { ResizableTable } from "./ResizableTable";
 import { DetailPagination } from "./DetailPagination";
 import { RunDetailCard } from "./RunDetailCard";
+import { TabList } from "./TabList";
 import { useDeferredValue, useEffect, useState, type FormEvent } from "react";
 import { previewMode } from "./api";
 import { formatSeoulDateTime } from "./format";
@@ -101,12 +103,11 @@ function QualityResults({ runId, canRerun, canViewProfiles, canManage, archived,
     actions={canRerun && <button type="button" className="secondary compact" disabled={busy || archived} onClick={() => void rerun()}>{busy ? "진단 중…" : "품질 재진단"}</button>}>
     <p className="muted">취약점 위험과 별도로 SBOM의 식별·관계·라이선스·무결성·출처를 진단합니다.</p>
     {archived && <p className="muted">보관된 회차는 기존 품질 이력만 조회할 수 있습니다.</p>}
-    <div className="quality-tabs" role="tablist" aria-label="SBOM 품질 메뉴">
-      <button type="button" role="tab" id="quality-results-tab" aria-selected={tab === "results"} aria-controls="quality-results" onClick={() => setTab("results")}>진단 결과</button>
-      {canViewProfiles && <button type="button" role="tab" id="quality-profile-tab" aria-selected={tab === "profile"} aria-controls="quality-profile" onClick={() => setTab("profile")}>프로젝트별 품질 기준</button>}
-    </div>
+    <TabList label="SBOM 품질 메뉴" idPrefix="quality" value={canViewProfiles ? tab : "results"} onChange={setTab}
+      items={([{ id: "results", label: "진단 결과" }, { id: "profile", label: "프로젝트별 품질 기준" }] as const)
+        .filter(item => item.id !== "profile" || canViewProfiles)} />
     {error && <p role="alert" className="form-message">{error}</p>}
-    {tab === "profile" && canViewProfiles ? <QualityProfileEditor key={runId} runId={runId} initialProjectId={selected?.profileSnapshot.resolution?.owningProjectId || selected?.profileSnapshot.resolution?.projectId || selected?.profileSnapshot.projectId || ""} canManage={canManage} /> : <div id="quality-results" role="tabpanel" aria-labelledby="quality-results-tab">
+    {tab === "profile" && canViewProfiles ? <QualityProfileEditor key={runId} runId={runId} initialProjectId={selected?.profileSnapshot.resolution?.owningProjectId || selected?.profileSnapshot.resolution?.projectId || selected?.profileSnapshot.projectId || ""} canManage={canManage} /> : <div id="quality-panel-results" role="tabpanel" aria-labelledby="quality-tab-results">
       {loading ? <p role="status">품질 이력을 불러오는 중입니다…</p> : !selected ? <p>저장된 품질 진단이 없습니다. 분석 또는 품질 재진단을 실행하세요.</p> : <>
         <div className="quality-toolbar"><label>품질 리비전<select aria-label="품질 리비전" value={selectedId} onChange={event => { setSelectedId(event.target.value); setPage(1); }}>{revisions.map(item => <option key={item.id} value={item.id}>r{item.sequence} · {formatSeoulDateTime(item.createdAt)} · {statusLabels[item.summary.qualityStatus] || item.state}</option>)}</select></label>
           <a className="secondary compact" href={qualityExportUrl(runId, selectedId, "csv")} download>품질 CSV</a><a className="secondary compact" href={qualityExportUrl(runId, selectedId, "json")} download>품질 JSON</a>
@@ -125,7 +126,7 @@ function QualityResults({ runId, canRerun, canViewProfiles, canManage, archived,
         <small className="quality-evidence">엔진 {selected.engineVersion} · 원본 SHA-256 <span className="mono">{selected.originalSha256}</span></small>
         {selected.summary.sourceBasis && <p className="muted">진단 근거: {selected.summary.sourceBasis === "verified_original_artifact" ? "SHA-256 확인을 마친 원본 SBOM" : "저장된 정규화 JSON (원본 파일 확인 전 · CI 통과 불가)"}{selected.summary.documentLayout === "split_cyclonedx" && " · 분할 저장한 구성요소 및 의존 관계"}</p>}
         <div className="quality-toolbar"><label>심각도<select aria-label="품질 심각도" value={severity} onChange={event => { setSeverity(event.target.value); setPage(1); }}><option value="">전체</option><option value="error">오류</option><option value="warning">경고</option></select></label><label>규칙 ID<input aria-label="품질 규칙 ID" placeholder="예: identity.missing" value={ruleId} onChange={event => { setRuleId(event.target.value); setPage(1); }} /></label></div>
-        <div className="table-scroll quality-table" aria-busy={issuesLoading}><table><thead><tr><th>심각도·규칙</th><th>구성요소·원본 위치</th><th>진단 근거</th><th>개선 방법</th></tr></thead><tbody>{issuesLoading ? <tr><td colSpan={4}>품질 이슈를 불러오는 중입니다…</td></tr> : issues.items.map(issue => <tr key={issue.id}><td><span className={`quality-issue-${issue.severity}`}>{severityLabels[issue.severity] || issue.severity}</span><br/><code>{issue.ruleId}</code></td><td>{issue.componentName || "문서"}{issue.bomRef && <small>bom-ref: {issue.bomRef}</small>}<code>{issue.path}</code></td><td>{issue.message}<small>관측: {valueLabel(issue.observed)}</small><small>기대: {valueLabel(issue.expected)}</small></td><td>{issue.remediation}</td></tr>)}{!issuesLoading && !issues.items.length && <tr><td colSpan={4}>{selected.state === "failed" ? "진단 실패 상태입니다. 통과로 간주하지 않습니다." : severity || deferredRule ? "필터에 맞는 품질 이슈가 없습니다." : "발견된 품질 이슈가 없습니다."}</td></tr>}</tbody></table></div>
+        <div className="table-scroll quality-table" role="region" aria-label="품질 이슈 가로 스크롤" tabIndex={0} aria-busy={issuesLoading}><ResizableTable aria-label="품질 이슈"><thead><tr><th>심각도·규칙</th><th>구성요소·원본 위치</th><th>진단 근거</th><th>개선 방법</th></tr></thead><tbody>{issuesLoading ? <tr><td colSpan={4}>품질 이슈를 불러오는 중입니다…</td></tr> : issues.items.map(issue => <tr key={issue.id}><td><span className={`quality-issue-${issue.severity}`}>{severityLabels[issue.severity] || issue.severity}</span><br/><code>{issue.ruleId}</code></td><td>{issue.componentName || "문서"}{issue.bomRef && <small>bom-ref: {issue.bomRef}</small>}<code>{issue.path}</code></td><td>{issue.message}<small>관측: {valueLabel(issue.observed)}</small><small>기대: {valueLabel(issue.expected)}</small></td><td>{issue.remediation}</td></tr>)}{!issuesLoading && !issues.items.length && <tr><td colSpan={4}>{selected.state === "failed" ? "진단 실패 상태입니다. 통과로 간주하지 않습니다." : severity || deferredRule ? "필터에 맞는 품질 이슈가 없습니다." : "발견된 품질 이슈가 없습니다."}</td></tr>}</tbody></ResizableTable></div>
         <DetailPagination label="품질 이슈" total={issues.total} page={page} pageSize={pageSize} busy={issuesLoading}
           onPage={setPage} onPageSize={size => { setPageSize(size); setPage(1); }} />
       </>}
@@ -195,7 +196,7 @@ function QualityProfileEditor({ runId, initialProjectId, canManage }: { runId: s
     } catch (reason) { setMessage(reason instanceof Error ? reason.message : "품질 기준을 저장하지 못했습니다."); }
     finally { setBusy(false); }
   }
-  return <div id="quality-profile" role="tabpanel" aria-labelledby="quality-profile-tab">
+  return <div id="quality-panel-profile" role="tabpanel" aria-labelledby="quality-tab-profile">
     <p className="muted">현재 프로젝트의 직접 기준 → 현재 태그 기준 → 가까운 부모의 직접·태그 기준 → 공통 기준 순서로 적용합니다. 태그는 같은 원본 범위에서만 적용하고 같은 우선순위가 충돌하면 진단을 실패시킵니다.</p>
     {effective && <div className="quality-current-profile"><h4>현재 회차에 적용되는 기준</h4><p>{effective.profile.name} v{effective.profile.version}</p><InheritanceEvidence profile={effective.profile} />{effective.project && <p>회차 프로젝트: <code>{effective.project.id}</code>{canManage && <button type="button" className="secondary compact" disabled={busy} onClick={() => load({ kind: "project", projectId: effective.project!.id, sourceId: effective.project!.sourceId, tag: "" })}>현재 프로젝트 기준 불러오기</button>}</p>}</div>}
     {effectiveError && <p role="alert">{effectiveError}</p>}

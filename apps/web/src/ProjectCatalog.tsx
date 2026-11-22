@@ -3,7 +3,7 @@ import { createNativeProject, fetchProjectCatalog, fetchProjectRuns, previewMode
 import type { CollectionLogic, NativeProject } from "./api";
 import type { CatalogItem, SbomRun } from "./types";
 import { formatSeoulDateTime } from "./format";
-import { WorkflowPagination } from "./ReanalysisSchedule";
+import { DetailPagination } from "./DetailPagination";
 import { CollectionMetricsView } from "./CollectionMetrics";
 import { FlowSelect } from "./ScrollingSelect";
 import { ScrollingText } from "./ScrollingText";
@@ -33,7 +33,7 @@ function ProjectRuns({projectId,onOpenRun}:{projectId:string;onOpenRun?:(run:Sbo
         {result.items.map(run=><tr key={run.id}><td><ScrollingText>{`${run.roundNumber}차 / ${run.releaseVersion}`}</ScrollingText></td><td><ScrollingText>{`${run.service.name} / ${run.environment.name}`}</ScrollingText></td><td><span className={`state ${run.state}`}>{runStates[run.state]}</span>{run.analysisState&&run.analysisState!=="completed"&&<small className="workflow-id muted">{analysisStates[run.analysisState]}</small>}</td><td>{run.componentCount.toLocaleString()}</td><td>{run.analysisAvailable===false ? "미평가" : (run.vulnerableComponentCount?.toLocaleString() ?? "미평가")}</td><td>{run.analysisAvailable===false ? "미평가" : run.policyViolationCount.toLocaleString()}</td><td>{formatSeoulDateTime(run.createdAt)}</td><td><a className="project-result-link" href={`${window.location.pathname}?page=runs&runId=${encodeURIComponent(run.id)}`} onClick={event=>{if(onOpenRun&&!event.ctrlKey&&!event.metaKey&&!event.shiftKey&&!event.altKey&&event.button===0){event.preventDefault();onOpenRun(run);}}}>{run.analysisAvailable===false ? "회차 상세 보기" : "점검결과 보기"}</a></td></tr>)}
         {!result.items.length&&<tr><td colSpan={8}>연결된 SBOM 회차가 없습니다. 프로젝트 이름만으로 회차를 추정하지 않습니다.</td></tr>}
       </tbody></table></div>
-      <WorkflowPagination page={page} total={result.total} pageSize={10} label="연결된 회차" onPage={value=>{setLoad("loading");setPage(value);}}/>
+      <DetailPagination page={page} total={result.total} pageSize={10} label="연결된 회차" onPage={value=>{setLoad("loading");setPage(value);}}/>
     </>}
   </section>;
 }
@@ -79,7 +79,7 @@ export function ProjectCatalogPanel({canManage,canViewRuns=false,onOpenRun,servi
     <div className="tracker-panel-body"><p>프로젝트 계층·태그·최신 버전 범위를 관리합니다. 프로젝트 이름을 누르면 연결된 SBOM 회차와 점검결과를 확인할 수 있습니다.</p>
     {message && <p role="status">{message}</p>}{previewMode ? <p>샘플 모드 · 실제 조회·저장 안 함</p> : load!=="ready" ? <p>{load==="error" ? "프로젝트 조회 실패. 새로고침으로 재시도하세요." : "프로젝트 조회 중"}</p> : <>
       <div className="policy-rules">{projects.items.map(project=><ProjectEditor key={`${project.id}-${project.revision}`} project={project} canViewRuns={canViewRuns&&!previewMode} onOpenRun={onOpenRun} disabled={!editable||busy} save={(p,body)=>act(()=>updateNativeProject(p,body))}/>)}</div>
-      {!projects.items.length && <p>등록된 프로젝트가 없습니다.</p>}<WorkflowPagination page={projectPage} total={projects.total} pageSize={20} label="프로젝트 목록" onPage={setProjectPage}/>
+      {!projects.items.length && <p>등록된 프로젝트가 없습니다.</p>}<DetailPagination page={projectPage} total={projects.total} pageSize={20} label="프로젝트 목록" onPage={setProjectPage}/>
     </>}
     {editable && <><details><summary>자체 프로젝트 등록</summary><form className="workflow-form" onSubmit={createProject}><fieldset disabled={busy}><legend>새 프로젝트</legend><label>식별자<input name="identity" required maxLength={128}/></label><label>이름<input name="name" required maxLength={255}/></label><label>버전<input name="version" maxLength={255}/></label><label>서비스<FlowSelect name="service" required>{services.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</FlowSelect></label><label>환경<FlowSelect name="environment" required>{environments.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</FlowSelect></label><label>태그<input name="tags"/></label><label>기존 회차 ID (선택)<input name="runId"/></label><button className="secondary">프로젝트 등록</button></fieldset></form></details></>}
     </div>

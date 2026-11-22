@@ -126,8 +126,9 @@ KODA 관리자가 저장소를 연결하면 `POST /api/v1/integrations/koda/repo
    토큰 파일 참조만 DB에 보관하고 토큰 원문은 권한 `0600` 파일로 저장합니다.
 
 관리자가 Tracker 화면에서 서비스 UUID·환경 UUID·토큰을 복사해 KODA에 입력할
-필요는 없습니다. 자동 생성된 서비스와 `gitlab-source` 환경은 `설정 > 서비스·환경`
-및 `설정 > 연동 설정`에서 확인할 수 있습니다.
+필요는 없습니다. 자동 생성된 서비스와 `gitlab-source` 환경은 **설정 → 서비스·환경**에서
+확인할 수 있습니다. **설정 → 연동 설정 → GitLab 연동**에서는 연결 상태와 자동 생성된
+저장소 서비스 및 전송 토큰 상태를 확인합니다.
 
 통합 Suite에서는 Tracker gateway와 KODA가 전용 `koda-dashboard` 네트워크를
 공유하므로 `http://koda-sbom-gateway:8080`으로 호출합니다. Compose 프로젝트명을

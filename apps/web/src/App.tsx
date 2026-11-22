@@ -1,4 +1,5 @@
 import ComponentAddForm from "./ComponentAddForm";
+import { FormFeedback, type FormFeedbackValue } from "./FormFeedback";
 import ComponentInspectorRow from "./ComponentInspectorRow";
 import { DetailPagination } from "./DetailPagination";
 import { RunDetailCard } from "./RunDetailCard";
@@ -9,6 +10,7 @@ import { demoChanges, demoLdapSettings, demoRolePolicyCatalog, demoRuns } from "
 import { fetchActiveCveBaseline } from "./api";
 import { formatSeoulDateTime } from "./format";
 import { Icon } from "./icons";
+import { TabList } from "./TabList";
 import { FlowSelect, ScrollingSelect } from "./ScrollingSelect";
 import { ScrollingText } from "./ScrollingText";
 import { ReanalysisSchedulePanel } from "./ReanalysisSchedule";
@@ -49,7 +51,8 @@ const nav: { id: Page; label: string; icon: string }[] = [
   { id: "settings", label: "설정", icon: "settings" }];
 const guideNav = { id: "guide" as Page, label: "사용 가이드", icon: "guide" };
 
-type SettingsTab = "private-vulnerabilities" | "metadata" | "cve-search" | "environment-admins" | "projects" | "reanalysis" | "notifications" | "sbom-policies" | "users" | "roles" | "vulnerability" | "audit" | "integration" | "shared-ai" | "compatibility-data" | "ldap" | "services";
+type IntegrationTab = "external" | "gitlab" | "shared-ai" | "ldap";
+type SettingsTab = "private-vulnerabilities" | "metadata" | "cve-search" | "environment-admins" | "projects" | "reanalysis" | "notifications" | "sbom-policies" | "users" | "roles" | "vulnerability" | "audit" | "integration" | "compatibility-data" | "services" | Exclude<IntegrationTab, "external">;
 
 const ROLE_LABELS: Record<string, string> = {
   admin: "관리자",
@@ -105,7 +108,7 @@ function readPortalLink() {
   const legacyServices = requestedPage === "services";
   return {
     page: legacyServices ? "settings" as Page : requestedPage && pageIds.has(requestedPage as Page) ? (requestedPage as Page ): ("dashboard" as Page),
-    settingsTab: legacyServices ? "services" as SettingsTab : requestedSettingsTab === "gitlab" ? "integration" as SettingsTab : (requestedSettingsTab as SettingsTab | null),
+    settingsTab: legacyServices ? "services" as SettingsTab : (requestedSettingsTab as SettingsTab | null),
     runId: params.get("runId") || ""};}
 
 function replacePortalLink(updates: { page?: Page; runId?: string | null }) {
@@ -460,8 +463,6 @@ function RunsPage({ revision, services, environments, search, onUpload, onSelect
       .finally(() => { if (!request.signal.aborted) setSearching(false); });
     return () => request.abort();
   }, [deferredSearch, environment, page, pageSize, revision, service, source, state]);
-  const pageCount = Math.max(1, Math.ceil(result.total / pageSize));
-  const currentPage = Math.min(page, pageCount);
   const visible = result.items;
   const dataAsOf = visible.map((run) => preferredCveDate(run.cveDataAsOf, run.dataAsOf)).filter((value): value is string => Boolean(value) && value !== "unknown").sort().at(-1);
   const queued = visible.filter((run) => run.state === "queued" || run.state === "processing").length;
@@ -486,18 +487,22 @@ function RunsPage({ revision, services, environments, search, onUpload, onSelect
         <SelectFilter label="상태" value={state} values={["completed", "processing", "partial", "failed", "queued", "archived"]} onChange={(value) => { setState(value); setPage(1); }} formatValue={(value) => stateLabel(value as SbomRun["state"])} />
         <button className="secondary reset" onClick={() => { setService(""); setEnvironment(""); setState(""); setSource("manual"); setPage(1);}}>초기화</button>
       </div>
-      <div className="tabs" role="tablist" aria-label="점검 출처">
-        <button role="tab" aria-selected={source === "manual"} className={source === "manual" ? "active" : ""} onClick={() => { setSource("manual"); setPage(1); }}>수동 점검 결과</button>
-        <button role="tab" aria-selected={source === "scheduled"} className={source === "scheduled" ? "active" : ""} onClick={() => { setSource("scheduled"); setPage(1); }}>스케줄 점검 결과</button>
-      </div>
-      <div className="table-frame">
-        <div className="table-scroll">
-          <ResizableTable className="runs-table">
+      <TabList label="점검 출처" idPrefix="runs-source" level="page" value={source}
+        items={[{ id: "manual", label: "수동 점검 결과" }, { id: "scheduled", label: "스케줄 점검 결과" }]}
+        onChange={value => { setSource(value); setPage(1); }} />
+      <div className="table-frame" role="tabpanel" id={`runs-source-panel-${source}`} aria-labelledby={`runs-source-tab-${source}`}>
+        <div className="table-scroll" role="region" aria-label="SBOM 회차 목록 가로 스크롤" tabIndex={0}>
+          <ResizableTable className="runs-table data-list-table">
             <thead><tr><th>서비스</th><th>환경</th><th>릴리스</th><th>회차</th><th>CVE 기준일</th><th>구성요소</th><th>취약 구성요소</th><th>정책 위반</th><th>처리 상태</th><th>업로드 시각</th></tr></thead>
             <tbody>
               {visible.map((run) => (
-                <tr key={run.id} onClick={() => onSelect(run)} tabIndex={0}>
-                  <td className="sticky-name"><ScrollingText>{run.service.name}</ScrollingText></td><td><ScrollingText>{run.environment.name}</ScrollingText></td><td><ScrollingText>{run.releaseVersion}</ScrollingText></td>
+                <tr key={run.id} onClick={() => onSelect(run)}>
+                  <td className="sticky-name"><ScrollingText>{run.service.name}</ScrollingText></td><td><ScrollingText>{run.environment.name}</ScrollingText></td>
+                  <td><button type="button" className="data-row-link"
+                    aria-label={`${run.service.name} · ${run.environment.name} · ${run.releaseVersion} ${run.roundNumber}차 상세 보기`}
+                    onClick={event => { event.stopPropagation(); onSelect(run); }}>
+                    <ScrollingText focusable={false}>{run.releaseVersion}</ScrollingText>
+                  </button></td>
                   <td>{run.roundNumber}차</td><td>{cveBaseline(run)}</td><td>{run.componentCount.toLocaleString()}</td>
                   <td title={analysisAvailable(run) ? undefined : analysisUnavailableReason(run)}>{analysisAvailable(run) ? (run.vulnerableComponentCount?.toLocaleString() ?? "미평가") : <>미평가<small className="workflow-id">{analysisUnavailableReason(run)}</small></>}</td><td>{policyCountLabel(run)}</td>
                   <td><span className={`state ${run.state}`}>{stateLabel(run.state)}</span></td>
@@ -508,12 +513,8 @@ function RunsPage({ revision, services, environments, search, onUpload, onSelect
             </tbody>
           </ResizableTable>
         </div>
-        <div className="table-footer"><span>전체 {result.total}건 · {currentPage}/{pageCount}페이지
-          </span><div><select aria-label="페이지당 행 수" value={pageSize} onChange={(event) => { setPageSize(Number(event.target.value)); setPage(1);}}><option value={10}>10개씩 보기</option><option value={20}>20개씩 보기</option><option value={50}>50개씩 보기</option><option value={100}>100개씩 보기</option></select><button aria-label="첫 페이지" disabled={currentPage === 1} onClick={() => setPage(1)}>|‹
-            </button><button aria-label="이전 페이지" disabled={currentPage === 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>‹
-            </button>{Array.from({ length: Math.min(pageCount, 5) }, (_, index) => { const first = Math.min(Math.max(1, currentPage - 2), Math.max(1, pageCount - 4)); const value = first + index; return (<button key={value} className={currentPage === value ? "current" : ""} onClick={() => setPage(value)}>{value}</button>);})}<button aria-label="다음 페이지" disabled={currentPage === pageCount} onClick={() => setPage((value) => Math.min(pageCount, value + 1))}>›
-            </button><button aria-label="마지막 페이지" disabled={currentPage === pageCount} onClick={() => setPage(pageCount)}>›|
-            </button></div></div>
+        <DetailPagination level="list" total={result.total} page={page} pageSize={pageSize} busy={searching}
+          onPage={setPage} onPageSize={size => { setPageSize(size); setPage(1); }} />
       </div>
     </section>
   );}
@@ -557,14 +558,14 @@ function ComparePage({ runs, can }: { runs: SbomRun[]; can: (permission: string)
   const [componentPageSize, setComponentPageSize] = useState(10);
   const [selected, setSelected] = useState<ComponentChange | null>(demoChanges[2]);
   const [comparison, setComparison] = useState<Comparison | null>(null);
-  const [message, setMessage] = useState("");
+  const [message, setMessage] = useFormFeedback();
   const options = [...new Map([...runs, ...linkedRuns].map(run => [run.id, run])).values()];
   const baseRun = options.find((run) => run.id === baseId);
   const targetRun = options.find((run) => run.id === targetId);
   const label = (run: SbomRun) => `${run.service.name} / ${run.environment.name} / ${run.releaseVersion} / ${run.roundNumber}차`;
   async function compare() {
     if (!baseId || !targetId || baseId === targetId) {
-      setMessage("서로 다른 두 회차를 선택하세요.");
+      setMessage("서로 다른 두 회차를 선택하세요.", "alert");
       return;}
     setMessage("비교 중…");
     try {
@@ -573,7 +574,7 @@ function ComparePage({ runs, can }: { runs: SbomRun[]; can: (permission: string)
       setComponentPage(1);
       setSelected(result.components[0] || null);
       setMessage("");} catch (error) {
-      setMessage(error instanceof Error ? error.message : "비교에 실패했습니다.");}
+      setMessage(error instanceof Error ? error.message : "비교에 실패했습니다.", "alert");}
   }
   useEffect(() => {
     if (!targetId && defaultTarget) setTargetId(defaultTarget.id);
@@ -590,10 +591,10 @@ function ComparePage({ runs, can }: { runs: SbomRun[]; can: (permission: string)
         setTargetAnalyses(targetDetail.analyses || []);
         setBaseAnalysisId((current) => current && baseDetail.analyses.some((item) => item.id === current) ? current : baseDetail.analyses[0]?.id || "");
         setTargetAnalysisId((current) => current && targetDetail.analyses.some((item) => item.id === current) ? current : targetDetail.analyses[0]?.id || "");} catch (error) {
-        if (!cancelled) setMessage(error instanceof Error ? error.message : "분석 리비전을 불러오지 못했습니다.");}
+        if (!cancelled) setMessage(error instanceof Error ? error.message : "분석 리비전을 불러오지 못했습니다.", "alert");}
     }
     void loadAnalyses();
-    return () => { cancelled = true;};}, [baseId, targetId]);
+    return () => { cancelled = true;};}, [baseId, targetId, setMessage]);
   useEffect(() => {
     if (!comparison && baseId && targetId && baseId !== targetId) void compare();
     // Initial selections only; subsequent comparisons are explicit.
@@ -618,7 +619,7 @@ function ComparePage({ runs, can }: { runs: SbomRun[]; can: (permission: string)
         </button>
       </div>
       <div className="analysis-pickers"><label><span>기준 분석 리비전</span><ScrollingSelect value={baseAnalysisId} text={(() => { const item = baseAnalyses.find((item) => item.id === baseAnalysisId); return item ? `r${item.sequence} · ${dataBaselineLabel(preferredCveDate(item.cveDataAsOf, item.dataAsOf), "CVE 기준일 확인 필요")}` : "최신 리비전"; })()} label="기준 분석 리비전" onChange={(value) => { setBaseAnalysisId(value); setComparison(null);}}><option value="">최신 리비전</option>{baseAnalyses.map((item) => (<option key={item.id} value={item.id}>r{item.sequence} · {dataBaselineLabel(preferredCveDate(item.cveDataAsOf, item.dataAsOf), "CVE 기준일 확인 필요")}</option>))}</ScrollingSelect></label><label><span>비교 분석 리비전</span><ScrollingSelect value={targetAnalysisId} text={(() => { const item = targetAnalyses.find((item) => item.id === targetAnalysisId); return item ? `r${item.sequence} · ${dataBaselineLabel(preferredCveDate(item.cveDataAsOf, item.dataAsOf), "CVE 기준일 확인 필요")}` : "최신 리비전"; })()} label="비교 분석 리비전" onChange={(value) => { setTargetAnalysisId(value); setComparison(null);}}><option value="">최신 리비전</option>{targetAnalyses.map((item) => (<option key={item.id} value={item.id}>r{item.sequence} · {dataBaselineLabel(preferredCveDate(item.cveDataAsOf, item.dataAsOf), "CVE 기준일 확인 필요")}</option>))}</ScrollingSelect></label></div>
-      {message && (<p className="form-message" role="status">{message}</p>)}
+      <FormFeedback feedback={message} />
       {!securityAvailable && <p role="alert">취약점·정책 비교 미평가: {analysisUnavailableReason(!analysisAvailable(baseRevision || baseRun) ? baseRevision || baseRun : targetRevision || targetRun)}</p>}
       <div className="diff-summary">
         {[
@@ -630,14 +631,9 @@ function ComparePage({ runs, can }: { runs: SbomRun[]; can: (permission: string)
           ["정책 변화", summary?.policiesChanged ?? 0, "red"]].map((item) => (<div key={item[0]}><span>{item[0]}</span><strong className={String(item[2])}>{["신규 취약점", "해소 취약점", "정책 변화"].includes(String(item[0])) && !securityAvailable ? "미평가" : item[1]}</strong></div>))}
       </div>
       {!previewMode && comparison && securityAvailable && <ComparisonAIBriefing key={`${comparison.base.runId}:${comparison.target.runId}:${baseAnalysisId}:${targetAnalysisId}`} baseRunId={comparison.base.runId} targetRunId={comparison.target.runId} baseAnalysisId={baseAnalysisId || undefined} targetAnalysisId={targetAnalysisId || undefined} />}
-      <div className="tabs" role="tablist">
-        <button role="tab" aria-selected={tab === "components"} className={tab === "components" ? "active" : ""} onClick={() => setTab("components")}>구성요소
-        </button>
-        <button role="tab" aria-selected={tab === "vulnerabilities"} className={tab === "vulnerabilities" ? "active" : ""} onClick={() => setTab("vulnerabilities")}>취약점
-        </button>
-        <button role="tab" aria-selected={tab === "policies"} className={tab === "policies" ? "active" : ""} onClick={() => setTab("policies")}>정책 위반
-        </button>
-      </div>
+      <TabList label="회차 비교 결과" idPrefix="comparison" level="page" value={tab} onChange={setTab}
+        items={[{ id: "components", label: "구성요소" }, { id: "vulnerabilities", label: "취약점" }, { id: "policies", label: "정책 위반" }]} />
+      <div role="tabpanel" id={`comparison-panel-${tab}`} aria-labelledby={`comparison-tab-${tab}`}>
       {tab === "policies" && comparison && securityAvailable && <p className="form-message">기준 정책: {comparison.base.policyVersion ? `v${comparison.base.policyVersion}` : "기존 결과"} · {comparison.base.policyState === "completed" ? "평가 완료" : comparison.base.policyState === "failed" ? "평가 실패" : "KODA 정책 미평가"} / 비교 정책: {comparison.target.policyVersion ? `v${comparison.target.policyVersion}` : "기존 결과"} · {comparison.target.policyState === "completed" ? "평가 완료" : comparison.target.policyState === "failed" ? "평가 실패" : "KODA 정책 미평가"}</p>}
       {tab === "components" ? (
         <>
@@ -657,6 +653,7 @@ function ComparePage({ runs, can }: { runs: SbomRun[]; can: (permission: string)
           rows={tab === "vulnerabilities" ? comparison?.vulnerabilities || [] : comparison?.policies || []}
         />
       )}
+      </div>
     </section>
   );}
 
@@ -694,6 +691,14 @@ function ComparisonRecordsTable({ kind, rows }: { kind: string; rows: RecordChan
     return (<tr key={`${row.change}-${index}`}><td><span className={`change ${row.change === "added" ? "추가" : row.change === "removed" ? "제거" : "버전-변경"}`}>{row.change === "added" ? "신규" : row.change === "removed" ? "해소" : "변경"}</span></td><td className="mono">{String(record.canonicalId || record.id || record.policyName || record.policyId || record.rule || "-")}</td><td>{String(record.component || "-")}</td>{isVulnerability && <><td>{cvssScore(record)}</td><td>{record.kev ? "KEV" : "-"}</td></>}<td>{isVulnerability ? <span className={`severity-pill ${severityClass(status)}`}>{severityLabel(status)}</span> : record.suppressed ? "기한부 예외" : record.action === "fail" ? "위반" : record.action === "warn" ? "경고" : String(status)}</td></tr>);}) ): (<tr><td colSpan={isVulnerability ? 6 : 4}>변화가 없습니다.</td></tr>)}</tbody></ResizableTable></div></div></>);}
 
 
+function useFormFeedback() {
+  const [feedback, setFeedback] = useState<FormFeedbackValue | null>(null);
+  const showFeedback = useCallback((text: string, role: FormFeedbackValue["role"] = "status") => {
+    setFeedback(text ? { text, role } : null);
+  }, []);
+  return [feedback, showFeedback] as const;
+}
+
 function UploadModal({
   services,
   environments,
@@ -704,7 +709,7 @@ function UploadModal({
   onClose: () => void;
   onUploaded: (runId: string) => void;}) {
   const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState("");
+  const [message, setMessage] = useFormFeedback();
   const [jobId, setJobId] = useState("");
   const [runId, setRunId] = useState("");
   const [jobState, setJobState] = useState<"queued" | "running" | "completed" | "failed" | "">("");
@@ -723,14 +728,14 @@ function UploadModal({
           setMessage("SBOM 분석이 완료되었습니다.");
           setTimeout(() => { if (!cancelled) onUploaded(runId);}, 250);} else if (job.state === "failed") {
           setBusy(false);
-          setMessage(job.error || "SBOM 처리 작업이 실패했습니다.");}
+          setMessage(job.error || "SBOM 처리 작업이 실패했습니다.", "alert");}
       } catch (error) {
-        if (!cancelled) { setBusy(false); setMessage(error instanceof Error ? error.message : "작업 상태를 확인하지 못했습니다.");}
+        if (!cancelled) { setBusy(false); setMessage(error instanceof Error ? error.message : "작업 상태를 확인하지 못했습니다.", "alert");}
       }
     };
     void poll();
     const timer = window.setInterval(() => void poll(), 1200);
-    return () => { cancelled = true; window.clearInterval(timer);};}, [jobId, onUploaded, runId]);
+    return () => { cancelled = true; window.clearInterval(timer);};}, [jobId, onUploaded, runId, setMessage]);
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setBusy(true); setMessage("");
@@ -741,7 +746,7 @@ function UploadModal({
       setJobId(result.jobId);
       setJobState("queued");
       setMessage("SBOM을 접수했습니다. 분석 작업 상태를 확인하고 있습니다…");} catch (error) {
-      setMessage(error instanceof Error ? error.message : "업로드에 실패했습니다");
+      setMessage(error instanceof Error ? error.message : "업로드에 실패했습니다", "alert");
       setBusy(false);}
   }
   return (<div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><section className="modal sbom-upload-modal" role="dialog" aria-modal="true" aria-labelledby="upload-title">
@@ -759,14 +764,14 @@ function UploadModal({
           aria-describedby={`sbom-supported-formats${standaloneMode ? "" : " sbom-archive-formats sbom-workbook-format"} sbom-upload-limit`} required />
         <small id="sbom-supported-formats">{standaloneMode ? "로컬 미리보기: CycloneDX JSON/XML" : "지원 형식: CycloneDX 1.4, 1.5, 1.6, 1.7 (JSON/XML) · SPDX 2.3 (JSON) · NIS-SBOM 1.0 (CSV)"}</small>
         {!standaloneMode && <>
-          <small id="sbom-archive-formats">압축 업로드: ZIP · TAR.GZ/TGZ · TAR · 7Z. 압축파일에는 위 지원 형식의 JSON/XML/CSV 문서 파일만 정확히 1개 넣으세요. README 등 동반 파일은 허용하지 않습니다. 형식과 내용은 서버에서 확인합니다.</small>
-          <small id="sbom-workbook-format">Excel (.xlsx, 최대 10 MiB) 첫 시트의 1~5행에는 A열 또는 B열에 항목명, C열에 값을 입력하세요. 항목 순서는 솔루션명, 기준 버전, 운영 OS Platform, 작성일자, 대상 서버입니다. 6행 A~F열은 번호, 구분, 컴포넌트명, 버전, 라이선스 유형, 비고 / 상세 설명입니다. 버전은 텍스트 셀에 입력하세요.</small>
+          <small id="sbom-archive-formats">압축 업로드: ZIP · TAR.GZ/TGZ · TAR · 7Z. 압축파일에는 위 지원 형식의 JSON/XML/CSV 문서 파일 1개만 넣으세요. 그 외 파일은 허용하지 않습니다.</small>
+          <small id="sbom-workbook-format">Excel (.xlsx, 최대 10 MB) 첫 시트의 1~5행에는 A열 또는 B열에 항목명, C열에 값을 입력하세요. 항목 순서는 솔루션명, 기준 버전, 운영 OS Platform, 작성일자, 대상 서버입니다. 6행 A~F열은 번호, 구분, 컴포넌트명, 버전, 라이선스 유형, 비고 / 상세 설명입니다. 버전은 텍스트 셀에 입력하세요.</small>
         </>}
-        <small id="sbom-upload-limit">{standaloneMode ? "최대 100 MiB" : "업로드 및 압축 해제 후 최대 5 GiB · 128 MiB 초과 문서는 CycloneDX 1.6/1.7 UTF-8 JSON으로 제출하세요."}</small>
+        <small id="sbom-upload-limit">{standaloneMode ? "최대 100 MB" : "업로드 및 압축 해제 후 최대 5 GB · 128 MB 초과 문서는 CycloneDX 1.6/1.7 UTF-8 JSON으로 제출하세요."}</small>
       </label>
       <label>메모
             <textarea name="note" rows={3} placeholder="변경 사유 또는 배포 식별자" /></label>
-      {message && (<p className="form-message" role="status">{message}{jobState && <small> · 작업 상태: {jobStateLabel(jobState)}</small>}</p>)}
+      <FormFeedback feedback={message}>{jobState && <small> · 작업 상태: {jobStateLabel(jobState)}</small>}</FormFeedback>
       <footer><button type="button" className="secondary" onClick={onClose}>취소
             </button><button disabled={busy} className="primary">{busy ? "업로드 중…" : "업로드"}</button></footer>
     </form>
@@ -789,7 +794,7 @@ function RunDetail({ run, onClose, onChanged, username, onOpenLibrary,
   onOpenLibrary?: (query: string) => void;
   can: (permission: string) => boolean; username?: string;}) {
   const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState("");
+  const [message, setMessage] = useFormFeedback();
   const [archiveReason, setArchiveReason] = useState("");
   const [detail, setDetail] = useState<SbomRunDetail | null>(null);
   const [componentQuery, setComponentQuery] = useState("");
@@ -813,8 +818,8 @@ function RunDetail({ run, onClose, onChanged, username, onOpenLibrary,
   const latestAnalysisId = latestAnalysis?.id || "";
   useEffect(() => {
     let cancelled = false;
-    void fetchRun(run.id).then((result) => { if (!cancelled) setDetail(result);}).catch((error) => { if (!cancelled) setMessage(error instanceof Error ? error.message : "회차 상세를 불러오지 못했습니다.");});
-    return () => { cancelled = true;};}, [run.id]);
+    void fetchRun(run.id).then((result) => { if (!cancelled) setDetail(result);}).catch((error) => { if (!cancelled) setMessage(error instanceof Error ? error.message : "회차 상세를 불러오지 못했습니다.", "alert");});
+    return () => { cancelled = true;};}, [run.id, setMessage]);
   useEffect(() => {
     let cancelled = false;
     void fetchRunComponents(run.id, componentPage, componentPageSize, deferredComponentQuery, showRemovedComponents)
@@ -836,18 +841,18 @@ function RunDetail({ run, onClose, onChanged, username, onOpenLibrary,
     let cancelled = false;
     void fetchRunFindings(run.id, findingPage, findingPageSize, latestAnalysisId)
       .then((result) => { if (!cancelled) setFindingResult(result); })
-      .catch((error) => { if (!cancelled) setMessage(error instanceof Error ? error.message : "취약점을 불러오지 못했습니다."); });
+      .catch((error) => { if (!cancelled) setMessage(error instanceof Error ? error.message : "취약점을 불러오지 못했습니다.", "alert"); });
     return () => { cancelled = true; };
-  }, [findingPage, findingPageSize, latestAnalysisId, run.id]);
+  }, [findingPage, findingPageSize, latestAnalysisId, run.id, setMessage]);
   async function runAction(action: () => Promise<unknown>, success: string) {
     setBusy(true); setMessage("");
-    try { await action(); const refreshed = await fetchRun(run.id); setDetail(refreshed); setMessage(success); onChanged();} catch (error) { setMessage(error instanceof Error ? error.message : "작업에 실패했습니다");} finally { setBusy(false);}
+    try { await action(); const refreshed = await fetchRun(run.id); setDetail(refreshed); setMessage(success); onChanged();} catch (error) { setMessage(error instanceof Error ? error.message : "작업에 실패했습니다", "alert");} finally { setBusy(false);}
   }
   async function removeRun() {
     if (!window.confirm(`이 SBOM 회차와 Tracker 원본을 영구 삭제하시겠습니까?`)) return;
     setBusy(true); setMessage("");
     try { await deleteRun(current.id); onChanged(); onClose(); }
-    catch (error) { setMessage(error instanceof Error ? error.message : "회차 삭제에 실패했습니다"); }
+    catch (error) { setMessage(error instanceof Error ? error.message : "회차 삭제에 실패했습니다", "alert"); }
     finally { setBusy(false); }
   }
   const current = detail || run;
@@ -969,7 +974,7 @@ function RunDetail({ run, onClose, onChanged, username, onOpenLibrary,
     {can("metadata.view") && <OfflineRunEvidence key={`offline-${current.id}`} runId={current.id} canRespond={can("vex.manage")} canViewResponses={can("vex.view")} />}
     {(can("ssvc.view") || can("ssvc.manage")) && <SsvcAssessmentsPanel key={`ssvc-${current.id}`} runId={current.id} findings={findings} canManage={can("ssvc.manage")} />}
     {(can("vex.view") || can("vex.manage") || can("vex.approve")) && <VexReviewsPanel key={`vex-${current.id}`} runId={current.id} findings={findings} username={username} canManage={can("vex.manage")} canApprove={can("vex.approve")} />}
-    <div className="drawer-actions">{message && (<p className="form-message" role="status">{message}</p>)}{standaloneMode ? (<p className="preview-note">미리보기 모드에서는 원본 파일을 저장하거나
+    <div className="drawer-actions"><FormFeedback feedback={message} />{standaloneMode ? (<p className="preview-note">미리보기 모드에서는 원본 파일을 저장하거나
               Grype 분석·KODA 정책 평가를 실행하지 않습니다.
             </p> ): (<><div className="drawer-action-row">
                 {can("analysis.create") && (<button className="secondary" disabled={busy || current.state === "archived"} onClick={() => void runAction(() => createAnalysis(current.id), "새 분석 리비전을 접수했습니다.")}>새 분석 리비전
@@ -994,7 +999,7 @@ function ServicesPage({
   const [servicePage, setServicePage] = useState(1);
   const [environmentPage, setEnvironmentPage] = useState(1);
   const [catalogPageSize, setCatalogPageSize] = useState(10);
-  const [message, setMessage] = useState("");
+  const [message, setMessage] = useFormFeedback();
   const [busy, setBusy] = useState(false);
   const [deletedServiceIds, setDeletedServiceIds] = useState(() => new Set<string>());
   const [deletedEnvironmentIds, setDeletedEnvironmentIds] = useState(() => new Set<string>());
@@ -1007,13 +1012,13 @@ function ServicesPage({
         await createService({ slug: String(values.get("slug")), name: String(values.get("name")) });} else if (mode === "environment") {
         await createEnvironment({ slug: String(values.get("slug")), name: String(values.get("name")), sortOrder: Number(values.get("sortOrder") || 0) });}
       setMode(null); setMessage("새 항목을 등록했습니다."); onChanged();} catch (error) {
-      setMessage(error instanceof Error ? error.message : "등록에 실패했습니다");} finally { setBusy(false);}
+      setMessage(error instanceof Error ? error.message : "등록에 실패했습니다", "alert");} finally { setBusy(false);}
   }
   async function editService(item: CatalogItem) {
     const name = window.prompt("서비스 표시명", item.name);
     if (name === null || !name.trim()) return;
     setBusy(true); setMessage("");
-    try { await patchService(item.id, { name: name.trim() }); setMessage("서비스를 변경했습니다."); onChanged();} catch (error) { setMessage(error instanceof Error ? error.message : "서비스 변경에 실패했습니다");} finally { setBusy(false);}
+    try { await patchService(item.id, { name: name.trim() }); setMessage("서비스를 변경했습니다."); onChanged();} catch (error) { setMessage(error instanceof Error ? error.message : "서비스 변경에 실패했습니다", "alert");} finally { setBusy(false);}
   }
   async function removeEnvironment(item: CatalogItem) {
     if (!window.confirm(`${item.name} 환경을 삭제하시겠습니까? 과거 회차의 환경명은 유지됩니다.`)) return;
@@ -1024,7 +1029,7 @@ function ServicesPage({
       setMessage("환경을 삭제했습니다.");
       if (!previewMode) onChanged();
     }
-    catch (error) { setMessage(error instanceof Error ? error.message : "환경 삭제에 실패했습니다"); }
+    catch (error) { setMessage(error instanceof Error ? error.message : "환경 삭제에 실패했습니다", "alert"); }
     finally { setBusy(false); }
   }
   async function removeService(item: CatalogItem) {
@@ -1035,7 +1040,7 @@ function ServicesPage({
       setDeletedServiceIds((current) => new Set(current).add(item.id));
       setMessage("서비스를 삭제했습니다.");
       if (!previewMode) onChanged();
-    } catch (error) { setMessage(error instanceof Error ? error.message : "서비스 삭제에 실패했습니다");} finally { setBusy(false);}
+    } catch (error) { setMessage(error instanceof Error ? error.message : "서비스 삭제에 실패했습니다", "alert");} finally { setBusy(false);}
   }
   async function submitEnvironmentEdit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1049,7 +1054,7 @@ function ServicesPage({
         sortOrder: Number(values.get("sortOrder") || 0),
       });
       setEditingEnvironment(null); setMessage("환경을 변경했습니다."); onChanged();
-    } catch (error) { setMessage(error instanceof Error ? error.message : "환경 변경에 실패했습니다");} finally { setBusy(false);}
+    } catch (error) { setMessage(error instanceof Error ? error.message : "환경 변경에 실패했습니다", "alert");} finally { setBusy(false);}
   }
   const activeServices = services.filter((item) => item.active !== false && !deletedServiceIds.has(item.id));
   const activeEnvironments = environments.filter((item) => item.active !== false && !deletedEnvironmentIds.has(item.id));
@@ -1060,11 +1065,11 @@ function ServicesPage({
   const visibleServices = activeServices.slice((currentServicePage - 1) * catalogPageSize, currentServicePage * catalogPageSize);
   const visibleEnvironments = activeEnvironments.slice((currentEnvironmentPage - 1) * catalogPageSize, currentEnvironmentPage * catalogPageSize);
   return (<section className="page generic-page">
-    <div className="page-heading"><div><h1>서비스</h1><p>서비스·환경·릴리스 구조와 업로드 권한을 관리합니다. GitLab 저장소 연동에는 저장소별 서비스와 gitlab-source 환경의 연동 ID를 사용합니다.</p></div>{canManage && (<div className="button-row"><button className="primary" onClick={() => setMode("service")}>서비스 추가
-            </button><button className="secondary" onClick={() => setMode("environment")}>환경 추가
+    <div className="page-heading"><div><h1>서비스</h1><p>서비스·환경·릴리스 구조와 업로드 권한을 관리합니다. GitLab 저장소 연동에는 저장소별 서비스와 gitlab-source 환경의 연동 ID를 사용합니다.</p></div>{canManage && (<div className="button-row"><button className="primary" onClick={() => { setMessage(""); setMode("service"); }}>서비스 추가
+            </button><button className="secondary" onClick={() => { setMessage(""); setMode("environment"); }}>환경 추가
             </button></div>)}
       </div>
-    {message && (<p className="form-message" role="status">{message}</p>)}
+    {!mode && !editingEnvironment && <FormFeedback feedback={message} />}
     <div className="settings-grid catalog-grid"><div className="table-frame"><h2 className="table-title">서비스 {activeServices.length}개</h2><div className="table-scroll" role="region" aria-label="서비스 목록 가로 스크롤" tabIndex={0}><ResizableTable className="service-catalog-flow-table"><thead><tr><th>서비스</th><th>식별자</th><th>작업</th></tr></thead><tbody>{activeServices.length ? (visibleServices.map((item) => (<tr key={item.id}><td><ScrollingText>{item.name}</ScrollingText></td><td className="mono"><ScrollingText>{item.slug}</ScrollingText></td><td><button type="button" className="secondary compact" title={item.id} onClick={() => void copyOrShow("서비스 연동 ID", item.id)}>연동 ID 복사</button>{canManage && (
                         <>
                           {" "}
@@ -1075,15 +1080,15 @@ function ServicesPage({
               ): (<tr><td colSpan={3}>등록된 서비스가 없습니다.</td></tr>)}</tbody></ResizableTable></div><DetailPagination total={activeServices.length} page={currentServicePage} pageSize={catalogPageSize} label="서비스 페이지당 행 수" onPage={setServicePage} onPageSize={(size) => { setCatalogPageSize(size); setServicePage(1); setEnvironmentPage(1); }} /></div><div className="table-frame"><h2 className="table-title">환경 {activeEnvironments.length}개</h2><div className="table-scroll" role="region" aria-label="환경 목록 가로 스크롤" tabIndex={0}><ResizableTable className="environment-catalog-flow-table"><thead><tr><th>환경</th><th>식별자</th><th>정렬</th><th>작업</th></tr></thead><tbody>{activeEnvironments.length ? (visibleEnvironments.map((item) => (<tr key={item.id}><td><ScrollingText>{item.name}</ScrollingText></td><td className="mono"><ScrollingText>{item.slug}</ScrollingText></td><td>{item.sortOrder ?? "-"}</td><td><button type="button" className="secondary compact" title={item.id} onClick={() => void copyOrShow("환경 연동 ID", item.id)}>연동 ID 복사</button>{canManage && (<>{" "}<button className="secondary compact" disabled={busy} onClick={() => setEditingEnvironment(item)}>변경
                         </button> <button className="danger compact" disabled={busy} onClick={() => void removeEnvironment(item)}>삭제</button></>)}</td></tr>) )
               ): (<tr><td colSpan={4}>등록된 환경이 없습니다.</td></tr>)}</tbody></ResizableTable></div><DetailPagination total={activeEnvironments.length} page={currentEnvironmentPage} pageSize={catalogPageSize} label="환경 페이지당 행 수" onPage={setEnvironmentPage} onPageSize={(size) => { setCatalogPageSize(size); setServicePage(1); setEnvironmentPage(1); }} /></div></div>
-    {mode && (<div className="modal-backdrop" role="presentation"><section className="modal" role="dialog" aria-modal="true"><header><h2>{mode === "service" ? "서비스 추가" : "환경 추가"}</h2><button type="button" className="icon-button" aria-label="추가 창 닫기" onClick={() => setMode(null)}><Icon name="close" /></button></header><form onSubmit={submit}><label>이름
+    {mode && (<div className="modal-backdrop" role="presentation"><section className="modal" role="dialog" aria-modal="true"><header><h2>{mode === "service" ? "서비스 추가" : "환경 추가"}</h2><button type="button" className="icon-button" aria-label="추가 창 닫기" onClick={() => { setMessage(""); setMode(null); }}><Icon name="close" /></button></header><form onSubmit={submit}><label>이름
                 <input name="name" required autoFocus /></label><label>식별자
                 <input name="slug" pattern="[a-z0-9][a-z0-9-]{1,126}[a-z0-9]" required /><small>영문 소문자, 숫자, 하이픈만 사용합니다.</small></label>{mode === "environment" && (<label>정렬 순서
-                  <input name="sortOrder" type="number" defaultValue="50" /></label>)}{" "} {message && <p className="form-message">{message}</p>}<footer><button type="button" className="secondary" onClick={() => setMode(null)}>취소
+                  <input name="sortOrder" type="number" defaultValue="50" /></label>)}{" "} <FormFeedback feedback={message} /><footer><button type="button" className="secondary" onClick={() => { setMessage(""); setMode(null); }}>취소
                 </button><button className="primary" disabled={busy}>{busy ? "등록 중…" : "등록"}</button></footer></form></section></div>)}
-    {editingEnvironment && (<div className="modal-backdrop" role="presentation"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="environment-edit-title"><header><h2 id="environment-edit-title">환경 변경</h2><button type="button" className="icon-button" aria-label="환경 변경 창 닫기" onClick={() => setEditingEnvironment(null)}><Icon name="close" /></button></header><form onSubmit={submitEnvironmentEdit}><label>이름
+    {editingEnvironment && (<div className="modal-backdrop" role="presentation"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="environment-edit-title"><header><h2 id="environment-edit-title">환경 변경</h2><button type="button" className="icon-button" aria-label="환경 변경 창 닫기" onClick={() => { setMessage(""); setEditingEnvironment(null); }}><Icon name="close" /></button></header><form onSubmit={submitEnvironmentEdit}><label>이름
                 <input name="name" defaultValue={editingEnvironment.name} required autoFocus /></label><label>식별자
                 <input name="slug" defaultValue={editingEnvironment.slug} maxLength={64} required /><small>환경 식별자는 변경할 수 있으며 중복은 사용할 수 없습니다.</small></label><label>정렬 순서
-                <input name="sortOrder" type="number" defaultValue={editingEnvironment.sortOrder ?? 0} required /></label>{message && <p className="form-message">{message}</p>}<footer><button type="button" className="secondary" onClick={() => setEditingEnvironment(null)}>취소
+                <input name="sortOrder" type="number" defaultValue={editingEnvironment.sortOrder ?? 0} required /></label><FormFeedback feedback={message} /><footer><button type="button" className="secondary" onClick={() => { setMessage(""); setEditingEnvironment(null); }}>취소
                 </button><button className="primary" disabled={busy}>{busy ? "변경 중…" : "변경"}</button></footer></form></section></div>)}
   </section>);}
 
@@ -1145,13 +1150,13 @@ function LdapSettingsPanel({ settings, onChanged }: { settings: LdapSettings | n
   const [form, setForm] = useState<LdapForm | null>(() => settings ? ldapFormFromSettings(settings) : null);
   const [mappingText, setMappingText] = useState(() => settings ? Object.entries(settings.groupMappings).map(([group, role]) => `${group}=${role}`).join("\n") : "");
   const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState("");
+  const [message, setMessage] = useFormFeedback();
   useEffect(() => {
     if (!settings) return;
     setForm(ldapFormFromSettings(settings));
     setMappingText(Object.entries(settings.groupMappings).map(([group, role]) => `${group}=${role}`).join("\n"));
   }, [settings]);
-  if (!form) return <div className="settings-panel"><p>LDAP 설정을 불러오는 중입니다…</p></div>;
+  if (!form) return <p>LDAP 설정을 불러오는 중입니다…</p>;
   const change = <K extends keyof LdapForm>(key: K, value: LdapForm[K]) => setForm((current) => current ? { ...current, [key]: value } : current);
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setMessage("");
@@ -1169,10 +1174,10 @@ function LdapSettingsPanel({ settings, onChanged }: { settings: LdapSettings | n
       delete payload.encryptionReady;
       const saved = await updateLdapSettings(payload);
       onChanged(saved); setMessage("LDAP 설정을 저장했습니다.");
-    } catch (error) { setMessage(error instanceof Error ? error.message : "LDAP 설정 저장에 실패했습니다"); }
+    } catch (error) { setMessage(error instanceof Error ? error.message : "LDAP 설정 저장에 실패했습니다", "alert"); }
     finally { setBusy(false); }
   }
-  return (<div className="settings-panel ldap-settings-panel" id="settings-panel-ldap" role="tabpanel" aria-labelledby="settings-tab-ldap">
+  return (
     <div className="table-frame"><div className="settings-panel-heading"><div><h2 className="table-title">LDAP 로그인</h2><p>Tracker에서 LDAP을 인증하고 같은 세션으로 KODA에 접근합니다. 비밀번호는 서버의 암호화 키로 저장됩니다.</p></div><span className={`user-status ${form.enabled && form.hasBindPassword ? "active" : "inactive"}`}>{form.enabled && form.hasBindPassword ? "구성됨" : "미설정"}</span></div>
       {previewMode && <p className="form-message" role="note">디자인 점검용 샘플입니다. 아래 서버·계정·그룹은 가상 값이며 실제 연결·저장은 하지 않습니다.</p>}
       <form className="ldap-form" onSubmit={submit}>
@@ -1189,13 +1194,13 @@ function LdapSettingsPanel({ settings, onChanged }: { settings: LdapSettings | n
         <h3>승인 정책</h3>
         <div className="form-row"><label className="login-checkbox"><input type="checkbox" checked={form.tlsMode !== "plain" && form.verifyCertificate} disabled /> {form.tlsMode === "plain" ? "인증서 검증 없음" : "인증서 검증 (필수)"}</label><label className="login-checkbox"><input type="checkbox" checked={form.autoProvision} onChange={(event) => change("autoProvision", event.target.checked)} /> LDAP 사용자 자동 생성</label><label>기본 역할<select value={form.defaultRole} onChange={(event) => change("defaultRole", event.target.value)}>{Object.entries(ROLE_LABELS).map(([role, label]) => <option value={role} key={role}>{label}</option>)}</select></label></div>
         <p className="form-message">자동 생성된 신규 LDAP 사용자는 항상 승인 대기 상태로 생성되며, 관리자가 승인한 뒤에만 로그인할 수 있습니다.</p>
-        {form.tlsMode === "plain" && <p className="form-message" role="alert">현재 AI 서버 호환 모드입니다. LDAP 자격증명이 네트워크에 평문으로 전달될 수 있으므로 내부망에서만 사용하고, 가능하면 StartTLS 또는 LDAPS로 전환하세요.</p>}
+        {form.tlsMode === "plain" && <p className="form-message" role="alert" data-tone="warning">현재 AI 서버 호환 모드입니다. LDAP 자격증명이 네트워크에 평문으로 전달될 수 있으므로 내부망에서만 사용하고, 가능하면 StartTLS 또는 LDAPS로 전환하세요.</p>}
         {!form.encryptionReady && <p className="form-message" role="alert">서버에 TRACKER_LDAP_ENCRYPTION_KEY가 없거나 올바르지 않아 bind 비밀번호를 저장할 수 없습니다.</p>}
-        {message && <p className="form-message" role="status">{message}</p>}
+        <FormFeedback feedback={message} />
         <footer><button className="primary" disabled={previewMode || busy || (form.enabled && !form.encryptionReady)}>{previewMode ? "샘플 모드 · 저장 안 함" : busy ? "저장 중…" : "LDAP 설정 저장"}</button></footer>
       </form>
     </div>
-  </div>);
+  );
 }
 
 export function SettingsPage({ users, services, environments = [], tokens, ldapSettings, policies, roleCatalog, bundles, auditEvents, isAdmin, canVulnerability, canVulnerabilityManage, canAudit, canUsers, canTokens, canPolicyEdit, canRoles, canSbomPolicies = false, canSbomPolicyManage = false, canReanalysis = false, canReanalysisManage = false, canNotifications = false, canNotificationManage = false, canMetadata = false, canMetadataManage = false, canProjects = false, canServices = false, canCatalogManage = false, canProjectRuns = false, onOpenRun, initialTab, onSync, onBaselineRefresh, onActivate, onPolicyChanged, onLdapChanged, onChanged }: {
@@ -1233,7 +1238,21 @@ export function SettingsPage({ users, services, environments = [], tokens, ldapS
   onChanged: () => void;
 }) {
   const [mode, setMode] = useState<"user" | "token" | null>(null);
-  const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab === "private-vulnerabilities" || initialTab === "metadata" || initialTab === "cve-search" ? "vulnerability" : initialTab || "users");
+  const legacyIntegrationTab = initialTab === "gitlab" || initialTab === "shared-ai" || initialTab === "ldap" ? initialTab : undefined;
+  const [activeTab, setActiveTab] = useState<SettingsTab>(() => {
+    if (legacyIntegrationTab) return "integration";
+    if (initialTab === "private-vulnerabilities" || initialTab === "metadata" || initialTab === "cve-search") return "vulnerability";
+    return initialTab || "users";
+  });
+  const [integrationTab, setIntegrationTab] = useState<IntegrationTab>(legacyIntegrationTab ?? "external");
+  const integrationTabs = ([
+    { id: "external", label: "외부 API", visible: canServices && canTokens && !previewMode },
+    { id: "gitlab", label: "GitLab 연동", visible: canServices && canTokens },
+    { id: "shared-ai", label: "AI 연동", visible: isAdmin && !previewMode },
+    { id: "ldap", label: "LDAP 로그인 연동", visible: isAdmin },
+  ] as const).filter(item => item.visible);
+  const canAccessIntegration = integrationTabs.length > 0;
+  const activeIntegrationTab = (integrationTabs.find(item => item.id === integrationTab) ?? integrationTabs[0])?.id;
   const [vulnerabilityDataTab, setVulnerabilityDataTab] = useState<"external" | "private" | "metadata" | "cve">(initialTab === "private-vulnerabilities" ? "private" : initialTab === "metadata" ? "metadata" : initialTab === "cve-search" ? "cve" : "external");
   const canExternalData = isAdmin && canVulnerability;
   const canPrivateData = isAdmin && (canMetadata || canMetadataManage);
@@ -1241,7 +1260,13 @@ export function SettingsPage({ users, services, environments = [], tokens, ldapS
   const canCveData = canVulnerability || canMetadata;
   const canSelectedVulnerabilityData = vulnerabilityDataTab === "cve" ? canCveData : vulnerabilityDataTab === "external" ? canExternalData : vulnerabilityDataTab === "private" ? canPrivateData : canMetadataData;
   const activeVulnerabilityDataTab = canSelectedVulnerabilityData ? vulnerabilityDataTab : canExternalData ? "external" : canPrivateData ? "private" : canMetadataData ? "metadata" : "cve";
-  const [message, setMessage] = useState("");
+  const vulnerabilityDataTabs = ([
+    { id: "cve", label: "CVE 검색", visible: canCveData },
+    { id: "external", label: "공개 참조 자료", visible: canExternalData },
+    { id: "private", label: "자체 등록 취약점", visible: canPrivateData },
+    { id: "metadata", label: "자료 현황·영향", visible: canMetadataData },
+  ] as const).filter(item => item.visible);
+  const [message, setMessage] = useFormFeedback();
   const [issuedToken, setIssuedToken] = useState<{ name: string; token: string; serviceId: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [userPage, setUserPage] = useState(1);
@@ -1261,16 +1286,14 @@ export function SettingsPage({ users, services, environments = [], tokens, ldapS
     if (canServices) tabs.push({ id: "services", label: "서비스·환경", icon: "service" });
     if (isAdmin) tabs.push({ id: "environment-admins", label: "환경별 관리자", icon: "user" });
     if (canSbomPolicies || canSbomPolicyManage) tabs.push({ id: "sbom-policies", label: "SBOM 정책", icon: "settings" });
-    if (canReanalysis || canReanalysisManage) tabs.push({ id: "reanalysis", label: "재분석 일정", icon: "settings" });
+    if (canReanalysis || canReanalysisManage) tabs.push({ id: "reanalysis", label: "스케쥴 관리", icon: "settings" });
     if (canNotifications || canNotificationManage) tabs.push({ id: "notifications", label: "알림함", icon: "audit" });
     if (canExternalData || canPrivateData || canMetadataData || canCveData) tabs.push({ id: "vulnerability", label: "취약점 데이터", icon: "vulnerability" });
-    if (!previewMode && (canMetadata || canMetadataManage)) tabs.push({ id: "compatibility-data", label: "공식 호환성 자료", icon: "integration" });
-    if (canServices && canTokens) tabs.push({ id: "integration", label: "연동 설정", icon: "integration" });
-    if (isAdmin && !previewMode) tabs.push({ id: "shared-ai", label: "공통 AI", icon: "integration" });
-    if (isAdmin) tabs.push({ id: "ldap", label: "LDAP 로그인", icon: "lock" });
+    if (!previewMode && (canMetadata || canMetadataManage)) tabs.push({ id: "compatibility-data", label: "호환성 자료", icon: "integration" });
+    if (canAccessIntegration) tabs.push({ id: "integration", label: "연동 설정", icon: "integration" });
     if (isAdmin && canAudit) tabs.push({ id: "audit", label: "감사 로그", icon: "audit" });
     return tabs;
-  }, [canExternalData, canPrivateData, canMetadata, canMetadataManage, canMetadataData, canCveData, canProjects, canReanalysis, canReanalysisManage, canNotifications, canNotificationManage, canSbomPolicies, canSbomPolicyManage, canAudit, canPolicyEdit, canRoles, canServices, canTokens, canUsers, isAdmin]);
+  }, [canExternalData, canPrivateData, canMetadata, canMetadataManage, canMetadataData, canCveData, canProjects, canReanalysis, canReanalysisManage, canNotifications, canNotificationManage, canSbomPolicies, canSbomPolicyManage, canAudit, canPolicyEdit, canRoles, canServices, canTokens, canUsers, canAccessIntegration, isAdmin]);
   useEffect(
     () =>
       setPolicyDraft(
@@ -1288,27 +1311,27 @@ export function SettingsPage({ users, services, environments = [], tokens, ldapS
       if (mode === "token") {
         const result = await createApiToken({ name: String(values.get("name")), serviceId: String(values.get("serviceId") || "") });
         setIssuedToken(result);} else { setMode(null);}
-      setMessage(mode === "token" ? "토큰이 발급되었습니다. 지금 한 번만 복사하세요." : "사용자를 등록했습니다."); onChanged();} catch (error) { setMessage(error instanceof Error ? error.message : "처리에 실패했습니다");} finally { setBusy(false);}
+      setMessage(mode === "token" ? "토큰이 발급되었습니다. 지금 한 번만 복사하세요." : "사용자를 등록했습니다."); onChanged();} catch (error) { setMessage(error instanceof Error ? error.message : "처리에 실패했습니다", "alert");} finally { setBusy(false);}
   }
   async function revoke(id: string) {
     setBusy(true); setMessage("");
-    try { await revokeApiToken(id); setMessage("토큰을 폐기했습니다."); onChanged();} catch (error) { setMessage(error instanceof Error ? error.message : "토큰 폐기에 실패했습니다");} finally { setBusy(false);}
+    try { await revokeApiToken(id); setMessage("토큰을 폐기했습니다."); onChanged();} catch (error) { setMessage(error instanceof Error ? error.message : "토큰 폐기에 실패했습니다", "alert");} finally { setBusy(false);}
   }
   async function updateUser(item: UserSummary, field: "role" | "active", value: string | boolean) {
     if (!item.id) return;
     setBusy(true); setMessage("");
-    try { await patchUser(item.id, field === "role" ? { role: String(value) } : { active: Boolean(value) }); setMessage("사용자 권한을 변경했습니다."); onChanged();} catch (error) { setMessage(error instanceof Error ? error.message : "사용자 변경에 실패했습니다");} finally { setBusy(false);}
+    try { await patchUser(item.id, field === "role" ? { role: String(value) } : { active: Boolean(value) }); setMessage("사용자 권한을 변경했습니다."); onChanged();} catch (error) { setMessage(error instanceof Error ? error.message : "사용자 변경에 실패했습니다", "alert");} finally { setBusy(false);}
   }
   async function approve(item: UserSummary) {
     if (!item.id) return;
     setBusy(true); setMessage("");
-    try { await approveUser(item.id); setMessage("가입 신청을 승인했습니다."); onChanged();} catch (error) { setMessage(error instanceof Error ? error.message : "가입 승인에 실패했습니다");} finally { setBusy(false);}
+    try { await approveUser(item.id); setMessage("가입 신청을 승인했습니다."); onChanged();} catch (error) { setMessage(error instanceof Error ? error.message : "가입 승인에 실패했습니다", "alert");} finally { setBusy(false);}
   }
   async function removeUser(item: UserSummary) {
     if (!item.id || !window.confirm(`${item.username} 사용자를 삭제하시겠습니까? 기존 SBOM 회차의 업로더 이력은 감사 로그에 보존됩니다.`)) return;
     setBusy(true); setMessage("");
     try { await deleteUser(item.id); setMessage("사용자를 삭제했습니다."); onChanged(); }
-    catch (error) { setMessage(error instanceof Error ? error.message : "사용자 삭제에 실패했습니다"); }
+    catch (error) { setMessage(error instanceof Error ? error.message : "사용자 삭제에 실패했습니다", "alert"); }
     finally { setBusy(false); }
   }
   const roles = policies.map((item) => item.role);
@@ -1325,40 +1348,38 @@ export function SettingsPage({ users, services, environments = [], tokens, ldapS
   const currentGitlabServicePage = Math.min(gitlabServicePage, gitlabServicePageCount);
   const visibleGitlabServices = gitlabServices.slice((currentGitlabServicePage - 1) * gitlabPageSize, currentGitlabServicePage * gitlabPageSize);
   return (<section className="page generic-page">
-    <div className="page-heading"><div><h1>설정</h1><p>사용자·권한·취약점 데이터·감사 로그와 연동을 관리합니다.</p></div>{activeTab === "users" && (<div className="button-row">{canTokens && (<button type="button" className="secondary" onClick={() => { setIssuedToken(null); setMode("token"); }}>API 토큰 발급</button>)}{canUsers && (<button type="button" className="primary" onClick={() => setMode("user")}>사용자 추가</button>)}</div>)}</div>
-    <div className="settings-tabs" role="tablist" aria-label="설정 하위 메뉴">
-      {settingsTabs.map((tab) => (<button type="button" role="tab" id={`settings-tab-${tab.id}`} aria-controls={`settings-panel-${tab.id}`} aria-selected={activeTab === tab.id} className={activeTab === tab.id ? "active" : ""} key={tab.id} onClick={() => setActiveTab(tab.id)}><Icon name={tab.icon} /><span>{tab.label}</span></button>))}
-    </div>
-    {message && (<p className="form-message" role="status">{message}</p>)}
-    {activeTab === "projects" && canProjects && <><ProjectCatalogPanel canManage={isAdmin} canViewRuns={canProjectRuns} onOpenRun={onOpenRun} services={services} environments={environments}/></>}
+    <div className="page-heading"><div><h1>설정</h1><p>사용자·권한·취약점 데이터·감사 로그와 연동을 관리합니다.</p></div>{activeTab === "users" && (<div className="button-row">{canTokens && (<button type="button" className="secondary" onClick={() => { setMessage(""); setIssuedToken(null); setMode("token"); }}>API 토큰 발급</button>)}{canUsers && (<button type="button" className="primary" onClick={() => { setMessage(""); setMode("user"); }}>사용자 추가</button>)}</div>)}</div>
+    <TabList label="설정 하위 메뉴" idPrefix="settings" level="page" items={settingsTabs} value={activeTab} onChange={setActiveTab} />
+    {!mode && <FormFeedback feedback={message} />}
+    {activeTab === "projects" && canProjects && <div id="settings-panel-projects" role="tabpanel" aria-labelledby="settings-tab-projects"><ProjectCatalogPanel canManage={isAdmin} canViewRuns={canProjectRuns} onOpenRun={onOpenRun} services={services} environments={environments}/></div>}
 
     {issuedToken && activeTab === "users" && (<div className="token-reveal"><strong>{issuedToken.name}</strong><code>{issuedToken.token}</code><span>서비스 ID <code>{issuedToken.serviceId}</code></span><button type="button" className="secondary compact" onClick={() => void copyOrShow("KODA 서비스 토큰", issuedToken.token)}>토큰 복사</button><button type="button" className="secondary compact" onClick={() => void copyOrShow("서비스 연동 ID", issuedToken.serviceId)}>서비스 ID 복사</button></div>)}
     {activeTab === "users" && canUsers && (<p className="form-message">가입 신청 계정은 승인 대기로 구분됩니다. 역할을 확인한 뒤 승인하세요.</p>)}
     {activeTab === "compatibility-data" && !previewMode && (canMetadata || canMetadataManage) && <div id="settings-panel-compatibility-data" role="tabpanel" aria-labelledby="settings-tab-compatibility-data"><OfficialCompatibilityData canManage={canMetadataManage} /></div>}
-    {activeTab === "integration" && (canServices && canTokens) && (<div className="settings-panel integration-settings-panel" id="settings-panel-integration" role="tabpanel" aria-labelledby="settings-tab-integration">
-      {!previewMode && <ExternalReadTokens services={services} environments={environments} />}
-      {canServices && canTokens && (<>
+    {activeTab === "integration" && activeIntegrationTab && (<div className="settings-panel" id="settings-panel-integration" role="tabpanel" aria-labelledby="settings-tab-integration">
+      <TabList label="연동 설정 종류" idPrefix="integration" items={integrationTabs}
+        value={activeIntegrationTab} onChange={setIntegrationTab} />
+      {activeIntegrationTab === "external" && <div id="integration-panel-external" role="tabpanel" aria-labelledby="integration-tab-external">
+        <ExternalReadTokens services={services} environments={environments} />
+      </div>}
+      {activeIntegrationTab === "gitlab" && <div className="integration-settings-panel" id="integration-panel-gitlab" role="tabpanel" aria-labelledby="integration-tab-gitlab">
         <div className="table-frame integration-status"><div className="settings-panel-heading"><div><h2 className="table-title">KODA GitLab 자동 연동</h2><p>GitLab 연결과 저장소 선택은 KODA에서만 설정합니다. Tracker는 KODA 요청을 받아 저장소별 서비스·환경·전송 토큰을 자동 생성하거나 재사용합니다.</p></div><span className={`user-status ${gitlabServices.length ? "active" : "inactive"}`}>{gitlabServices.length ? "저장소 연결됨" : "연결 대기"}</span></div><div className="integration-status-body"><p>GitLab 저장소 → KODA 점검·CycloneDX 생성 → Tracker 회차 수신·분석 → KODA가 GitLab 결과 MR·취약점 이슈 저장</p><p>{gitlabEnvironment ? "gitlab-source 환경이 자동 준비되었습니다." : "첫 저장소 연결 시 gitlab-source 환경이 자동 준비됩니다."}</p><div className="button-row"><button type="button" className="secondary" onClick={() => setActiveTab("services")}>자동 생성 항목 보기</button></div></div></div>
         <div className="table-frame"><h2 className="table-title">자동 생성된 저장소 서비스</h2><div className="table-scroll" role="region" aria-label="저장소 서비스 목록 가로 스크롤" tabIndex={0}><ResizableTable className="gitlab-service-flow-table"><thead><tr><th>GitLab 저장소</th><th>Tracker 식별자</th><th>전송 토큰</th></tr></thead><tbody>{gitlabServices.length ? visibleGitlabServices.map((item) => { const tokenCount = tokens.filter((token) => token.active && token.serviceId === item.id).length; return (<tr key={item.id}><td><ScrollingText>{item.name}</ScrollingText></td><td className="mono"><ScrollingText>{item.slug}</ScrollingText></td><td>{tokenCount ? "활성" : "확인 필요"}</td></tr>);}) : (<tr><td colSpan={3}>KODA에서 연결한 GitLab 저장소가 없습니다.</td></tr>)}</tbody></ResizableTable></div><DetailPagination total={gitlabServices.length} page={currentGitlabServicePage} pageSize={gitlabPageSize} label="GitLab 서비스 페이지당 행 수" onPage={setGitlabServicePage} onPageSize={(size) => { setGitlabPageSize(size); setGitlabServicePage(1); }} /></div>
-      </>)}
+      </div>}
+      {activeIntegrationTab === "shared-ai" && <div id="integration-panel-shared-ai" role="tabpanel" aria-labelledby="integration-tab-shared-ai"><SharedAISettingsPanel /></div>}
+      {activeIntegrationTab === "ldap" && <div id="integration-panel-ldap" role="tabpanel" aria-labelledby="integration-tab-ldap"><LdapSettingsPanel settings={ldapSettings} onChanged={onLdapChanged} /></div>}
     </div>)}
-    {activeTab === "shared-ai" && isAdmin && !previewMode && <div id="settings-panel-shared-ai" role="tabpanel" aria-labelledby="settings-tab-shared-ai"><SharedAISettingsPanel /></div>}
     {activeTab === "reanalysis" && (canReanalysis || canReanalysisManage) && <ReanalysisSchedulePanel canManage={canReanalysisManage} services={services} environments={environments} />}
     {activeTab === "notifications" && (canNotifications || canNotificationManage) && <NotificationsPanel canManage={canNotificationManage} />}
     {activeTab === "sbom-policies" && (canSbomPolicies || canSbomPolicyManage) && <SbomPoliciesPanel canManage={canSbomPolicyManage} services={services} environments={environments} />}
     {activeTab === "services" && canServices && (<div id="settings-panel-services" role="tabpanel" aria-labelledby="settings-tab-services"><ServicesPage services={services} environments={environments} canManage={canCatalogManage} onChanged={onChanged} /></div>)}
     {activeTab === "environment-admins" && isAdmin && <div id="settings-panel-environment-admins" role="tabpanel" aria-labelledby="settings-tab-environment-admins"><EnvironmentAdministrators /></div>}
-    {activeTab === "ldap" && isAdmin && (<LdapSettingsPanel settings={ldapSettings} onChanged={onLdapChanged} />)}
     {activeTab === "users" && (canUsers || canTokens) && (<div className="settings-panel" id="settings-panel-users" role="tabpanel" aria-labelledby="settings-tab-users"><div className="settings-grid">{canUsers && (<div className="table-frame"><h2 className="table-title">사용자 {users.length}명</h2><div className="table-scroll" role="region" aria-label="사용자 목록 가로 스크롤" tabIndex={0}><ResizableTable className="settings-users-flow-table"><thead><tr><th>사용자</th><th>역할</th><th>상태</th><th>작업</th></tr></thead><tbody>{users.length ? visibleUsers.map((item) => (<tr key={item.id || item.username} className={item.status === "pending" ? "pending-user" : ""}><td><ScrollingText>{item.username}</ScrollingText></td><td><select aria-label={`${item.username} 역할`} value={item.role} disabled={busy || item.status === "deleted"} onChange={(event) => void updateUser(item, "role", event.target.value)}>{canRoles && (<><option value="admin">관리자</option><option value="manager">매니저</option></>)}<option value="analyst">분석자</option><option value="uploader">업로더</option><option value="viewer">조회자</option></select></td><td><span className={`user-status ${item.status || (item.active ? "active" : "inactive")}`}>{userStatusLabel(item)}</span></td><td>{item.id && (item.status === "pending" ? (<button type="button" className="primary compact" disabled={busy} onClick={() => void approve(item)}>승인</button>) : item.status === "deleted" ? (<span>삭제됨</span>) : (<><button type="button" className="secondary compact" disabled={busy} onClick={() => void updateUser(item, "active", !item.active)}>{item.active ? "비활성화" : "활성화"}</button>{<button type="button" className="danger compact" disabled={busy} onClick={() => void removeUser(item)}>삭제</button>}</>))}</td></tr>)) : (<tr><td colSpan={4}>등록된 사용자가 없습니다.</td></tr>)}</tbody></ResizableTable></div><DetailPagination total={users.length} page={currentUserPage} pageSize={accountPageSize} label="사용자 페이지당 행 수" onPage={setUserPage} onPageSize={(size) => { setAccountPageSize(size); setUserPage(1); setTokenPage(1); }} /></div>)}{canTokens && (<div className="table-frame"><h2 className="table-title">API 토큰 {tokens.length}개</h2><div className="table-scroll" role="region" aria-label="API 토큰 목록 가로 스크롤" tabIndex={0}><ResizableTable className="settings-tokens-flow-table"><thead><tr><th>이름</th><th>서비스</th><th>생성 시각</th><th>상태</th><th /></tr></thead><tbody>{tokens.length ? visibleTokens.map((item) => (<tr key={item.id}><td><ScrollingText>{item.name}</ScrollingText></td><td><ScrollingText>{services.find((service) => service.id === item.serviceId)?.name || item.serviceId || "-"}</ScrollingText></td><td>{formatSeoulDateTime(item.createdAt)}</td><td>{item.active ? "활성" : "폐기"}</td><td>{item.active && (<button type="button" className="secondary compact" onClick={() => void revoke(item.id)} disabled={busy}>폐기</button>)}</td></tr>)) : (<tr><td colSpan={5}>발급된 토큰이 없습니다.</td></tr>)}</tbody></ResizableTable></div><DetailPagination total={tokens.length} page={currentTokenPage} pageSize={accountPageSize} label="토큰 페이지당 행 수" onPage={setTokenPage} onPageSize={(size) => { setAccountPageSize(size); setUserPage(1); setTokenPage(1); }} /></div>)}</div></div>)}
-    {activeTab === "roles" && canPolicyEdit && policies.length > 0 && (<div className="settings-panel" id="settings-panel-roles" role="tabpanel" aria-labelledby="settings-tab-roles"><div className="table-frame"><h2 className="table-title">권한 정책</h2>{POLICY_SECTIONS.map((section) => (<section className="role-policy-section" key={section.label}><div className="role-policy-section-heading"><h3>{section.label}</h3><p>{section.description}</p></div><div className="role-policy-grid">{roles.map((role) => (<fieldset key={role} aria-label={`${roleLabel(role)} ${section.label}`}><legend>{roleLabel(role)}</legend>{section.groups.map((group) => { const entries = group.permissions.filter((permission) => permissionNames.includes(permission)); return entries.length ? (<div className="permission-group" key={group.label}>{section.label === "기능 제어" && <h4>{group.label}</h4>}{entries.map((permission) => (<label key={permission}><input type="checkbox" checked={policyDraft[role]?.has(permission) || false} disabled={!canPolicyEdit || busy || (permission === "sbom.delete" && role !== "admin")} onChange={() => setPolicyDraft((current) => { const next = new Set(current[role] || []); if (next.has(permission)) next.delete(permission); else next.add(permission); return { ...current, [role]: next }; })} />{section.label === "화면 접근 권한" ? permissionLabel(permission).replace(/ 조회$/, "") : permissionLabel(permission)}</label>))}</div>) : null; })}</fieldset>))}</div></section>))}{canPolicyEdit && (<div className="role-policy-actions"><button type="button" className="primary" onClick={async () => { setBusy(true); setMessage(""); try { const changed = roles.filter((role) => { const before = policies.find((item) => item.role === role)?.permissions || []; const after = [...(policyDraft[role] || [])]; return before.length !== after.length || before.some((item) => !policyDraft[role]?.has(item)); }); if (!changed.length) { setMessage("변경된 역할 정책이 없습니다."); return; } const updated = await updateRolePolicies(changed.map((role) => ({ role, permissions: [...(policyDraft[role] || [])] }))); const next = policies.map((item) => updated.find((changedPolicy) => changedPolicy.role === item.role) || item); await onPolicyChanged(next); setMessage("역할 정책을 저장했습니다."); } catch (error) { setMessage(error instanceof Error ? error.message : "역할 정책 저장에 실패했습니다."); } finally { setBusy(false); } }}>권한 정책 저장</button></div>)}</div></div>)}
+    {activeTab === "roles" && canPolicyEdit && policies.length > 0 && (<div className="settings-panel" id="settings-panel-roles" role="tabpanel" aria-labelledby="settings-tab-roles"><div className="table-frame"><h2 className="table-title">권한 정책</h2>{POLICY_SECTIONS.map((section) => (<section className="role-policy-section" key={section.label}><div className="role-policy-section-heading"><h3>{section.label}</h3><p>{section.description}</p></div><div className="role-policy-grid">{roles.map((role) => (<fieldset key={role} aria-label={`${roleLabel(role)} ${section.label}`}><legend>{roleLabel(role)}</legend>{section.groups.map((group) => { const entries = group.permissions.filter((permission) => permissionNames.includes(permission)); return entries.length ? (<div className="permission-group" key={group.label}>{section.label === "기능 제어" && <h4>{group.label}</h4>}{entries.map((permission) => (<label key={permission}><input type="checkbox" checked={policyDraft[role]?.has(permission) || false} disabled={!canPolicyEdit || busy || (permission === "sbom.delete" && role !== "admin")} onChange={() => setPolicyDraft((current) => { const next = new Set(current[role] || []); if (next.has(permission)) next.delete(permission); else next.add(permission); return { ...current, [role]: next }; })} />{section.label === "화면 접근 권한" ? permissionLabel(permission).replace(/ 조회$/, "") : permissionLabel(permission)}</label>))}</div>) : null; })}</fieldset>))}</div></section>))}{canPolicyEdit && (<div className="role-policy-actions"><button type="button" className="primary" onClick={async () => { setBusy(true); setMessage(""); try { const changed = roles.filter((role) => { const before = policies.find((item) => item.role === role)?.permissions || []; const after = [...(policyDraft[role] || [])]; return before.length !== after.length || before.some((item) => !policyDraft[role]?.has(item)); }); if (!changed.length) { setMessage("변경된 역할 정책이 없습니다."); return; } const updated = await updateRolePolicies(changed.map((role) => ({ role, permissions: [...(policyDraft[role] || [])] }))); const next = policies.map((item) => updated.find((changedPolicy) => changedPolicy.role === item.role) || item); await onPolicyChanged(next); setMessage("역할 정책을 저장했습니다."); } catch (error) { setMessage(error instanceof Error ? error.message : "역할 정책 저장에 실패했습니다.", "alert"); } finally { setBusy(false); } }}>권한 정책 저장</button></div>)}</div></div>)}
     {activeTab === "vulnerability" && (canExternalData || canPrivateData || canMetadataData || canCveData) && (<div id="settings-panel-vulnerability" role="tabpanel" aria-labelledby="settings-tab-vulnerability">
       <div className="page-heading vulnerability-data-heading"><h1>취약점 데이터</h1>
-        <div className="settings-tabs vulnerability-data-tabs" role="tablist" aria-label="취약점 데이터 종류">
-          {canCveData && <button type="button" role="tab" id="vulnerability-data-tab-cve" aria-controls="vulnerability-data-panel-cve" aria-selected={activeVulnerabilityDataTab === "cve"} className={activeVulnerabilityDataTab === "cve" ? "active" : ""} onClick={() => setVulnerabilityDataTab("cve")}>CVE 검색</button>}
-          {canExternalData && <button type="button" role="tab" id="vulnerability-data-tab-external" aria-controls="vulnerability-data-panel-external" aria-selected={activeVulnerabilityDataTab === "external"} className={activeVulnerabilityDataTab === "external" ? "active" : ""} onClick={() => setVulnerabilityDataTab("external")}>공개 참조 자료</button>}
-          {canPrivateData && <button type="button" role="tab" id="vulnerability-data-tab-private" aria-controls="vulnerability-data-panel-private" aria-selected={activeVulnerabilityDataTab === "private"} className={activeVulnerabilityDataTab === "private" ? "active" : ""} onClick={() => setVulnerabilityDataTab("private")}>자체 등록 취약점</button>}
-          {canMetadataData && <button type="button" role="tab" id="vulnerability-data-tab-metadata" aria-controls="vulnerability-data-panel-metadata" aria-selected={activeVulnerabilityDataTab === "metadata"} className={activeVulnerabilityDataTab === "metadata" ? "active" : ""} onClick={() => setVulnerabilityDataTab("metadata")}>자료 현황·영향</button>}
-        </div>
+        <TabList label="취약점 데이터 종류" idPrefix="vulnerability-data" items={vulnerabilityDataTabs}
+          value={activeVulnerabilityDataTab} onChange={setVulnerabilityDataTab} />
       </div>
       {activeVulnerabilityDataTab === "cve" && canCveData && <div id="vulnerability-data-panel-cve" role="tabpanel" aria-labelledby="vulnerability-data-tab-cve"><CveSearchPanel onOpenRun={canProjectRuns ? runId => { void fetchRun(runId).then(run => onOpenRun?.(run)).catch(cause => setMessage(cause instanceof Error ? cause.message : "연결된 회차를 열지 못했습니다.")); } : undefined} /></div>}
       {activeVulnerabilityDataTab === "external" && canExternalData && <div id="vulnerability-data-panel-external" role="tabpanel" aria-labelledby="vulnerability-data-tab-external"><VulnerabilityPage embedded bundles={bundles} canManage={canVulnerabilityManage} onSync={onSync} onBaselineRefresh={onBaselineRefresh} onActivate={onActivate} /></div>}
@@ -1370,7 +1391,7 @@ export function SettingsPage({ users, services, environments = [], tokens, ldapS
     </div>)}
     {activeTab === "audit" && isAdmin && canAudit && (<div id="settings-panel-audit" role="tabpanel" aria-labelledby="settings-tab-audit"><AuditPage embedded events={auditEvents} /></div>)}
     {!settingsTabs.length && (<div className="empty-state"><Icon name="settings" /><h2>관리 가능한 설정이 없습니다.</h2><p>현재 계정에 허용된 설정 권한이 없습니다.</p></div>)}
-    {mode && (<div className="modal-backdrop" role="presentation"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="settings-modal-title"><header><h2 id="settings-modal-title">{mode === "user" ? "사용자 추가" : "API 토큰 발급"}</h2><button type="button" className="icon-button" aria-label="설정 창 닫기" onClick={() => setMode(null)}><Icon name="close" /></button></header><form onSubmit={submit}>{mode === "user" ? (<><label>사용자 이름<input name="username" required autoFocus /></label><label>임시 비밀번호<input name="password" type="password" minLength={12} required /></label><label>역할<select name="role" defaultValue="viewer">{canRoles && (<><option value="admin">관리자</option><option value="manager">매니저</option></>)}<option value="analyst">분석자</option><option value="uploader">업로더</option><option value="viewer">조회자</option></select></label></>) : (<><label>토큰 이름<input name="name" required autoFocus /></label><label>허용 서비스<FlowSelect name="serviceId" required><option value="" disabled>서비스를 선택하세요</option>{services.map((item) => (<option key={item.id} value={item.id}>{item.name}</option>))}</FlowSelect></label><small>서비스 범위 토큰입니다. 토큰 원문은 지금만 표시되며 서버에는 해시만 저장됩니다.</small></>)}{message && <p className="form-message">{message}</p>}<footer><button type="button" className="secondary" onClick={() => setMode(null)}>닫기</button><button className="primary" disabled={busy}>{busy ? "처리 중…" : "확인"}</button></footer></form></section></div>)}
+    {mode && (<div className="modal-backdrop" role="presentation"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="settings-modal-title"><header><h2 id="settings-modal-title">{mode === "user" ? "사용자 추가" : "API 토큰 발급"}</h2><button type="button" className="icon-button" aria-label="설정 창 닫기" onClick={() => { setMessage(""); setMode(null); }}><Icon name="close" /></button></header><form onSubmit={submit}>{mode === "user" ? (<><label>사용자 이름<input name="username" required autoFocus /></label><label>임시 비밀번호<input name="password" type="password" minLength={12} required /></label><label>역할<select name="role" defaultValue="viewer">{canRoles && (<><option value="admin">관리자</option><option value="manager">매니저</option></>)}<option value="analyst">분석자</option><option value="uploader">업로더</option><option value="viewer">조회자</option></select></label></>) : (<><label>토큰 이름<input name="name" required autoFocus /></label><label>허용 서비스<FlowSelect name="serviceId" required><option value="" disabled>서비스를 선택하세요</option>{services.map((item) => (<option key={item.id} value={item.id}>{item.name}</option>))}</FlowSelect></label><small>서비스 범위 토큰입니다. 토큰 원문은 지금만 표시되며 서버에는 해시만 저장됩니다.</small></>)}<FormFeedback feedback={message} /><footer><button type="button" className="secondary" onClick={() => { setMessage(""); setMode(null); }}>닫기</button><button className="primary" disabled={busy}>{busy ? "처리 중…" : "확인"}</button></footer></form></section></div>)}
   </section>);
 }
 

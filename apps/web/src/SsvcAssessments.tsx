@@ -3,7 +3,7 @@ import { FlowSelect } from "./ScrollingSelect";
 import { useEffect, useState, type FormEvent } from "react";
 import { previewMode } from "./api";
 import { formatSeoulDateTime } from "./format";
-import { WorkflowPagination } from "./ReanalysisSchedule";
+import { DetailPagination } from "./DetailPagination";
 import { fetchSsvcAssessments, submitSsvcAssessment, type SsvcAssessmentInput, type SsvcInputs, type SsvcResult } from "./ssvcApi";
 
 const outcomes: Record<string, string> = {
@@ -112,6 +112,6 @@ export function SsvcAssessmentsPanel({ runId, findings, canManage }: { runId: st
       <details><summary>입력·근거 스냅샷 보기</summary><p>모델 {item.model} · 결정표 SHA-256 {item.tableSha256}</p><pre className="wrap tracker-raw-code">{JSON.stringify({ inputs: item.inputs, references: item.references, evidence: item.evidence }, null, 2)}</pre></details>
     </article>)}
     {load === "ready" && !result.items.length && <p>저장된 SSVC 판단이 없습니다. 미평가 상태입니다.</p>}
-    <WorkflowPagination page={page} total={result.total} pageSize={20} label="SSVC 판단" onPage={setPage} />
+    <DetailPagination page={page} total={result.total} pageSize={20} label="SSVC 판단" onPage={setPage} />
   </RunDetailCard>;
 }

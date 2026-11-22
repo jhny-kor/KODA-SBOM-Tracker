@@ -8,7 +8,7 @@ vi.mock("./api", () => ({ previewMode: false }));
 vi.mock("./cve-search-api", async original => ({ ...await original<typeof import("./cve-search-api")>(), fetchCveCatalog: vi.fn(), fetchCveDetail: vi.fn() }));
 const product = { source: "cna" as const, sourceIdentifier: "issuer@example.test", vendor: "vendor", product: "example-json", condition: "발행기관 공지", ranges: [{ label: "1.0.0 이상 · 1.4.2 미만", status: "affected", versionType: "semver" }] };
 const row = { id: "CVE-2026-10001", description: "Example description", status: "Analyzed", cvss: 8.1, products: [product], published: "2026-10-25", lastModified: "2026-10-29", versionMatch: "unknown" as const };
-const page: CveCatalogPage = { state: "ready", bundleVersion: "one", dataAsOf: "2026-10-29", source: "승인 자료", items: [row], total: 21, page: 1, size: 20, versionSearchNote: "조건 불충분 시 확인 필요" };
+const page: CveCatalogPage = { state: "ready", bundleVersion: "one", dataAsOf: "2026-10-29", source: "승인 자료", items: [row], total: 21, page: 1, size: 10, versionSearchNote: "조건 불충분 시 확인 필요" };
 const detail: CveCatalogDetail = { ...row, bundleVersion: "one", dataAsOf: "2026-10-29", affected: [], configurations: [], weaknesses: [], references: ["https://example.test/advisory"], applicabilityNote: "범위 상한을 수정 버전으로 단정하지 않습니다.", observations: { available: true, truncated: false, items: [{ runId: "run", service: "결제 API", environment: "운영", release: "2026.10.1", component: "example-json", version: "1.4.0", observedAt: "2026-10-29T00:20:00Z", analysisState: "completed", dataAsOf: "2026-10-29" }] } };
 
 beforeEach(() => { vi.mocked(fetchCveCatalog).mockResolvedValue(structuredClone(page)); vi.mocked(fetchCveDetail).mockResolvedValue(structuredClone(detail)); });
@@ -24,7 +24,7 @@ it("searches software and version, switches source, and opens stored SBOM eviden
   fireEvent.change(screen.getByLabelText("CVE 소프트웨어명"), { target: { value: "example-json" } });
   fireEvent.change(screen.getByLabelText("CVE 검색 버전"), { target: { value: "1.4.0" } });
   fireEvent.click(screen.getByRole("button", { name: "검색" }));
-  await waitFor(() => expect(fetchCveCatalog).toHaveBeenLastCalledWith({ q: "", vendor: "", product: "example-json", version: "1.4.0" }, 1));
+  await waitFor(() => expect(fetchCveCatalog).toHaveBeenLastCalledWith({ q: "", vendor: "", product: "example-json", version: "1.4.0" }, 1, 10));
   fireEvent.click(await screen.findByRole("tab", { name: "NVD 분석 조건" }));
   expect(screen.getByRole("tabpanel", { name: "NVD 분석 조건" })).toHaveTextContent("보존된 제품·버전 정보가 없습니다");
   fireEvent.click(screen.getByRole("button", { name: "SBOM 회차 보기" })); expect(onOpenRun).toHaveBeenCalledWith("run");
@@ -33,7 +33,12 @@ it("searches software and version, switches source, and opens stored SBOM eviden
 it("paginates and clearly distinguishes unavailable data from no CVEs", async () => {
   render(<CveSearchPanel/>); await screen.findByText("Example description");
   fireEvent.click(screen.getByRole("button", { name: "CVE 다음 페이지" }));
-  await waitFor(() => expect(fetchCveCatalog).toHaveBeenLastCalledWith({ q: "", vendor: "", product: "", version: "" }, 2));
+  await waitFor(() => expect(fetchCveCatalog).toHaveBeenLastCalledWith({ q: "", vendor: "", product: "", version: "" }, 2, 10));
+  const size = await screen.findByRole("combobox", { name: "CVE 페이지당 행 수" });
+  expect(size).toHaveValue("10");
+  fireEvent.change(size, { target: { value: "25" } });
+  await waitFor(() => expect(fetchCveCatalog).toHaveBeenLastCalledWith({ q: "", vendor: "", product: "", version: "" }, 1, 25));
+  expect(await screen.findByRole("button", { name: "열 1과 2 너비 조절" })).toBeInTheDocument();
   vi.mocked(fetchCveCatalog).mockRejectedValueOnce(new Error("승인된 NVD 자료 없음"));
   fireEvent.click(screen.getByRole("button", { name: "검색" }));
   expect(await screen.findByRole("alert")).toHaveTextContent("승인된 NVD 자료 없음");

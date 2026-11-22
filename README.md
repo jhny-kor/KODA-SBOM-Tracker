@@ -28,14 +28,16 @@
 
 기능과 화면을 더 자세히 보려면 [화면·기능 한눈에 보기](docs/koda-sbom-tracker-overview-ko.md)를 먼저 읽습니다.
 
-## 2026-11-08 변경사항
+## 연동과 운영 화면
 
 | 기능 | 화면에서 확인하는 방법 |
 | --- | --- |
-| 외부 시스템 조회 API | **설정 → 연동 설정 → 외부 API 조회 토큰**에서 서비스·환경 범위를 정합니다. 외부 시스템은 회차·구성요소·취약점·회차 비교와 Java 후보 검토를 조회할 수 있습니다. [외부 API 가이드](docs/integrations-java-ai-ko.md#외부-사이트에서-tracker-조회) |
+| 외부 시스템 조회 API | **설정 → 연동 설정 → 외부 API**의 **외부 API 조회 토큰**에서 서비스·환경 범위를 정합니다. 외부 시스템은 회차·구성요소·취약점·회차 비교와 Java 후보 검토를 조회할 수 있습니다. [외부 API 가이드](docs/integrations-java-ai-ko.md#외부-사이트에서-tracker-조회) |
+| GitLab 연동 | **설정 → 연동 설정 → GitLab 연동**에서 연결 상태, 자동 생성된 저장소 서비스와 전송 토큰 상태를 확인합니다. 저장소는 KODA에서 선택합니다. [GitLab 연동 가이드](docs/koda-integration-ko.md#gitlab-기반-koda-결과-수신) |
+| LDAP 로그인 연동 | **설정 → 연동 설정 → LDAP 로그인 연동**에서 LDAP 서버와 TLS, 사용자 검색, 그룹·역할 매핑을 관리합니다. [운영 가이드](docs/operations-ko.md#2-1-계정과-권한-초기화) |
 | 버전 영향과 후보 일괄 검토 | **SBOM 회차 상세**에서 Java 배포 기준과 의존 경로를 확인합니다. 같은 서비스·환경의 Java/Maven, Python, Linux C/ELF 후보를 일괄 검토하면 조건 충족 최고 버전, 후보별 충돌 근거, 빌드·실행 기록이 구분됩니다. [후보 검토 가이드](docs/offline-upgrade-ko.md) |
-| 공식 호환성 자료 | 기관별 공개 카탈로그를 수집하고 **설정 → 공식 호환성 자료**에서 Tracker용 압축을 반입합니다. 일치하는 후보 SBOM 행에 기관·선언 근거·원본 URL·SHA-256이 연결됩니다. [수집·반입 가이드](docs/official-compatibility-data-ko.md) |
-| KODA·Tracker 공통 AI | **설정 → 공통 AI**에서 사내 OpenAI 호환 서버 주소와 모델, API 키를 등록하고 연결을 시험합니다. KODA 점검 상세와 Tracker 회차 상세에서 요약을 생성합니다. [공통 AI 설정](docs/integrations-java-ai-ko.md#koda와-tracker-공통-ai) |
+| 호환성 자료 | 기관별 공개 카탈로그를 수집하고 **설정 → 호환성 자료**에서 Tracker용 압축을 반입합니다. 일치하는 후보 SBOM 행에 기관·선언 근거·원본 URL·SHA-256이 연결됩니다. [수집·반입 가이드](docs/official-compatibility-data-ko.md) |
+| KODA·Tracker 공통 AI | **설정 → 연동 설정 → AI 연동**에서 사내 OpenAI 호환 서버 주소와 모델, API 키를 등록하고 연결을 시험합니다. KODA 점검 상세와 Tracker 회차 상세에서 요약을 생성합니다. [공통 AI 설정](docs/integrations-java-ai-ko.md#koda와-tracker-공통-ai) |
 | 폐쇄망 설치와 대용량 업로드 | 데이터 검증 키 등록 전에도 애플리케이션을 설치·업데이트할 수 있습니다. 서명 검증이 필요한 취약점 자료는 키를 등록한 뒤 적용합니다. 대용량 SBOM 검증 중에도 다른 API 요청을 처리합니다. [Linux 설치·업데이트](docs/linux-tracker-update-ko.md) |
 
 ## 구성
@@ -126,7 +128,7 @@ SBOM 원본과 분석 리비전의 기준일·정책 버전을 보존하고 현�
 마지막 관리 계정 보호 규칙이 함께 적용됩니다. 삭제한 사용자의 세션은 폐기되며 같은
 로그인 ID로 다시 가입하면 새 내부 UUID가 발급됩니다.
 
-관리자는 설정의 `LDAP 로그인` 탭에서 서버·TLS·검색 기준 DN·속성·그룹 역할을
+관리자는 **설정 → 연동 설정 → LDAP 로그인 연동**에서 서버·TLS·검색 기준 DN·속성·그룹 역할을
 입력할 수 있습니다. bind 비밀번호는 `TRACKER_LDAP_ENCRYPTION_KEY`로 암호화해
 Tracker DB에 저장하며, LDAP 인증 성공 후 발급된 Tracker 세션을 KODA gateway가
 검증하므로 통합 KODA에서도 같은 로그인으로 접근합니다. 실제 운영에서는 StartTLS/LDAPS와

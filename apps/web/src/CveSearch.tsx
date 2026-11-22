@@ -1,8 +1,11 @@
+import { DetailPagination } from "./DetailPagination";
+import { ResizableTable } from "./ResizableTable";
 import { useEffect, useState, type FormEvent } from "react";
 import { previewMode } from "./api";
 import { fetchCveCatalog, fetchCveDetail, EMPTY_CVE_QUERY, type CveCatalogDetail, type CveCatalogPage, type CveProduct } from "./cve-search-api";
 import { formatSeoulDateTime } from "./format";
 import { Icon } from "./icons";
+import { TabList } from "./TabList";
 import { ScrollingText } from "./ScrollingText";
 import "./cve-search.css";
 
@@ -16,12 +19,13 @@ export default function CveSearchPanel({ onOpenRun }: { onOpenRun?: (runId: stri
   const [draft, setDraft] = useState({ ...EMPTY_CVE_QUERY });
   const [query, setQuery] = useState({ ...EMPTY_CVE_QUERY });
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
   const [reload, setReload] = useState(0);
   const [listState, setListState] = useState<{ key: string; data: CveCatalogPage | null; error: string }>({ key: "", data: null, error: "" });
   const [selected, setSelected] = useState("");
   const [detailState, setDetailState] = useState<{ key: string; data: CveCatalogDetail | null; error: string }>({ key: "", data: null, error: "" });
   const [productSource, setProductSource] = useState<"cna" | "nvd">("cna");
-  const queryKey = JSON.stringify([query, page, reload]);
+  const queryKey = JSON.stringify([query, page, pageSize, reload]);
   const loading = listState.key !== queryKey;
   const result = loading ? null : listState.data;
   const error = loading ? "" : listState.error;
@@ -33,12 +37,18 @@ export default function CveSearchPanel({ onOpenRun }: { onOpenRun?: (runId: stri
 
   useEffect(() => {
     let active = true;
-    void fetchCveCatalog(query, page).then(value => {
+    void fetchCveCatalog(query, page, pageSize).then(value => {
       if (!active) return;
-      setListState({ key: queryKey, data: value, error: "" }); setSelected(value.items[0]?.id || "");
+      const lastPage = Math.max(1, Math.ceil(value.total / pageSize));
+      if (page > lastPage) {
+        setPage(lastPage);
+        return;
+      }
+      setListState({ key: queryKey, data: value, error: "" });
+      setSelected(current => value.items.some(item => item.id === current) ? current : value.items[0]?.id || "");
     }).catch(reason => { if (active) { setListState({ key: queryKey, data: null, error: reason instanceof Error ? reason.message : "CVE 자료를 조회하지 못했습니다." }); setSelected(""); } });
     return () => { active = false; };
-  }, [query, page, reload, queryKey]);
+  }, [query, page, pageSize, reload, queryKey]);
   useEffect(() => {
     let active = true;
     if (!selected || !bundleVersion) return;
@@ -54,7 +64,6 @@ export default function CveSearchPanel({ onOpenRun }: { onOpenRun?: (runId: stri
     event.preventDefault(); setPage(1);
     setQuery(Object.fromEntries(Object.entries(draft).map(([key, value]) => [key, value.trim()])) as typeof draft);
   }
-  const pages = Math.max(1, Math.ceil((result?.total || 0) / (result?.size || 20)));
   return <section className="cve-search-panel" aria-label="CVE 검색">
     <div className="cve-section-heading"><div><h2>CVE 검색</h2><p>공지된 소프트웨어·영향 버전과 우리 SBOM의 발견 근거를 함께 확인합니다.</p></div>{previewMode && <span className="cve-demo-label">샘플 · 모든 데이터는 가상 예시</span>}</div>
     <form className="cve-search-form" onSubmit={submit}>
@@ -70,7 +79,36 @@ export default function CveSearchPanel({ onOpenRun }: { onOpenRun?: (runId: stri
     {error && <div role="alert" className="cve-error"><strong>CVE 자료 조회 불가</strong><p>{error}</p><p>조회 실패·자료 미반입은 취약점 0건을 뜻하지 않습니다.</p><button type="button" className="secondary" onClick={() => setReload(value => value + 1)}>다시 조회</button></div>}
     {result && !loading && <>
       <h3 className="cve-results-title">검색 결과 ({result.total.toLocaleString()}건)</h3>
-      <div className="table-frame"><div className="table-scroll"><table className="cve-catalog-results"><thead><tr><th>CVE</th><th>소프트웨어</th><th>공지 버전·범위</th><th>CVSS</th><th>수정일</th></tr></thead><tbody>{result.items.map(item => { const products = item.matchedProducts ?? item.products; return <tr key={item.id} className={selected === item.id ? "selected" : ""}><td><button type="button" className="cve-text-link" aria-expanded={selected === item.id} onClick={() => setSelected(item.id)}><ScrollingText focusable={false}>{item.id}</ScrollingText></button>{item.versionMatch === "unknown" && <small className="cve-review">버전·환경 조건 확인 필요</small>}{item.versionMatch === "match" && <small>입력 버전 조건 일치 · 실제 영향은 분석 근거 확인</small>}</td><td><ScrollingText>{[...new Set(products.filter(product => product.source === "cna" || product.ranges.some(range => range.status === "affected")).map(product => product.product))].slice(0, 3).join(", ") || "제품 정보 미제공"}</ScrollingText></td><td><ScrollingText>{products.map(product => `${product.product}: ${product.ranges.map(range => range.label).join(", ") || "버전 미제공"}`).join(" / ") || "원문 조건 확인 필요"}</ScrollingText></td><td>{item.cvss ?? "미제공"}</td><td>{date(item.lastModified)}</td></tr>; })}{!result.items.length && <tr><td colSpan={5}>검색 조건에 맞는 CVE가 없습니다. 검색 범위는 활성 반입 자료로 한정됩니다.</td></tr>}</tbody></table></div><div className="table-footer"><span>{page} / {pages} 페이지</span><div><button aria-label="CVE 이전 페이지" type="button" disabled={page <= 1} onClick={() => setPage(value => value - 1)}>‹</button><button aria-label="CVE 다음 페이지" type="button" disabled={page >= pages} onClick={() => setPage(value => value + 1)}>›</button></div></div></div>
+      <div className="table-frame">
+        <div className="table-scroll" role="region" aria-label="CVE 검색 결과 가로 스크롤" tabIndex={0}>
+          <ResizableTable className="cve-catalog-results data-list-table" aria-label="CVE 검색 결과">
+            <thead><tr><th>CVE</th><th>소프트웨어</th><th>공지 버전·범위</th><th>CVSS</th><th>수정일</th></tr></thead>
+            <tbody>
+              {result.items.map(item => {
+                const products = item.matchedProducts ?? item.products;
+                const names = products.filter(product => product.source === "cna" || product.ranges.some(range => range.status === "affected"))
+                  .map(product => product.product);
+                const ranges = products.map(product => `${product.product}: ${product.ranges.map(range => range.label).join(", ") || "버전 미제공"}`);
+                return <tr key={item.id} className={selected === item.id ? "selected" : ""}>
+                  <td>
+                    <button type="button" className="cve-text-link data-row-link" aria-expanded={selected === item.id} onClick={() => setSelected(item.id)}>
+                      <ScrollingText focusable={false}>{item.id}</ScrollingText>
+                    </button>
+                    {item.versionMatch === "unknown" && <small className="cve-review">버전·환경 조건 확인 필요</small>}
+                    {item.versionMatch === "match" && <small>입력 버전 조건 일치 · 실제 영향은 분석 근거 확인</small>}
+                  </td>
+                  <td><ScrollingText>{[...new Set(names)].slice(0, 3).join(", ") || "제품 정보 미제공"}</ScrollingText></td>
+                  <td><ScrollingText>{ranges.join(" / ") || "원문 조건 확인 필요"}</ScrollingText></td>
+                  <td>{item.cvss ?? "미제공"}</td><td>{date(item.lastModified)}</td>
+                </tr>;
+              })}
+              {!result.items.length && <tr><td colSpan={5}>검색 조건에 맞는 CVE가 없습니다. 검색 범위는 활성 반입 자료로 한정됩니다.</td></tr>}
+            </tbody>
+          </ResizableTable>
+        </div>
+        <DetailPagination level="list" label="CVE" total={result.total} page={page} pageSize={pageSize}
+          onPage={setPage} onPageSize={size => { setPageSize(size); setPage(1); }} />
+      </div>
       <p className="cve-source-note">{result.versionSearchNote}</p>
     </>}
     {selected && !loading && !error && <section className="cve-detail" aria-label="선택한 CVE 상세">
@@ -80,8 +118,9 @@ export default function CveSearchPanel({ onOpenRun }: { onOpenRun?: (runId: stri
       {detail && <>
         <p className="cve-description">{detail.description || "설명 미제공"}</p>
         <dl className="cve-metadata"><div><dt>공개일</dt><dd>{date(detail.published)}</dd></div><div><dt>수정일</dt><dd>{date(detail.lastModified)}</dd></div><div><dt>CVSS</dt><dd>{detail.cvss ?? "미제공"}</dd></div><div><dt>상태</dt><dd><ScrollingText>{detail.status}</ScrollingText></dd></div></dl>
-        <div className="cve-source-tabs" role="tablist" aria-label="CVE 제품 정보 출처"><button type="button" role="tab" aria-selected={productSource === "cna"} onClick={() => setProductSource("cna")}>발행기관 공지</button><button type="button" role="tab" aria-selected={productSource === "nvd"} onClick={() => setProductSource("nvd")}>NVD 분석 조건</button></div>
-        <div role="tabpanel" aria-label={productSource === "cna" ? "발행기관 공지" : "NVD 분석 조건"}><ProductRows products={detail.products.filter(product => product.source === productSource)}/></div>
+        <TabList label="CVE 제품 정보 출처" idPrefix="cve-source" value={productSource} onChange={setProductSource}
+          items={[{ id: "cna", label: "발행기관 공지" }, { id: "nvd", label: "NVD 분석 조건" }]} />
+        <div role="tabpanel" id={`cve-source-panel-${productSource}`} aria-labelledby={`cve-source-tab-${productSource}`}><ProductRows products={detail.products.filter(product => product.source === productSource)}/></div>
         <p className="cve-notice">{detail.applicabilityNote}</p>
         <div className="cve-section-heading"><h3>우리 SBOM에서 발견된 버전</h3><span className="cve-source-note">{detail.observations.scope || "보관된 SBOM 기준"}</span></div>
         {!detail.observations.available ? <p>{detail.observations.reason}</p> : <div className="table-scroll"><table className="cve-observations"><thead><tr><th>서비스</th><th>환경</th><th>릴리스</th><th>발견 버전</th><th>관측 시각·분석 상태</th><th>근거</th></tr></thead><tbody>{detail.observations.items.map((item, index) => <tr key={`${item.runId}-${item.component}-${index}`}><td><ScrollingText>{item.service}</ScrollingText><small><ScrollingText>{item.component}</ScrollingText></small></td><td><ScrollingText>{item.environment}</ScrollingText></td><td><ScrollingText>{item.release}</ScrollingText></td><td><ScrollingText>{item.version || "미제공"}</ScrollingText></td><td>{formatSeoulDateTime(item.observedAt)}<small>{item.analysisState === "completed" ? "저장 분석 완료" : "분석 미완료 · 확인 필요"} · 자료 기준일 {item.dataAsOf}</small></td><td>{onOpenRun ? <button type="button" className="cve-text-link" onClick={() => onOpenRun(item.runId)}>SBOM 회차 보기</button> : <ScrollingText>{item.runId}</ScrollingText>}</td></tr>)}{!detail.observations.items.length && <tr><td colSpan={6}>조회 범위의 저장 분석 결과에서 발견 근거가 없습니다. 미발견만으로 안전을 뜻하지 않습니다.</td></tr>}</tbody></table></div>}

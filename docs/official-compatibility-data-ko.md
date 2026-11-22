@@ -1,6 +1,6 @@
 # 공식 호환성 자료 수집과 반입
 
-**설정 → 공식 호환성 자료**에서 Java/Maven, Python, Linux C 자료를 하나의 `tar.gz`로 반입합니다. 폐쇄망 Tracker는 압축 내부의 목록, 고정된 공식 URL, 원본 크기와 SHA-256을 대조하고 패키지 선언을 추출합니다. 원본 압축과 반입 이력은 Tracker에서 확인할 수 있습니다.
+**설정 → 호환성 자료**에서 Java/Maven, Python, Linux C 자료를 하나의 `tar.gz`로 반입합니다. 폐쇄망 Tracker는 압축 내부의 목록, 고정된 공식 URL, 원본 크기와 SHA-256을 대조하고 패키지 선언을 추출합니다. 원본 압축과 반입 이력은 Tracker에서 확인할 수 있습니다.
 
 ## 지정 출처
 
@@ -60,7 +60,7 @@ python3 scripts/collect-compatibility-data.py \
 ## 폐쇄망에서 확인
 
 1. `shasum -a 256 -c tracker-official-compatibility.tar.gz.sha256` 또는 Linux의 `sha256sum -c tracker-official-compatibility.tar.gz.sha256`으로 전송받은 압축의 해시를 확인합니다.
-2. Tracker의 **설정 → 공식 호환성 자료**에서 단건 수집 압축 또는 `tracker-*.tar.gz` 하나를 선택해 **반입하고 검증**을 누릅니다. 압축 파일은 64 MB, 압축 해제 자료는 128 MiB까지 반입할 수 있습니다. 브라우저의 업로드 및 검증 대기 시간은 300초입니다.
+2. Tracker의 **설정 → 호환성 자료**에서 단건 수집 압축 또는 `tracker-*.tar.gz` 하나를 선택해 **반입하고 검증**을 누릅니다. 압축 파일은 64 MB, 압축 해제 자료는 128 MiB까지 반입할 수 있습니다. 브라우저의 업로드 및 검증 대기 시간은 300초입니다.
 3. **선언 근거 보기**와 **원본과 검증 해시**를 열면 기관별 근거와 URL, SHA-256을 확인할 수 있습니다.
 
 ## 후보 버전 검토에서 확인

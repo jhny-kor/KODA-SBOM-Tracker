@@ -3,5 +3,6 @@ import { createRoot } from "react-dom/client";
 import "pretendard/dist/web/variable/pretendardvariable.css";
 import App from "./App";
 import "./styles.css";
+import "./form-controls.css";
 
 createRoot(document.getElementById("root")!).render(<StrictMode><App /></StrictMode>);

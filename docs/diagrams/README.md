@@ -3,6 +3,7 @@
 | 파일 | 쓰이는 곳 |
 | --- | --- |
 | `koda-sbom-tracker-screens.svg` | README, 화면·기능 한눈에 보기 |
+| `tracker-integration-tabs.jpg` | 화면·기능 한눈에 보기의 연동 설정 화면 |
 | `koda-sbom-tracker-flow.svg` | 화면·기능 한눈에 보기 |
 | `koda-suite-process.svg` | KODA 통합 인증·운영 계약 — 전체 흐름 |
 

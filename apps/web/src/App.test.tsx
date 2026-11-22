@@ -28,10 +28,19 @@ describe("KODA SBOM Tracker", () => {
     expect(window.location.href).toBe(url);
   });
 
-  it("shows sample LDAP settings without allowing a save", async () => {
-    window.history.replaceState(null, "", "/?page=settings");
+  it.each(["/?page=settings", "/?page=settings&settingsTab=ldap"])("shows sample LDAP under integration without allowing a save at %s", async (url) => {
+    window.history.replaceState(null, "", url);
     render(<App />);
-    fireEvent.click(await screen.findByRole("tab", { name: "LDAP 로그인" }));
+    const settingsTabs = within(await screen.findByRole("tablist", { name: "설정 하위 메뉴" }));
+    expect(settingsTabs.queryByRole("tab", { name: /LDAP/ })).not.toBeInTheDocument();
+    const integrationTab = settingsTabs.getByRole("tab", { name: "연동 설정" });
+    if (url.endsWith("settings")) fireEvent.click(integrationTab);
+    expect(integrationTab).toHaveAttribute("aria-selected", "true");
+    const integration = within(screen.getByRole("tabpanel", { name: "연동 설정" }));
+    const ldapTab = integration.getByRole("tab", { name: "LDAP 로그인 연동" });
+    if (url.endsWith("settings")) fireEvent.click(ldapTab);
+    expect(ldapTab).toHaveAttribute("aria-selected", "true");
+    expect(integration.getByRole("tabpanel", { name: "LDAP 로그인 연동" })).toBeInTheDocument();
     expect(await screen.findByLabelText("LDAP 서버")).toHaveValue("ldap.example.com");
     expect(screen.getByRole("button", { name: "샘플 모드 · 저장 안 함" })).toBeDisabled();
     expect(screen.getByRole("note")).toHaveTextContent("실제 연결·저장은 하지 않습니다");
@@ -119,7 +128,7 @@ describe("KODA SBOM Tracker", () => {
       users={[]} services={[{ id: "svc-uuid", name: "group/project", slug: "gitlab-42-a1b2c3d4e5f6", active: true }]}
       environments={[{ id: "env-uuid", name: "GitLab 소스", slug: "gitlab-source", active: true, sortOrder: 50 }]}
       tokens={[{ id: "token-1", name: "group-project", serviceId: "svc-uuid", active: true, createdAt: "2026-08-29T00:00:00Z" }]} ldapSettings={null} policies={[]} roleCatalog={[]}
-      bundles={[]} auditEvents={[]} isAdmin canVulnerability={false}
+      bundles={[]} auditEvents={[]} isAdmin={false} canVulnerability={false}
       canVulnerabilityManage={false} canAudit={false} canUsers={false} canTokens
       canPolicyEdit={false} canRoles={false} canServices
       canCatalogManage={false} onSync={async () => {}} onActivate={async () => {}}
@@ -127,6 +136,11 @@ describe("KODA SBOM Tracker", () => {
     />);
     expect(screen.queryByRole("tab", { name: "GitLab 연동" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("tab", { name: "연동 설정" }));
+    const integration = within(screen.getByRole("tabpanel", { name: "연동 설정" }));
+    expect(integration.getByRole("tab", { name: "GitLab 연동" })).toHaveAttribute("aria-selected", "true");
+    expect(integration.getByRole("tabpanel", { name: "GitLab 연동" })).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "AI 연동" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "LDAP 로그인 연동" })).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "KODA GitLab 자동 연동" })).toBeInTheDocument();
     expect(screen.getByText("GitLab 저장소 → KODA 점검·CycloneDX 생성 → Tracker 회차 수신·분석 → KODA가 GitLab 결과 MR·취약점 이슈 저장")).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "기존 외부 시스템 연결" })).not.toBeInTheDocument();
@@ -359,11 +373,10 @@ describe("KODA SBOM Tracker", () => {
     expect(screen.getByLabelText("SBOM 파일")).toHaveAccessibleDescription(/CycloneDX 1\.4, 1\.5, 1\.6, 1\.7.*SPDX 2\.3/);
     expect(screen.getByLabelText("SBOM 파일")).toHaveAttribute("accept", expect.stringContaining(".json,.xml,.zip,.tar,.tar.gz,.tgz,.7z"));
     expect(screen.getByLabelText("SBOM 파일")).toHaveAttribute("accept", expect.stringContaining(".xlsx,.csv"));
-    expect(screen.getByLabelText("SBOM 파일")).toHaveAccessibleDescription(/Excel \(\.xlsx, 최대 10 MiB\)/);
-    expect(screen.getByLabelText("SBOM 파일")).toHaveAccessibleDescription(/ZIP.*TAR\.GZ\/TGZ.*TAR.*7Z.*JSON\/XML\/CSV 문서 파일만 정확히 1개/);
-    expect(screen.getByLabelText("SBOM 파일")).toHaveAccessibleDescription(/README 등 동반 파일은 허용하지 않습니다/);
+    expect(screen.getByLabelText("SBOM 파일")).toHaveAccessibleDescription(/Excel \(\.xlsx, 최대 10 MB\)/);
+    expect(screen.getByLabelText("SBOM 파일")).toHaveAccessibleDescription(/ZIP.*TAR\.GZ\/TGZ.*TAR.*7Z.*JSON\/XML\/CSV 문서 파일 1개만 넣으세요\. 그 외 파일은 허용하지 않습니다/);
     expect(screen.getByLabelText("SBOM 파일")).toHaveAttribute("accept", expect.not.stringContaining(".rar"));
-    expect(screen.getByLabelText("SBOM 파일")).toHaveAccessibleDescription(/최대 5 GiB/);
+    expect(screen.getByLabelText("SBOM 파일")).toHaveAccessibleDescription(/최대 5 GB · 128 MB 초과 문서/);
   });
 
   it("shows analysis charts on the server dashboard", async () => {

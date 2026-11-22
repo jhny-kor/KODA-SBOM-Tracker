@@ -1,0 +1,54 @@
+:root {
+  --field-height: 40px;
+  --field-height-compact: 32px;
+  --field-radius: 4px;
+  --field-label-weight: 650;
+  --focus-ring: var(--teal-dark);
+  --feedback-error: #a12626;
+  --feedback-error-border: #e9bdb9;
+  --feedback-error-surface: #fff5f4;
+}
+
+:where(.global-search, .detail-search, .library-query > div, .select-filter):focus-within {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  border-color: var(--focus-ring);
+}
+
+:where(.global-search, .detail-search, .library-query > div, .select-filter) :is(input, select):focus-visible {
+  outline: none;
+}
+
+/* Full forms share field styling. Native file inputs and choice controls retain their layout. */
+:is(.modal form, .ldap-form, .workflow-form, .run-metadata-fields, .shared-ai-server-field, .offline-run-evidence form,
+    .quality-toolbar, .quality-profile-grid, .quality-weight-grid, .compare-pickers, .analysis-pickers)
+  :is(input:not([type="file"], [type="checkbox"], [type="radio"], [type="hidden"], [type="range"]), select, textarea) {
+  min-width: 0;
+  border: 1px solid var(--border-dark);
+  border-radius: var(--field-radius);
+  background: #fff;
+  padding: 8px 10px;
+  font-size: 13px;
+  font-weight: 400;
+}
+
+:is(.modal form, .ldap-form, .workflow-form, .run-metadata-fields, .shared-ai-server-field, .offline-run-evidence form,
+    .quality-toolbar, .quality-profile-grid, .quality-weight-grid, .compare-pickers, .analysis-pickers)
+  :is(input:not([type="file"], [type="checkbox"], [type="radio"], [type="hidden"], [type="range"]), select:not([multiple])) {
+  min-height: var(--field-height);
+}
+
+:is(.modal form, .ldap-form, .workflow-form, .run-metadata-fields, .compare-pickers, .analysis-pickers)
+  .flow-select > select {
+  padding-inline-end: 32px;
+}
+
+.generic-toolbar .global-search { height: var(--field-height); }
+
+:is(.modal form, .ldap-form, .workflow-form, .run-metadata-fields) label:not(.checkbox-label, .login-checkbox) {
+  font-size: 13px;
+  font-weight: var(--field-label-weight);
+}
+
+.form-message[role="alert"], .run-detail-card-body > p[role="alert"] { color: var(--feedback-error); }
+.form-message[data-tone="warning"] { color: #805119; }

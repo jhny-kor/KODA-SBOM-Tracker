@@ -71,7 +71,7 @@ it("shows immutable prior decision with explicit stale reasons and bounded histo
   expect(screen.queryByRole("button", { name: "SSVC 판단 저장" })).not.toBeInTheDocument();
   fireEvent.click(screen.getByText("입력·근거 스냅샷 보기"));
   expect(screen.getByText(/결정표 SHA-256/)).toHaveTextContent("a".repeat(64));
-  fireEvent.click(screen.getByRole("button", { name: "SSVC 판단 다음" }));
+  fireEvent.click(screen.getByRole("button", { name: "SSVC 판단 다음 페이지" }));
   await waitFor(() => expect(api.fetchSsvcAssessments).toHaveBeenLastCalledWith("run", 2));
 });
 

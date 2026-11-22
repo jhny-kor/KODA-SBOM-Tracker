@@ -1,0 +1,49 @@
+.tab-list {
+  display: flex;
+  align-items: stretch;
+  flex-wrap: wrap;
+  gap: 2px;
+  min-width: 0;
+  max-width: 100%;
+  border-bottom: 1px solid var(--border);
+}
+
+.tab-list--page {
+  --tab-height: 44px;
+  --tab-inset: 15px;
+  --tab-font-size: 14px;
+  margin: 4px 0 12px;
+}
+
+.tab-list--section {
+  --tab-height: 38px;
+  --tab-inset: 12px;
+  --tab-font-size: 13px;
+  margin: 4px 0 12px;
+}
+
+.tab-list > button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  min-height: var(--tab-height);
+  padding: 0 var(--tab-inset);
+  border: 0;
+  border-bottom: 3px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--tab-font-size);
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.tab-list > button svg { width: 18px; height: 18px; }
+.tab-list > button:hover { background: var(--surface); color: var(--teal-dark); }
+.tab-list > button[aria-selected="true"] { background: var(--teal-pale); border-bottom-color: var(--teal); color: var(--teal-dark); }
+.tab-list > button:focus-visible { outline: 2px solid var(--focus-ring, var(--teal-dark)); outline-offset: -3px; }
+
+@media (max-width: 520px) {
+  .tab-list { flex-wrap: nowrap; overflow-x: auto; }
+  .tab-list--page, .tab-list--section { --tab-inset: 10px; }
+}
